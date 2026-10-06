@@ -47,6 +47,7 @@ export default function ContainerDetailScreen() {
   const updateTask = useAppStore((state) => state.updateTask);
   const completeTask = useAppStore((state) => state.completeTask);
   const shiftTaskByDays = useAppStore((state) => state.shiftTaskByDays);
+  const addTaskToContainer = useAppStore((state) => state.addTaskToContainer);
 
   const [container, setContainer] = useState<Container | null>(null);
   const [loading, setLoading] = useState(true);
@@ -58,6 +59,9 @@ export default function ContainerDetailScreen() {
   const [addingChild, setAddingChild] = useState(false);
   const [childTitle, setChildTitle] = useState('');
   const [pickingTasks, setPickingTasks] = useState(false);
+  /** 「新建任务」的内联输入：一个项目往往要连着录好几条，所以建完不收输入框 */
+  const [addingTask, setAddingTask] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   /** 甘特图拖拽期间锁住页面滚动，否则手指一竖页面就跟着滚 */
   const [ganttDragging, setGanttDragging] = useState(false);
@@ -101,6 +105,14 @@ export default function ContainerDetailScreen() {
     },
     [patch],
   );
+
+  /** 新建一条任务挂在这个容器下（建完保留输入框，方便连着录） */
+  const createTaskNow = useCallback(async () => {
+    const next = newTaskTitle.trim();
+    if (!id || !next) return;
+    setNewTaskTitle('');
+    await addTaskToContainer(id, next);
+  }, [addTaskToContainer, id, newTaskTitle]);
 
   const children = useMemo(
     () => (id ? containers.filter((c) => c.parentId === id) : []),
@@ -347,14 +359,64 @@ export default function ContainerDetailScreen() {
         title="任务"
         hint={members.length ? `${members.length} 件` : '还没挂任务'}
         right={
-          candidates.length ? (
-            <Pressable accessibilityRole="button" onPress={() => setPickingTasks((value) => !value)}>
+          <View style={styles.cardActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="在这个容器里新建任务"
+              onPress={() => {
+                setAddingTask((value) => !value);
+                setPickingTasks(false);
+              }}>
               <ThemedText type="small" themeColor="textSecondary">
-                {pickingTasks ? '收起' : '加入任务'}
+                {addingTask ? '收起' : '＋ 新建'}
               </ThemedText>
             </Pressable>
-          ) : null
+
+            {candidates.length ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setPickingTasks((value) => !value);
+                  setAddingTask(false);
+                }}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {pickingTasks ? '收起' : '加入已有'}
+                </ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
         }>
+        {/* 直接在这里写：以前只能把别处建好的任务"挂"进来，项目里没法顺手加一条 */}
+        {addingTask ? (
+          <View style={styles.addRow}>
+            <TextInput
+              value={newTaskTitle}
+              onChangeText={setNewTaskTitle}
+              placeholder="任务名字，回车接着加下一条"
+              placeholderTextColor={theme.textSecondary}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={() => void createTaskNow()}
+              style={[
+                styles.inlineInput,
+                {
+                  color: theme.text,
+                  backgroundColor: theme.background,
+                  borderColor: theme.backgroundSelected,
+                },
+              ]}
+            />
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void createTaskNow()}
+              style={[styles.smallAction, { backgroundColor: theme.text }]}>
+              <ThemedText type="small" style={{ color: theme.background }}>
+                加上
+              </ThemedText>
+            </Pressable>
+          </View>
+        ) : null}
+
         {members.length ? (
           members.map((task) => (
             <TaskRow
@@ -367,7 +429,7 @@ export default function ContainerDetailScreen() {
           ))
         ) : (
           <ThemedText type="small" themeColor="textSecondary">
-            还没有任务。可以在任务详情页的「归属」里选这个容器，也可以点右上角「加入任务」。
+            还没有任务。点右上角「＋ 新建」直接加一条，或者用「加入已有」把别处建好的挂进来。
           </ThemedText>
         )}
 
@@ -567,6 +629,8 @@ const styles = StyleSheet.create({
   },
   pickText: { flex: 1 },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  /** 卡片表头的多个动作：跟「收起 / 加入已有」并排 */
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
   inlineInput: {
     flex: 1,
     borderRadius: Spacing.two,

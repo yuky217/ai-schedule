@@ -173,8 +173,8 @@ src/
 │   └── settings-store.ts       #   高级开关、AI 能力开关、接口配置（持久化）
 │
 ├── components/                 # 通用组件（screen / card / task-row / calendar-* / gantt-chart /
-│                               #   focus-picker（固定指针的横向选择器）/ focus-bars /
-│                               #   checkin-heatmap / choice-sheet / date-time-picker …）
+│                               #   focus-picker（固定指针的横向选择器）/ time-wheel（时/分滚轮）/
+│                               #   focus-bars / checkin-heatmap / choice-sheet / date-time-picker …）
 ├── constants/theme.ts          #   颜色、字体、间距（模板自带，沿用）
 ├── hooks/                      #   useTheme；use-cross-day-drag（跨天拖拽的唯一入口）
 └── utils/                      #   id 生成、日期时间格式化
@@ -213,6 +213,12 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
    任何"点一下就算做完"的设计都算误触，禁止。
 10. **页面不能因为数据为空就整页 early return。** 空态只能替换内容区，导航（工具栏、翻页）必须一直在
     ——日历就踩过：空月份里连翻页按钮都没了。
+11. **同方向的滚动不能直接套。** 竖直 `ScrollView` 里再放一个竖直 `ScrollView`，
+    Android 上外层会把手势全吃掉，内层**根本滚不动**（而且在 Web 上常常是好的，
+    所以本地测不出来）。内层必须开 `nestedScrollEnabled`；要紧的地方再加一道
+    "手指按住内层时把外层 `scrollEnabled` 关掉"的保险（`time-wheel` 的
+    `onScrollLockChange` 就是这个）。横向嵌竖直不受影响。
+    已经踩过两次：`calendar-day` / `calendar-week`（时间轴）和时/分滚轮。
 
 ## 六、数据库
 
@@ -335,6 +341,22 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 两条硬规则：**时间过了绝不自动完成**（状态只由用户的明确动作改变）；
 `utils/datetime.ts` 的 `isOverdue` 是死代码，过期口径一律走 `task-state.ts`。
 
+### 时间怎么选：预设 → 自定义（`time-wheel` + `date-time-picker`）
+
+`SCHEDULE_PRESETS` 覆盖高频（今天上午 / 今晚 / 明天前…），兜不住的走「自定义…」：
+日期用自建的 `month-picker`（不引第三方日历库），时刻是**时/分双滚轮**、分钟步进 1 分钟
+（"会议 14:07 开始"不能被 5 分钟粒度挡在门外）。
+
+滚轮是**手写控件**，它踩过的三个坑都写在 `time-wheel.tsx` 文件头，改之前先读：
+① 竖直套竖直滚不动（见约定第 11 条）；② 挂载时没滚到当前值 —— 用 `useRef(初值)`
+当"别回滚"的判据，首次挂载就会命中 early return，于是不管草稿是 09:00 还是 19:37，
+轮子初始都停在 `00`；③ 没滚过半格时不吸附，拖一点点松手会停在两个刻度之间
+（吸回去时的容差 `> 1px` 是必须的，否则 scrollTo → onScroll → 吸附会死循环）。
+
+为什么不装 `@react-native-community/datetimepicker`：它是原生控件，**Web 端不支持**，
+而这个项目的 web 端必须能用。也正因为这个门槛，时间选择器这个位置**没有合格的现成库** ——
+所以这一处是"把交互做简单"，而不是"手写系统级控件"。
+
 ### 过去的事得有个出口（`domain/past-event.ts`）
 
 淡出只是"看起来不吵"，不解决"它还在那儿"——上周三的会一直挂着，用户每次翻到那天
@@ -373,6 +395,8 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
   - 周视图：长按任务块**横拖换天 + 纵拖换时刻**（一次手势两轴），跨天落下自动切到那天的日视图。
   - 日视图：长按任务块上下拖改时刻（吸 15 分钟刻度）。
 - **项目 / 目标 / 文件夹**：容器是唯一实体，**甘特图只是视图**（`domain/gantt.ts` 纯布局）。
+  容器页可以直接**新建任务**（`app-store.addTaskToContainer`，回车连着加，建完留给收集箱待规划），
+  也可以用「加入已有」把别处建好的拉进来。
   任务条可长按拖拽改期（整天平移、保留时分）；容器条不给拖——它是框架，拖它就该连成员一起推，那是另一件事。
 - **行**：首页的**专注启动选择器**（固定指针 + 左右滑，默认格子由 `defaultFocusIndex` 决定）
   → `app/focus.tsx` 计时（可暂停，离开即结束）。小东西随专注时长生长（只涨不落），

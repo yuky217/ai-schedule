@@ -72,9 +72,14 @@ function formatTimeOfMinutes(minutes: number): string {
 export interface DateTimePickerBodyProps {
   value: DateTimeDraft;
   onChange: (next: DateTimeDraft) => void;
+  /**
+   * 滚轮按住时会调 `true`。外层容器（两个使用点都是竖直 ScrollView）要据此
+   * 把自己的滚动关掉 —— Android 上外层会把滚轮的手势全吃掉，内层根本滚不动。
+   */
+  onScrollLockChange?: (locked: boolean) => void;
 }
 
-export function DateTimePickerBody({ value, onChange }: DateTimePickerBodyProps) {
+export function DateTimePickerBody({ value, onChange, onScrollLockChange }: DateTimePickerBodyProps) {
   const theme = useTheme();
   const [calendarOpen, setCalendarOpen] = useState(false);
 
@@ -159,6 +164,7 @@ export function DateTimePickerBody({ value, onChange }: DateTimePickerBodyProps)
       <TimeWheel
         minutesOfDay={value.minutesOfDay}
         onChange={(minutesOfDay) => onChange({ ...value, minutesOfDay })}
+        onScrollLockChange={onScrollLockChange}
       />
 
       <View style={styles.quickRow}>
@@ -208,6 +214,8 @@ export function DateTimeSheet({
   confirmLabel,
 }: DateTimeSheetProps) {
   const theme = useTheme();
+  /** 滚轮按住时关掉本页的滚动（见 TimeWheel 文件头第 1 条） */
+  const [wheelLocked, setWheelLocked] = useState(false);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
@@ -226,8 +234,15 @@ export function DateTimeSheet({
             </Pressable>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false} style={styles.sheetBody}>
-            <DateTimePickerBody value={value} onChange={onChange} />
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            scrollEnabled={!wheelLocked}
+            style={styles.sheetBody}>
+            <DateTimePickerBody
+              value={value}
+              onChange={onChange}
+              onScrollLockChange={setWheelLocked}
+            />
           </ScrollView>
 
           <Pressable

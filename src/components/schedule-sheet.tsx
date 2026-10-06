@@ -55,6 +55,8 @@ export function ScheduleSheet({
   const theme = useTheme();
   const [view, setView] = useState<SheetView>(initialView);
   const [draft, setDraft] = useState<DateTimeDraft>(() => draftFromTask({ time: { attribute: 'none' } }));
+  /** 滚轮按住时关掉本面板的滚动（见 TimeWheel 文件头第 1 条） */
+  const [wheelLocked, setWheelLocked] = useState(false);
 
   // 任务切换 / 关闭 / 换入口时回到指定层，避免下次打开还停在上次的位置
   useEffect(() => {
@@ -129,6 +131,7 @@ export function ScheduleSheet({
 
           <ScrollView
             style={styles.body}
+            scrollEnabled={!wheelLocked}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled">
             {view === 'main' ? (
@@ -205,7 +208,13 @@ export function ScheduleSheet({
               </>
             ) : null}
 
-            {view === 'custom' ? <DateTimePickerBody value={draft} onChange={setDraft} /> : null}
+            {view === 'custom' ? (
+              <DateTimePickerBody
+                value={draft}
+                onChange={setDraft}
+                onScrollLockChange={setWheelLocked}
+              />
+            ) : null}
 
             {view === 'reminder'
               ? REMINDER_PRESETS.map((preset) => {

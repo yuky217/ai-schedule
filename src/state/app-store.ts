@@ -100,6 +100,12 @@ interface AppState {
   removeTask: (id: string) => Promise<void>;
   archiveIdea: (id: string) => Promise<void>;
 
+  /**
+   * 在某个容器下**直接新建**一条任务（容器页的「新建」）。
+   * 刻意不给时间：没时间就是"待规划"（收集箱的定义），想排期再去任务详情页或日历拖。
+   */
+  addTaskToContainer: (containerId: string, title: string) => Promise<Task>;
+
   /** 子任务：读取 / 新增 / 勾选 / 删除。父任务完成态由子任务自动推导 */
   loadSubtasks: (parentId: string) => Promise<Task[]>;
   addSubtask: (parentId: string, title: string) => Promise<Task>;
@@ -305,6 +311,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   archiveIdea: async (id) => {
     await ideaRepository.archive(id);
     await get().refresh();
+  },
+
+  addTaskToContainer: async (containerId, title) => {
+    const task = createTask({
+      title,
+      kind: TaskKind.Execution,
+      containerId,
+      source: CaptureSource.Manual,
+    });
+    await taskRepository.create(task);
+    await get().refresh();
+    return task;
   },
 
   loadSubtasks: async (parentId) => taskRepository.listSubtasks(parentId),
