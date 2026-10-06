@@ -20,6 +20,17 @@
 
 ## 二、快速开始
 
+**换机器 / 重装后先跑一次环境脚本**，它把下面那些"只存在于开发者脑子里的前置条件"
+变成一条命令（npm 缓存与 Expo 状态目录放在**项目同级**，自动适配任何盘符）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+```
+
+它做四件事：建 `<项目同级>/.npm-cache` 与 `.expo-home`、检查 Node、缺 `.env` 就补上
+（`EXPO_NO_METRO_LAZY=1`）、然后 `npm ci`，最后打印**每个新 shell 都要设的那几个环境变量**。
+加 `-SkipInstall` 可以只做环境不装依赖。
+
 ```bash
 cd ai-schedule
 npm install
@@ -99,7 +110,7 @@ src/
 │   ├── _layout.tsx             #   根布局：主题 + 拉起本地库 + 路由注册
 │   ├── (tabs)/
 │   │   ├── _layout.tsx         #   底部五个 Tab
-│   │   ├── index.tsx           #   首页：快速记录 + 今日 + 专注/回顾/设置入口
+│   │   ├── index.tsx           #   首页：快速记录 + 专注启动（滑动选事件）+ 今天
 │   │   ├── inbox.tsx           #   收集箱（中档待规划，长按拖拽排序）
 │   │   ├── calendar.tsx        #   日历（月/周/日三视图，长按拖拽改期）
 │   │   ├── projects.tsx        #   项目/目标/文件夹（含甘特图视图）
@@ -124,7 +135,9 @@ src/
 │   ├── schedule-presets.ts     #   时间预设 + 自定义时间构造
 │   ├── repeat-next.ts          #   重复规则 → 下一次该排的时间
 │   ├── subtask-progress.ts     #   子任务进度与父任务完成态推导
-│   ├── focus-link.ts           #   专注 ↔ 任务：按完成判定分流
+│   ├── focus-link.ts           #   专注 ↔ 任务：按完成判定分流；专注时段 → 日历
+│   ├── focus-candidate.ts      #   ★「现在做哪件」的唯一出处 + 选择器的默认格
+│   ├── task-state.ts           #   ★ 一条任务现在算什么：done/overdue/missed/active/…
 │   ├── habit-period.ts         #   ★ 频率型的"本期"是哪段、做了几次、完成态该怎么推
 │   ├── habit-convert.ts        #   ★ 把已有任务转成打卡（换判定域，不是换显示）
 │   ├── container-stats.ts      #   容器进度（只算直属任务，不递归子容器）
@@ -157,7 +170,8 @@ src/
 │   └── settings-store.ts       #   高级开关、AI 能力开关、接口配置（持久化）
 │
 ├── components/                 # 通用组件（screen / card / task-row / calendar-* / gantt-chart /
-│                               #   focus-bars / checkin-heatmap / choice-sheet / date-time-picker …）
+│                               #   focus-picker（固定指针的横向选择器）/ focus-bars /
+│                               #   checkin-heatmap / choice-sheet / date-time-picker …）
 ├── constants/theme.ts          #   颜色、字体、间距（模板自带，沿用）
 ├── hooks/                      #   useTheme；use-cross-day-drag（跨天拖拽的唯一入口）
 └── utils/                      #   id 生成、日期时间格式化
@@ -173,12 +187,16 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 | **记** | `components/capture-input.tsx`（首页/想法库内联）、`app/capture.tsx`（模态，可带时间） |
 | **分** | `domain/routing.ts` → `decideRoute()`：灵感进想法库；有时间进日历；没有进收集箱 |
 | **落** | `entry/quick-capture.ts` → 写库 +（有时间才）排提醒 |
-| **行** | `app/focus.tsx`：进入即计时，退出即结束；`domain/scheduling.ts` 决定"先做谁"；`domain/focus-link.ts` 把专注时长回写到任务 |
-| **完** | `taskRepository.complete()`；时长/习惯型由 `isCompletionSatisfied()` 自动判定；子任务由 `domain/subtask-progress.ts` 推导父任务完成态 |
+| **行** | 入口是首页的**专注启动选择器**（`components/focus-picker.tsx` + `domain/focus-candidate.ts` 决定默认停在哪一格）；`app/focus.tsx` 进入即计时、退出即结束；`domain/focus-link.ts` 把时长回写到任务，并给"还没安排过时间"的任务补上这一段时段 |
+| **完** | `taskRepository.complete()`；时长/习惯型由 `isCompletionSatisfied()` 自动判定；子任务由 `domain/subtask-progress.ts` 推导父任务完成态；**完成后仍留在日历上**（灰色、不可拖，`domain/task-state.ts` 决定外观） |
 | **回** | `app/review.tsx` + `domain/review.ts`（口径只有一份，含确定性排序）；备份见 `data/backup/`；AI 复盘能力待接入 |
 
 ## 五、几条必须守住的约定
 
+0. **⭐ 用户操作要尽量简单。** 每加一个交互都要能回答三句：**默认值是不是已经对了**
+   （对的默认 = 用户零操作）？**这一步能不能并进上一步**？**这件事非得用户决定吗**
+   （能推导的就别问）？为"更灵活"而加开关、加二次确认，都是这条的敌人。
+   注意它**不**推翻第 9 条：简单不等于替用户下结论。
 1. **界面不直接碰数据库。** 一律走 `repositories`；跨页面的数据联动统一由 `app-store.refresh()` 完成。
 2. **软删除。** 删除只写 `deleted_at`，所有查询自动带 `deleted_at IS NULL`。删掉的东西要能同步出去。
 3. **同步预留字段。** 每张表都有 `updated_at / deleted_at / remote_id / sync_state`。现在完全当纯本地用，将来升级"本地优先 + 云同步"不用改表、不用迁移。
@@ -247,6 +265,65 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 不是比单一锚点——只比 `start_at` 会漏掉"上个月开始、下周截止"的任务）。
 页面自己 load，并以 store 的 **`dataVersion`**（每次 `refresh` 自增）作为失效信号。
 
+### 专注启动：固定指针的横向选择器（`components/focus-picker.tsx`）
+
+首页那张专注卡不是"一个提案 + 换一件按钮"，而是一个**指针固定、内容左右滑动**的选择器
+（借 iOS 时间轮的思路）：**选中由位置决定，不由颜色决定** —— 手指不用瞄准，
+停在哪一格哪一格就是答案。格子顺序固定：
+
+```
+[ 写一件新的事 ]  [ 你刚挑的那件? ]  [ 今天的 ≤5 件 ]  [ ＋ 从全部里挑 ]
+```
+
+- **候选只取 `today`，不掺收集箱**，最多 5 条。收集箱是"还没安排"的池子，
+  铺进滑动区就等于让用户在轮盘里做筛选——那是「＋」那一格的活（它弹 `ChoiceSheet`）。
+- **滑到「＋」上自动弹出清单**：用户滑到那儿的意思本来就是"这儿没有，给我看全部"，
+  再让他点一下是多余的。
+- **默认停在哪一格由 `domain/focus-candidate.defaultFocusIndex` 决定**：
+  ① 此刻正落在某件安排里 → ② 标了「进行中」的 → ③ 都不成立就落到「写一件新的事」。
+  刻意**不**做成"永远指向第一件待办"——默认项必须能解释自己，随便挑一件解释不了。
+- 归位时机：`onScrollEndDrag` 里不能直接归位（动量还没跑完，会停在半路），
+  至少要等到惯性结束；没有惯性时用一个短兜底计时器。这条主要是为了 Web
+  （react-native-web 的 `snapToInterval` 不总生效）。
+
+### 专注怎么变成日历上的一条
+
+专注是本项目里**唯一知道"这件事我实际花了多久"的地方**，日历记的是"什么时候"，
+两者合起来才是一条完整记录。规则在 `domain/focus-link.ts`：
+
+- `focusSpan(startedAt, actualSeconds, now)` 把一次专注翻译成起止时刻。**不到一分钟不落**
+  （手滑点开又退出不该留垃圾），**结束时间不超过"现在"**（会话可能被挂了一夜才收尾）。
+- **只给"还没安排过时间"的任务补时段**（`shouldStampFocusSpan`）：已经排进日历的任务
+  有它自己的时间，专注只提供"投入了多少"，不重新安排用户的日程。
+- 结束时**没绑定任务、但填了名字** → 新建一条任务并落到日历。这段时间**已经发生过**，
+  所以它是一条"做过什么"的日志、直接记成已完成；这与"不许替用户把已有的待办标完成"
+  并不冲突——我们**新建**了一条记录，没有改动用户已有的任何决定。
+  **名字是唯一凭据**：没名字的专注只留在回顾页的统计里，不往日历上塞空白条目。
+- 专注页那个「这段就算把它做完」开关，**任务没安排过时间时默认打开**
+  （文案也相应变成"这件事已经做完了"），已排进日历的保持默认关——临时坐下来做的
+  和早就规划好的，本来就不是一回事。
+
+### 完成、以及"已经过去"：日历上的两类淡出
+
+日历回答的是"这段时间发生过什么"，不是"还剩什么没做"，所以**已完成的照样画出来**
+（这也是 `listScheduledBetween` 刻意**不过滤** `status != done` 的原因——
+以前"取不到"就是从那一句开始的）。好坏由 `domain/task-state.ts` 一份口径决定，
+返回 `done / overdue / missed / active / upcoming / unscheduled` 之一。
+
+**两类"过了时间"必须分开**，混在一起必做错：
+
+| 类型 | 例子 | 过了时间算什么 | 界面 |
+|---|---|---|---|
+| 截止型 `deadline` | 作业、报告 | **`overdue` = 欠着** | 不淡出，还标出"已过期 N 天" |
+| 固定型 `fixed` | 开会、上课 | **`missed` = 那段已经过去了** | 淡出（opacity 0.72） |
+
+已完成的淡到 0.5 + 标题划线 + 左侧色条转灰，并且**不挂拖拽手势**
+（月视图连抓手都不渲染）——那天已经过去了，挪它没有意义，要改就进详情页。
+日视图里完成项也不再显示勾选圈：**改状态只发生在详情页这一处**。
+
+两条硬规则：**时间过了绝不自动完成**（状态只由用户的明确动作改变）；
+`utils/datetime.ts` 的 `isOverdue` 是死代码，过期口径一律走 `task-state.ts`。
+
 ## 七、备份与恢复
 
 - **导出**：`exportBackup()` → 写入 `document/backups/`，再唤起系统分享面板。用户可以存网盘或发给自己。
@@ -266,9 +343,13 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
   - 日视图：长按任务块上下拖改时刻（吸 15 分钟刻度）。
 - **项目 / 目标 / 文件夹**：容器是唯一实体，**甘特图只是视图**（`domain/gantt.ts` 纯布局）。
   任务条可长按拖拽改期（整天平移、保留时分）；容器条不给拖——它是框架，拖它就该连成员一起推，那是另一件事。
-- **行**：专注界面（正计时 / 倒计时 / 番茄钟），小东西随专注时长生长（只涨不落），
+- **行**：首页的**专注启动选择器**（固定指针 + 左右滑，默认格子由 `defaultFocusIndex` 决定）
+  → `app/focus.tsx` 计时（可暂停，离开即结束）。小东西随专注时长生长（只涨不落），
   时长按 `domain/focus-link.ts` 分流回任务；**勾选型任务只累计时长、不自动完成**（不替用户下结论）。
+  结束时有两条出路：绑了任务 → 累加进度并（若它还没安排过时间）把这段时段落进日历；
+  没绑任务但填了名字 → 直接生成一条已完成的记录进日历。
 - **完**：勾选完成；子任务自动推导父任务；习惯打卡独立计数。
+  **完成 ≠ 消失**：已完成的事仍留在日历上，只是灰掉、划掉、拖不动（`domain/task-state.ts`）。
 - **回**：`app/review.tsx`。区间切换（本周 / 本月 / 近 7 天 / 近 30 天）→ 小结 → 三个大数字 →
   专注趋势（自绘柱状图，不引图表库）→ 完成情况（按类型 / 按清单）→ 习惯热力图。
   立场：**只报做到了什么，不盘点没做到什么**。
@@ -298,6 +379,7 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 - 识别日程为启发式规则（覆盖今天/明天/周X/M月d日/时刻/相对时间/截止"前"），
   复杂表达（如"下下下周"、"农历"）不在覆盖范围，识别不出就进收集箱，不会瞎猜。
 - 能力层是契约与守卫，未发起真实网络请求。
-- 专注界面暂未绑定"从哪个任务进入"的选择器（`focus.tsx` 已支持 `taskId` 参数，缺入口）。
+- 日历里"已经过去但没做"的固定型事（上周的会）目前只有**淡出**，还没有人工出口
+  （改期 / 改成待办 / 就这样吧），会一直留在那儿。
 - 备份恢复默认整库覆盖，"合并导入"（`importBackup(envelope, 'merge')`）已实现但缺 UI 入口。
 - 优先级**不出现在界面上**（`Priority` 字段保留给将来的自动填充）。
