@@ -5,6 +5,9 @@
  * 1. 先做纯本地 —— 所有实体都能离线创建，主键由客户端生成，不需要服务端发号。
  * 2. 预留同步能力 —— 每张表都带 updated_at / deleted_at / remote_id / sync_state，
  *    将来接云端时直接增量推送"updated_at 比上次同步更晚的行"，不用改表。
+ *
+ * 启动顺序写在 bootstrap.ts：PRAGMA → 建表 → 迁移 → 建索引。
+ * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
 export const SCHEMA_VERSION = 3;
@@ -33,9 +36,22 @@ const COMMON_COLUMNS = `
   sync_state  TEXT NOT NULL DEFAULT 'local'
 `;
 
-export const DDL = `
-PRAGMA journal_mode = WAL;
+/**
+ * 每次开库都先跑的 PRAGMA。
+ * journal_mode 会返回一行结果，用 execAsync / exec 执行即可（返回值被忽略）。
+ */
+export const PRAGMAS: readonly string[] = [
+  `PRAGMA journal_mode = WAL;`,
+  // 外键约束默认关闭，显式打开，容器层级靠它兜底
+  `PRAGMA foreign_keys = ON;`,
+];
 
+/**
+ * 表结构（CREATE TABLE IF NOT EXISTS）。
+ *
+ * **不要往这里加"引用新增列"的索引** —— 见下面 INDEXES 的说明。
+ */
+export const TABLES_DDL = `
 CREATE TABLE IF NOT EXISTS ${TABLES.meta} (
   key   TEXT PRIMARY KEY NOT NULL,
   value TEXT
@@ -131,17 +147,30 @@ CREATE TABLE IF NOT EXISTS ${TABLES.checkins} (
   ${COMMON_COLUMNS}
 );
 
--- 索引：查询路径都是"按状态筛 / 按时间筛 / 按容器筛"，且都要排除软删除
-CREATE INDEX IF NOT EXISTS idx_tasks_status      ON ${TABLES.tasks}(status, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_due         ON ${TABLES.tasks}(due_at, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_start       ON ${TABLES.tasks}(start_at, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_container   ON ${TABLES.tasks}(container_id, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent      ON ${TABLES.tasks}(parent_task_id, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_ideas_archived    ON ${TABLES.ideas}(archived_at, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_focus_task        ON ${TABLES.focusSessions}(task_id, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_focus_started     ON ${TABLES.focusSessions}(started_at, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_checkins_task     ON ${TABLES.checkins}(task_id, day_key, deleted_at);
 `;
+
+/**
+ * 索引：查询路径都是"按状态筛 / 按时间筛 / 按容器筛"，且都要排除软删除。
+ *
+ * **必须在迁移之后执行**（见 client.ts 的启动顺序），原因是踩过的坑：
+ * `CREATE TABLE IF NOT EXISTS` 对老库是空操作，老库的 tasks 表里没有新列；
+ * 如果索引跟建表语句写在同一段里、在 `ALTER TABLE ADD COLUMN` 之前执行，
+ * 就会以 `no such column: parent_task_id` 整个失败，连库都打不开。
+ *
+ * 规则：**凡是引用"某个迁移版本才加出来的列"的索引，一律放这里**；
+ * 只引用建表时就有的列的索引，放哪里都行，但为了统一也放这里。
+ */
+export const INDEXES: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_tasks_status      ON ${TABLES.tasks}(status, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_due         ON ${TABLES.tasks}(due_at, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_start       ON ${TABLES.tasks}(start_at, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_container   ON ${TABLES.tasks}(container_id, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_parent      ON ${TABLES.tasks}(parent_task_id, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_ideas_archived    ON ${TABLES.ideas}(archived_at, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_focus_task        ON ${TABLES.focusSessions}(task_id, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_focus_started     ON ${TABLES.focusSessions}(started_at, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_checkins_task     ON ${TABLES.checkins}(task_id, day_key, deleted_at)`,
+];
 
 /**
  * 增量迁移：key = 目标版本号，value = 该版本要执行的语句序列。
@@ -153,7 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_checkins_task     ON ${TABLES.checkins}(task_id, 
 export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
   2: [`ALTER TABLE ${TABLES.tasks} ADD COLUMN reminder_minutes_before INTEGER`],
   /**
-   * v3 = 子任务 + 手动排序（打卡表由 DDL 的 CREATE TABLE IF NOT EXISTS 兜底，
+   * v3 = 子任务 + 手动排序（打卡表与索引由 DDL / INDEXES 兜底，
    * 不需要在这里重复写）。
    *
    * sort_order **不做事后回填**：老数据留 NULL，查询用
@@ -164,6 +193,5 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
   3: [
     `ALTER TABLE ${TABLES.tasks} ADD COLUMN parent_task_id TEXT`,
     `ALTER TABLE ${TABLES.tasks} ADD COLUMN sort_order REAL`,
-    `CREATE INDEX IF NOT EXISTS idx_tasks_parent ON ${TABLES.tasks}(parent_task_id, deleted_at)`,
   ],
 };

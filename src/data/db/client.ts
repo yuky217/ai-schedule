@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
-import { DDL, MIGRATIONS, SCHEMA_VERSION, TABLES } from './schema';
+import { bootstrapDatabase } from './bootstrap';
+import { TABLES } from './schema';
 
 /**
  * 数据库连接与迁移。
@@ -15,50 +16,26 @@ let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!databasePromise) {
-    databasePromise = openAndMigrate();
+    databasePromise = openAndMigrate().catch((err) => {
+      /**
+       * 关键：**失败的 promise 绝不能留在缓存里**。
+       *
+       * 留着的后果是这一次失败会绑死整个会话 —— 之后每一次 getDatabase() 都拿到
+       * 同一个旧错误，用户看到的是"重启也没用、每个页面都崩"，而真正的原因
+       * 早就飘过去了。清掉缓存后，下一次调用会重试，也让错误可恢复。
+       */
+      databasePromise = null;
+      console.error('[db] 开库/迁移失败（不缓存失败状态，下次调用会重试）:', err);
+      throw err;
+    });
   }
   return databasePromise;
 }
 
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
-  // 外键约束默认关闭，显式打开，将来接容器层级时能靠它兜底
-  await db.execAsync('PRAGMA foreign_keys = ON;');
-  await db.execAsync(DDL);
-  await runMigrations(db);
+  await bootstrapDatabase(db);
   return db;
-}
-
-/**
- * 增量迁移：从 meta 表里读当前版本，把缺的版本逐个补上。
- *
- * 注意这里不能用 getSchemaVersion()（它会递归调 getDatabase），
- * 直接查一次 meta 表。版本号只在全部成功后才写入。
- */
-async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
-  const row = await db.getFirstAsync<{ value: string }>(
-    `SELECT value FROM ${TABLES.meta} WHERE key = ?`,
-    ['schema_version'],
-  );
-  const current = row ? Number(row.value) : 0;
-  if (current >= SCHEMA_VERSION) return;
-
-  for (let version = current + 1; version <= SCHEMA_VERSION; version++) {
-    for (const statement of MIGRATIONS[version] ?? []) {
-      try {
-        await db.execAsync(statement);
-      } catch (err) {
-        // 老库可能已被 DDL 的 CREATE TABLE 兜底建出同名列，重复加列不算失败
-        if (!/duplicate column/i.test(String(err))) throw err;
-      }
-    }
-  }
-
-  await db.runAsync(
-    `INSERT INTO ${TABLES.meta} (key, value) VALUES (?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    ['schema_version', String(SCHEMA_VERSION)],
-  );
 }
 
 /** 事务包装：写操作尽量走这里，保证要么全成、要么全不成 */
