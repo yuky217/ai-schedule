@@ -32,12 +32,21 @@ export interface TaskTime {
   dueAt?: string | null;
 }
 
-/** 进度：支撑"够时长 / 够频率自动完成" */
+/**
+ * 进度：支撑"够时长 / 够频率自动完成"。
+ *
+ * **这里只剩一个字段，是故意的。**
+ * 频率型的"本期完成几次"曾经也存这里（叫 `occurrencesThisPeriod`），但它必须有人负责
+ * 在周期翻页时归零，而全项目没有任何地方做这件事 —— 于是"每周 3 次"一旦达标就
+ * **永远停在已完成**，下一周做完也不会回来。
+ *
+ * 现在那个数字**不再存**：它由 `domain/habit-period.occurrencesInPeriod` 从打卡记录
+ * 现算出来（打卡记录里有日期，"本期做了几次"就是数一数有几条落在本期）。
+ * 原则是 **存事实、不存会漂移的计数** —— 不需要定时任务，撤销打卡后立刻正确。
+ */
 export interface TaskProgress {
-  /** 累计投入分钟数（时长型） */
+  /** 累计投入分钟数（时长型）。只涨不落 —— 中途放弃也算投入 */
   accumulatedMinutes: number;
-  /** 本周期内已完成次数（频率型） */
-  occurrencesThisPeriod: number;
 }
 
 export interface Task extends BaseEntity {

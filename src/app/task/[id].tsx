@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
@@ -17,7 +17,14 @@ import {
   type TaskKind as TaskKindValue,
   type TaskStatus as TaskStatusValue,
 } from '@/domain/enums';
+import { hasCheckedInOn } from '@/domain/checkins';
 import { describeProgress } from '@/domain/focus-link';
+import {
+  buildHabitConversion,
+  canConvertToHabit,
+  type HabitCadence,
+} from '@/domain/habit-convert';
+import { describePeriodProgress, occurrencesInPeriod } from '@/domain/habit-period';
 import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
 import { subtaskProgress } from '@/domain/subtask-progress';
@@ -51,6 +58,19 @@ const STATUS_OPTIONS: TaskStatusValue[] = [
  */
 const KIND_OPTIONS: TaskKindValue[] = [TaskKind.Schedule, TaskKind.Execution, TaskKind.Habit];
 
+/**
+ * "转成打卡"的预设。
+ *
+ * 不做一个"频率 + 次数"的二级表单：这一步的核心是**换判定域**，
+ * 频率是唯一需要选的东西，而常见值就那么几个。选完还能在「目标」卡里改次数。
+ */
+const CONVERT_PRESETS: ReadonlyArray<{ label: string; cadence: HabitCadence; target: number }> = [
+  { label: '每天 1 次', cadence: 'daily', target: 1 },
+  { label: '每周 3 次', cadence: 'weekly', target: 3 },
+  { label: '每周 5 次', cadence: 'weekly', target: 5 },
+  { label: '每月 10 次', cadence: 'monthly', target: 10 },
+];
+
 export default function TaskDetailScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
   const router = useRouter();
@@ -67,12 +87,33 @@ export default function TaskDetailScreen() {
   const containers = useAppStore((state) => state.containers);
   const lastFocus = useAppStore((state) => state.lastFocus);
   const clearFocusFeedback = useAppStore((state) => state.clearFocusFeedback);
+  const checkins = useAppStore((state) => state.checkins);
+  const checkInAction = useAppStore((state) => state.checkIn);
+  const undoCheckInAction = useAppStore((state) => state.undoCheckIn);
   const loadSubtasksAction = useAppStore((state) => state.loadSubtasks);
   const addSubtaskAction = useAppStore((state) => state.addSubtask);
   const toggleSubtaskAction = useAppStore((state) => state.setSubtaskDone);
   const deleteSubtaskAction = useAppStore((state) => state.removeSubtask);
 
   const [task, setTask] = useState<Task | null>(null);
+  /** 转换成打卡之后给一句确认（卡片会随之消失，需要留个回声） */
+  const [convertedNote, setConvertedNote] = useState<string | null>(null);
+
+  /**
+   * 频率型的"本期做了几次"**从打卡记录现算**，不读任何计数器 ——
+   * 计数器会被周期翻页甩下（这正是修掉的那个 bug），见 domain/habit-period。
+   *
+   * 必须放在页面顶部的无条件区（而不是 early return 之后）：
+   * 它用了 useMemo，放后面就变成"有时调、有时不调"，React 会直接报错。
+   */
+  const checkinKeys = useMemo(
+    () => (task ? checkins.filter((row) => row.taskId === task.id).map((row) => row.dayKey) : []),
+    [checkins, task],
+  );
+  const doneToday = hasCheckedInOn(checkinKeys, new Date());
+  const isFrequency = task?.completion === CompletionRule.Frequency;
+  const periodCount =
+    task && isFrequency ? occurrencesInPeriod(checkinKeys, task.repeat) : 0;
   const [subtasks, setSubtasks] = useState<Task[]>([]);
   const [newSubtask, setNewSubtask] = useState('');
   const [loading, setLoading] = useState(true);
@@ -213,6 +254,44 @@ export default function TaskDetailScreen() {
     await patch(patchGoals);
   }, [task, patch]);
 
+  /**
+   * 打卡 / 撤销今天。
+   * 打完卡状态可能翻转（本期达标 → 完成，或撤销后打回待办），
+   * 所以要把任务重新读一遍，不能只信本地状态。
+   */
+  const toggleTodayCheckin = useCallback(async () => {
+    if (!task) return;
+    if (doneToday) await undoCheckInAction(task.id);
+    else await checkInAction(task.id);
+    const fresh = await loadTask(task.id);
+    if (fresh) setTask(fresh);
+  }, [task, doneToday, checkInAction, undoCheckInAction, loadTask]);
+
+  /**
+   * 转成打卡习惯。
+   *
+   * 顺序有讲究：**先改造任务，再补打卡**。
+   * 如果任务原本已经完成过，补的那条打卡就是"今天做过一次" ——
+   * 否则用户已经做过的事会因为一次转换凭空消失（见 habit-convert 的 seedCheckin）。
+   */
+  const convertToHabit = useCallback(
+    async (preset: { label: string; cadence: HabitCadence; target: number }) => {
+      if (!task) return;
+      const plan = buildHabitConversion(task, {
+        cadence: preset.cadence,
+        targetOccurrences: preset.target,
+        countExistingCompletion: true,
+      });
+      setTask((current) => (current ? { ...current, ...plan.patch } : current));
+      await updateTask(task.id, plan.patch);
+      if (plan.seedCheckin) await checkInAction(task.id);
+      const fresh = await loadTask(task.id);
+      if (fresh) setTask(fresh);
+      setConvertedNote(`${plan.message}，以后打卡就行。`);
+    },
+    [task, updateTask, checkInAction, loadTask],
+  );
+
   const handleComplete = async () => {
     if (!task) return;
     const isRepeating = Boolean(task.repeat) && Boolean(task.time.startAt ?? task.time.dueAt);
@@ -309,7 +388,11 @@ export default function TaskDetailScreen() {
   return (
     <Screen
       title="任务"
-      subtitle={`${KIND_LABEL[task.kind]}${task.progress.occurrencesThisPeriod ? ` · 已完成 ${task.progress.occurrencesThisPeriod} 次` : ''}`}
+      subtitle={`${KIND_LABEL[task.kind]}${
+        isFrequency
+          ? ` · ${describePeriodProgress(task.repeat, task.targetOccurrences, periodCount)}`
+          : ''
+      }`}
       right={
         <Pressable hitSlop={8} onPress={() => router.back()}>
           <Ionicons name="close" size={24} color={theme.textSecondary} />
@@ -323,6 +406,20 @@ export default function TaskDetailScreen() {
               <Ionicons name="timer-outline" size={16} color={theme.text} />
               <ThemedText type="small" style={styles.focusFeedbackText}>
                 {lastFocus.message}
+              </ThemedText>
+            </View>
+          </Card>
+        </Pressable>
+      ) : null}
+
+      {/* 刚转成打卡习惯：那张卡已经消失了，留一句回声告诉用户刚才发生了什么 */}
+      {convertedNote ? (
+        <Pressable accessibilityRole="button" onPress={() => setConvertedNote(null)}>
+          <Card style={{ borderWidth: StyleSheet.hairlineWidth, borderColor: theme.backgroundSelected }}>
+            <View style={styles.focusFeedback}>
+              <Ionicons name="repeat-outline" size={16} color={theme.text} />
+              <ThemedText type="small" style={styles.focusFeedbackText}>
+                {convertedNote}
               </ThemedText>
             </View>
           </Card>
@@ -667,6 +764,58 @@ export default function TaskDetailScreen() {
 
           <ThemedText type="small" themeColor="textSecondary" style={styles.goalHint}>
             次数优先：填了次数就按次数达标（如"每周 3 次"）；只填时长就按时长达标。
+            没有重复规则时"本期"按一天算。
+          </ThemedText>
+
+          {isFrequency ? (
+            <View style={styles.periodRow}>
+              <ThemedText type="small">
+                {describePeriodProgress(task.repeat, task.targetOccurrences, periodCount)}
+              </ThemedText>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void toggleTodayCheckin()}
+                style={({ pressed }) => [
+                  styles.miniButton,
+                  {
+                    borderColor: theme.backgroundSelected,
+                    opacity: pressed ? 0.6 : 1,
+                  },
+                ]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {doneToday ? '撤销今天' : '今天打卡'}
+                </ThemedText>
+              </Pressable>
+            </View>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {/*
+        转成打卡：任务做完就结束，习惯每天重置 —— 差别在**判定域**，
+        不是显示方式。所以这一步会同时换掉类型、重复规则、达标方式。
+      */}
+      {canConvertToHabit(task) ? (
+        <Card
+          title="转成打卡习惯"
+          hint="不用每次勾完成，打一次卡算一次；有次数目标时够数自动达成">
+          <View style={styles.chips}>
+            {CONVERT_PRESETS.map((preset) => (
+              <Chip
+                key={preset.label}
+                label={preset.label}
+                active={false}
+                theme={theme}
+                onPress={() => void convertToHabit(preset)}
+              />
+            ))}
+          </View>
+
+          <ThemedText type="small" themeColor="textSecondary" style={styles.goalHint}>
+            重复规则与达标方式会换成打卡的频率；时间、备注、归属都保留。
+            {task.targetMinutes
+              ? `原来的「够 ${task.targetMinutes} 分钟」目标将不再生效。`
+              : ''}
           </ThemedText>
         </Card>
       ) : null}
@@ -720,18 +869,31 @@ export default function TaskDetailScreen() {
         </Pressable>
       </Card>
 
-      {/* 主操作 */}
+      {/* 主操作。
+          频率型在这里换成打卡：它的"完成"由本期次数推导，勾一次"完成"会被
+          对账立刻纠正回来（见 habit-period.desiredFrequencyStatus），
+          所以那个按钮对它没有意义 —— 与其留个按了没反应的按钮，不如给对的动作用。 */}
       <View style={styles.actions}>
         <Pressable
           accessibilityRole="button"
-          onPress={() => void handleComplete()}
+          onPress={() => void (isFrequency ? toggleTodayCheckin() : handleComplete())}
           style={({ pressed }) => [
             styles.primaryAction,
             { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
           ]}>
-          <Ionicons name="checkmark" size={18} color={theme.background} />
+          <Ionicons
+            name={isFrequency ? (doneToday ? 'arrow-undo' : 'add') : 'checkmark'}
+            size={18}
+            color={theme.background}
+          />
           <ThemedText type="smallBold" style={{ color: theme.background }}>
-            {task.repeat ? '完成这一次' : '完成'}
+            {isFrequency
+              ? doneToday
+                ? '撤销今天的打卡'
+                : '今天打卡'
+              : task.repeat
+                ? '完成这一次'
+                : '完成'}
           </ThemedText>
         </Pressable>
 
@@ -888,6 +1050,20 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   goalHint: { fontSize: 11, lineHeight: 16, opacity: 0.8 },
+  /** 本期进度 + 打卡按钮：进度在左、动作在右，跟列表行的习惯一致 */
+  periodRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  miniButton: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+    borderRadius: Spacing.two,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   focusFeedback: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   focusFeedbackText: { flex: 1, lineHeight: 18 },
   focusEntry: {

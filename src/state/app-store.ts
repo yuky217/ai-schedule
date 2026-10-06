@@ -9,17 +9,22 @@ import { markRepository } from '@/data/repositories/mark-repository';
 import { taskRepository } from '@/data/repositories/task-repository';
 import { quickCapture, type QuickCaptureInput, type QuickCaptureResult } from '@/entry/quick-capture';
 import { cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications';
-import { applyCheckinToTask, revertCheckinFromTask, type Checkin } from '@/domain/checkins';
+import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
 import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
 import { createContainer, createFocusSession, createMark, createSubtask } from '@/domain/factory';
 import { applyFocusToTask } from '@/domain/focus-link';
 import type { FocusSession } from '@/domain/focus';
 import { shiftIsoByDays } from '@/domain/gantt';
+import {
+  describePeriodReached,
+  desiredFrequencyStatus,
+  occurrencesInPeriod,
+} from '@/domain/habit-period';
 import type { Idea } from '@/domain/idea';
 import { advanceRepeatingTask } from '@/domain/repeat-next';
 import { desiredParentStatus } from '@/domain/subtask-progress';
-import { TaskStatus } from '@/domain/enums';
+import { CompletionRule, TaskStatus } from '@/domain/enums';
 import type { Task, TaskTime } from '@/domain/task';
 
 /**
@@ -105,6 +110,13 @@ interface AppState {
    */
   syncParentStatus: (parentId: string) => Promise<void>;
 
+  /**
+   * 内部动作：频率型任务的完成态对账（每次 refresh 之前跑）。
+   * 规则见 domain/habit-period.desiredFrequencyStatus —— 本期够数则完成，
+   * 不够数却停在完成态则打回待办（这就是"新的一周它自己回来了"）。
+   */
+  reconcileFrequencyTasks: () => Promise<void>;
+
   /** 习惯打卡 / 撤销 */
   checkIn: (taskId: string) => Promise<void>;
   undoCheckIn: (taskId: string) => Promise<void>;
@@ -172,6 +184,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refresh: async () => {
+    // 频率型任务的完成态是**从打卡记录推导出来的**，所以每次读数据之前先对账一次。
+    // 这里是唯一同时握着任务表和打卡表的地方 —— 放页面里做会漏，放仓储里做会
+    // 让"读"变成有副作用的操作。
+    await get().reconcileFrequencyTasks();
+
     const [
       inbox,
       today,
@@ -243,6 +260,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   completeTask: async (id) => {
     const task = await taskRepository.getById(id);
     if (!task) return;
+
+    // 频率型（"每周跑 3 次"）的"完成"不是一次性状态，而是"今天做了一次"——
+    // 判定域在打卡表。勾这一下就该记到那里；否则它会被对账（reconcileFrequencyTasks）
+    // 立刻打回待办，等于按钮按了没反应。列表行里的圆圈同样走这条路。
+    if (task.completion === CompletionRule.Frequency) {
+      await checkinRepository.checkIn(id);
+      await get().refresh();
+      return;
+    }
 
     // 重复任务：完成一次 = 滚到下一期（时间前移、状态回待办），不标记完成
     const advance = advanceRepeatingTask(task);
@@ -335,24 +361,52 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (updated && desired !== TaskStatus.Done) await scheduleTaskReminder(updated);
   },
 
+  /**
+   * 频率型任务对账。
+   *
+   * "每周跑 3 次"这类任务的本期次数由打卡记录**现算**，够不够数也就能算出来，
+   * 所以它的完成态不该由某个动作去"推送"，而应该每次读之前**收敛到正确值**。
+   * 这一个动作同时解决两件事：新的一周它自己回到待办、撤销打卡后也回到待办。
+   * 两件事用的是同一个纯函数，没有第二套规则。
+   */
+  reconcileFrequencyTasks: async () => {
+    const [tasks, checkins] = await Promise.all([
+      taskRepository.listAll(),
+      checkinRepository.listAll(),
+    ]);
+    const frequency = tasks.filter((task) => task.completion === CompletionRule.Frequency);
+    if (!frequency.length) return;
+
+    const keysByTask = new Map<string, string[]>();
+    for (const record of checkins) {
+      const bucket = keysByTask.get(record.taskId);
+      if (bucket) bucket.push(record.dayKey);
+      else keysByTask.set(record.taskId, [record.dayKey]);
+    }
+
+    const now = new Date();
+    for (const task of frequency) {
+      const keys = keysByTask.get(task.id) ?? [];
+      const desired = desiredFrequencyStatus(task, occurrencesInPeriod(keys, task.repeat, now));
+      // null = 不干预（待办就是待办，"等待中"是用户手动设的，别踩掉）
+      if (!desired || desired === task.status) continue;
+
+      // 状态翻转时提醒要跟着走：完成 = 撤掉，打回待办 = 排回去
+      await cancelTaskReminders(task.id);
+      const updated = await taskRepository.setStatus(task.id, desired);
+      if (updated && desired !== TaskStatus.Done) await scheduleTaskReminder(updated);
+    }
+  },
+
   checkIn: async (taskId) => {
     // 幂等：今天已经打过就直接返回，不会产生第二条
     await checkinRepository.checkIn(taskId);
-    const task = await taskRepository.getById(taskId);
-    if (task) {
-      const outcome = applyCheckinToTask(task);
-      await taskRepository.update(taskId, outcome.patch);
-    }
+    // 任务状态刻意不在这里改：频率型达标与否由 refresh 前的对账统一收敛
     await get().refresh();
   },
 
   undoCheckIn: async (taskId) => {
     await checkinRepository.undo(taskId);
-    const task = await taskRepository.getById(taskId);
-    if (task) {
-      const outcome = revertCheckinFromTask(task);
-      await taskRepository.update(taskId, outcome.patch);
-    }
     await get().refresh();
   },
 
@@ -413,6 +467,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         const outcome = applyFocusToTask(task, session.actualSeconds);
         if (outcome) {
           await taskRepository.update(task.id, outcome.patch);
+
+          let message = outcome.message;
+
+          // 频率型：这次专注算"今天做过一次"，落一条打卡记录。
+          // 本期进度只认打卡表，所以这里写完再数一遍，反馈里说的是事实而不是推算。
+          if (outcome.countsAsOccurrence) {
+            await checkinRepository.checkIn(task.id);
+            const keys = (await checkinRepository.listByTask(task.id)).map((row) => row.dayKey);
+            const count = occurrencesInPeriod(keys, task.repeat, new Date());
+            message = `${message} · ${describePeriodReached(
+              task.repeat,
+              task.targetOccurrences,
+              count,
+            )}`;
+          }
+
           if (outcome.completed) {
             // 达标完成 = 这条任务不再需要提醒
             await cancelTaskReminders(task.id);
@@ -421,7 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const fresh = await taskRepository.getById(task.id);
             if (fresh) await scheduleTaskReminder(fresh);
           }
-          feedback = { taskId: task.id, message: outcome.message };
+          feedback = { taskId: task.id, message };
         }
       }
     }

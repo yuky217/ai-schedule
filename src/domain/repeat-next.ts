@@ -95,6 +95,11 @@ export function describeReminder(minutes: number | null | undefined): string {
  * 不动 title / repeat / reminderMinutesBefore —— 这些是任务的"身份"，
  * 只有时间与状态翻新。返回 null 表示不滚动（没有 repeat / 没有锚点时间），
  * 调用方按普通完成处理。
+ *
+ * **也不动 progress**：滚动的是时间，不是计数。此前它顺手把
+ * `progress.occurrencesThisPeriod` +1，与打卡、专注两处的 +1 撞成三种意思，
+ * 还因为从不归零导致频率型任务永远停在已完成。计数现在由打卡记录派生
+ * （见 domain/habit-period.occurrencesInPeriod），这条补丁只管时间。
  */
 export function advanceRepeatingTask(task: Task): Partial<Task> | null {
   if (!task.repeat) return null;
@@ -110,15 +115,7 @@ export function advanceRepeatingTask(task: Task): Partial<Task> | null {
       ? { attribute: 'deadline', startAt: null, endAt: null, dueAt: iso }
       : { attribute: 'fixed', startAt: iso, endAt: null, dueAt: null };
 
-  return {
-    time,
-    status: TaskStatus.Todo,
-    completedAt: null,
-    progress: {
-      ...task.progress,
-      occurrencesThisPeriod: task.progress.occurrencesThisPeriod + 1,
-    },
-  };
+  return { time, status: TaskStatus.Todo, completedAt: null };
 }
 
 /** 安排面板里的重复预设：保持"一次点按"的极简交互 */

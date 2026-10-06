@@ -49,7 +49,7 @@ function makeTask(over: Partial<Task> = {}): Task {
     tags: [],
     priority: 2,
     source: 'manual',
-    progress: { accumulatedMinutes: 0, occurrencesThisPeriod: 0 },
+    progress: { accumulatedMinutes: 0 },
     createdAt: created,
     updatedAt: created,
     syncState: 'local',

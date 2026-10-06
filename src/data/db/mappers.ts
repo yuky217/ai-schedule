@@ -27,6 +27,21 @@ const parseJson = <T>(raw: string | null | undefined, fallback: T): T => {
   }
 };
 
+/**
+ * 进度字段的归一化。
+ *
+ * 只认识 `accumulatedMinutes`，其余一律丢掉 —— 包括历史上存过的
+ * `occurrencesThisPeriod`（"本期次数"，语义有歧义、已废弃，改由打卡记录派生）。
+ * 不做这一步的话，老行里的废弃字段会跟着对象一路传下去，
+ * 任何一处 `progress.xxx` 都会继续读到它，等于没删。
+ */
+function normalizeProgress(raw: Partial<TaskProgress> | null | undefined): TaskProgress {
+  const minutes = raw?.accumulatedMinutes;
+  return {
+    accumulatedMinutes: typeof minutes === 'number' && Number.isFinite(minutes) ? minutes : 0,
+  };
+}
+
 function readBase(row: BaseRow): BaseEntity {
   return {
     id: row.id,
@@ -113,10 +128,9 @@ export function taskFromRow(row: TaskRow): Task {
     reminderMinutesBefore: row.reminder_minutes_before,
     parentId: row.parent_task_id ?? null,
     sortOrder: row.sort_order ?? null,
-    progress: parseJson<TaskProgress>(row.progress_json, {
-      accumulatedMinutes: 0,
-      occurrencesThisPeriod: 0,
-    }),
+    // 老数据里可能还留着 occurrencesThisPeriod（v3 之前存过"本期次数"，已废弃）。
+    // 显式挑出认识的字段，而不是整块信 JSON —— 废弃字段会在任何用到它的地方悄悄生效。
+    progress: normalizeProgress(parseJson<Partial<TaskProgress>>(row.progress_json, {})),
   };
 }
 

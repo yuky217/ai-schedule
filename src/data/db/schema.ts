@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS ${TABLES.tasks} (
   reminder_minutes_before INTEGER,
   parent_task_id    TEXT,
   sort_order        REAL,
-  progress_json     TEXT NOT NULL DEFAULT '{"accumulatedMinutes":0,"occurrencesThisPeriod":0}',
+  progress_json     TEXT NOT NULL DEFAULT '{"accumulatedMinutes":0}',
   ${COMMON_COLUMNS}
 );
 

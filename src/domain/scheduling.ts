@@ -52,16 +52,21 @@ export function pickNextToSchedule(tasks: Task[], now: Date = new Date()): Task 
 /**
  * 够时长 / 够频率自动完成（主文档 5.1）。
  * 手动勾选的任务永远返回 false —— 必须由人来点。
+ *
+ * 频率型的次数**必须由调用方传进来**（`countInPeriod`），它来自打卡记录：
+ * `habit-period.occurrencesInPeriod(dayKeys, task.repeat)`。
+ * 以前这里读的是存在 progress 里的计数器，那个字段已经废弃，别再加回去。
  */
 export function isCompletionSatisfied(
-  task: Pick<Task, 'completion' | 'targetMinutes' | 'targetOccurrences' | 'progress'>,
-  progress: TaskProgress = task.progress,
+  task: Pick<Task, 'completion' | 'targetMinutes' | 'targetOccurrences'>,
+  progress: TaskProgress = { accumulatedMinutes: 0 },
+  countInPeriod = 0,
 ): boolean {
   if (task.completion === CompletionRule.Duration) {
     return task.targetMinutes != null && progress.accumulatedMinutes >= task.targetMinutes;
   }
   if (task.completion === CompletionRule.Frequency) {
-    return task.targetOccurrences != null && progress.occurrencesThisPeriod >= task.targetOccurrences;
+    return task.targetOccurrences != null && countInPeriod >= task.targetOccurrences;
   }
   return false;
 }
@@ -72,10 +77,11 @@ export function durationProgress(task: Pick<Task, 'targetMinutes' | 'progress'>)
   return Math.min(1, task.progress.accumulatedMinutes / task.targetMinutes);
 }
 
-/** 频率型完成度 0~1 */
+/** 频率型完成度 0~1。次数同样由打卡记录派生后传进来 */
 export function frequencyProgress(
-  task: Pick<Task, 'targetOccurrences' | 'progress'>,
+  task: Pick<Task, 'targetOccurrences'>,
+  countInPeriod = 0,
 ): number {
   if (!task.targetOccurrences || task.targetOccurrences <= 0) return 0;
-  return Math.min(1, task.progress.occurrencesThisPeriod / task.targetOccurrences);
+  return Math.min(1, countInPeriod / task.targetOccurrences);
 }

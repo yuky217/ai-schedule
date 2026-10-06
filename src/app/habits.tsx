@@ -16,6 +16,8 @@ import {
   summarizeCheckins,
 } from '@/domain/checkins';
 import { describeProgress } from '@/domain/focus-link';
+import { occurrencesInPeriod } from '@/domain/habit-period';
+import { CompletionRule } from '@/domain/enums';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -30,8 +32,9 @@ import { useAppStore } from '@/state/app-store';
  * - 任务状态回答"这件事还做不做"；
  * - 打卡记录回答"今天做没做"。
  * 所以打卡**不会**把习惯标成完成、不会让它从列表消失 —— 明天它还得出现。
- * 唯一例外是有明确次数目标的频率型习惯（"每周跑 3 次"），打卡就是那个计数，
- * 够数就把本期目标标成达成。
+ * 唯一例外是有明确次数目标的频率型习惯（"每周跑 3 次"）：那种情况下
+ * "本期做了几次"是从打卡记录**现算**的（`domain/habit-period`），
+ * 够数由 state 层在 refresh 前统一对账，新的一周会自动回到待办。
  */
 const HEATMAP_DAYS = 70;
 const HEATMAP_WEEKS = 10;
@@ -68,6 +71,11 @@ export default function HabitsScreen() {
           keys,
           streak: summarizeCheckins(keys, today),
           doneToday: hasCheckedInOn(keys, today),
+          // 频率型的"本期几次"从打卡记录现算，不读任何计数器（见 domain/habit-period）
+          periodCount:
+            habit.completion === CompletionRule.Frequency
+              ? occurrencesInPeriod(keys, habit.repeat, today)
+              : 0,
         };
       }),
     // today 每次渲染都是新对象，用日期字符串代替依赖
@@ -106,7 +114,7 @@ export default function HabitsScreen() {
         />
       ) : null}
 
-      {stats.map(({ habit, keys, streak, doneToday }) => (
+      {stats.map(({ habit, keys, streak, doneToday, periodCount }) => (
         <Card key={habit.id}>
           <View style={styles.head}>
             <Pressable
@@ -150,9 +158,9 @@ export default function HabitsScreen() {
             </Pressable>
           </View>
 
-          {describeProgress(habit) ? (
+          {describeProgress(habit, periodCount) ? (
             <ThemedText type="small" themeColor="textSecondary">
-              {describeProgress(habit)}
+              {describeProgress(habit, periodCount)}
             </ThemedText>
           ) : null}
 

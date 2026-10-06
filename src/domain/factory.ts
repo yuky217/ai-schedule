@@ -84,7 +84,7 @@ export function createTask(input: CreateTaskInput): Task {
     reminderMinutesBefore: input.reminderMinutesBefore ?? null,
     parentId: input.parentId ?? null,
     sortOrder: input.sortOrder ?? null,
-    progress: { accumulatedMinutes: 0, occurrencesThisPeriod: 0 },
+    progress: { accumulatedMinutes: 0 },
   };
 }
 

@@ -1,9 +1,8 @@
 import { addDays, differenceInCalendarDays, startOfDay } from 'date-fns';
 
-import { parseDayKey, nowIso, toDayKey } from '@/utils/datetime';
+import { parseDayKey, toDayKey } from '@/utils/datetime';
 
 import type { BaseEntity } from './base';
-import type { Task } from './task';
 
 /**
  * 习惯打卡（纯逻辑 + 实体定义）。
@@ -156,64 +155,25 @@ export function hasCheckedInOn(dayKeys: ReadonlyArray<string>, day: Date): boole
 /* 打卡 ←→ 任务的联动                                                   */
 /* ------------------------------------------------------------------ */
 
-export interface CheckinOutcome {
-  patch: Partial<Pick<Task, 'progress' | 'status' | 'completedAt'>>;
-  /** 一句反馈，落库后展示给用户 */
-  message: string;
-}
-
 /**
- * 打卡对任务本身的影响。
+ * 打卡对任务本身的影响：**没有影响**（除频率型达标，见下）。
  *
- * **刻意不把任务标成完成**（即使它叫"每天跑步"）：
- * 习惯的"做完"是指"今天做过了"，明天还要做。把它标成 done 会让它从列表里消失，
- * 而它明天必须再出现。所以职责分清楚：
- * - "今天做没做" 由打卡记录回答（这张表）
- * - "这件事还做不做" 由 task.status 回答
+ * 这里以前有两个函数（applyCheckinToTask / revertCheckinFromTask），
+ * 它们维护了一个存在 task.progress 里的"本期次数"计数器。已经删掉，原因：
  *
- * 唯一例外是**频率型**（"每周跑 3 次"）：它有明确的次数目标，打卡就是那个计数，
- * 够数就把本期目标标成达成 —— 这不是"替用户下结论"，而是目标本来就写在那儿。
+ * 1. 那个计数器**没有任何地方负责归零**，"每周 3 次"达标后永远停在已完成；
+ * 2. 同一块数据被三处各自 +1（打卡、重复任务滚动、专注），三种意思混在一起；
+ * 3. 它本来就可以从这张表**算出来** —— 打卡记录里有日期，"本期做了几次"
+ *    就是数一数有几条落在本期。
+ *
+ * 现在的分工是干净的：
+ * - "今天做没做" → 这张表（`hasCheckedInOn`）
+ * - "本期做了几次" → `domain/habit-period.occurrencesInPeriod`（现算，不存）
+ * - "这件事还做不做" → task.status
+ *
+ * 频率型任务的目标达成是唯一需要"状态推导"的地方，规则放在
+ * `domain/habit-period.desiredFrequencyStatus`（纯函数），由 state 层在 refresh
+ * 时统一对账 —— 因为那里同时握着任务表和打卡表，是唯一能算准的地方。
  */
-export function applyCheckinToTask(task: Pick<Task, 'completion' | 'progress' | 'targetOccurrences'>): CheckinOutcome {
-  const occurrences = task.progress.occurrencesThisPeriod + 1;
-
-  if (task.completion === 'frequency') {
-    const target = task.targetOccurrences ?? null;
-    const reached = target != null && target > 0 && occurrences >= target;
-    return {
-      patch: {
-        progress: { ...task.progress, occurrencesThisPeriod: occurrences },
-        // 本期目标达成，但保留"下一次从零开始"的余地：只置完成态，不动时间
-        ...(reached ? { status: 'done' as const, completedAt: nowIso() } : {}),
-      },
-      message: reached
-        ? `本期第 ${occurrences} 次，达到目标`
-        : `本期第 ${occurrences} 次${target ? `（目标 ${target} 次）` : ''}`,
-    };
-  }
-
-  return {
-    patch: { progress: { ...task.progress, occurrencesThisPeriod: occurrences } },
-    message: `累计打卡 ${occurrences} 次`,
-  };
-}
-
-/** 撤销打卡：把次数减回去，并从完成态退回待办（如果原来是靠打卡完成的） */
-export function revertCheckinFromTask(
-  task: Pick<Task, 'completion' | 'progress' | 'targetOccurrences'>,
-): CheckinOutcome {
-  const current = task.progress.occurrencesThisPeriod;
-  const occurrences = Math.max(0, current - 1);
-  const target = task.targetOccurrences ?? null;
-  const wasReached = target != null && target > 0 && current >= target;
-
-  return {
-    patch: {
-      progress: { ...task.progress, occurrencesThisPeriod: occurrences },
-      ...(wasReached ? { status: 'todo' as const, completedAt: null } : {}),
-    },
-    message: `已撤销，本期 ${occurrences} 次`,
-  };
-}
 
 export const MS_PER_DAY = DAY;

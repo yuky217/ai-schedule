@@ -25,7 +25,7 @@ function makeTask(id: string, patch: Partial<Task> = {}): Task {
     tags: [],
     priority: Priority.P2,
     source: CaptureSource.Manual,
-    progress: { accumulatedMinutes: 0, occurrencesThisPeriod: 0 },
+    progress: { accumulatedMinutes: 0 },
     ...patch,
   };
 }
