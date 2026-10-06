@@ -22,15 +22,24 @@ import { useAppStore } from '@/state/app-store';
  *
  * 唯一多出来的是**长按拖动排序**：收集箱天然是一个"待消化队列"，
  * 顺序就是你心里的先后。拖过之后顺序会写进 sort_order 落库。
+ *
+ * 再加一块**「已完成」折叠区**：勾掉的东西必须还能找回来。
+ * 一条无时间的任务在收集箱里被勾掉之后，收集箱不收它（这里带 status != done），
+ * 日历不收它（没时间）、首页今天不收它（按时间匹配）、习惯页不收它（不是习惯）——
+ * 四个列表全都不收，等于"勾一下=弄丢"。这一块就是它的落点，
+ * 而且就地能撤销完成（`reopenTask`），不用跑去别的页面。
  */
 export default function InboxScreen() {
   const router = useRouter();
   const theme = useTheme();
 
   const inbox = useAppStore((state) => state.inbox);
+  const recentlyDone = useAppStore((state) => state.recentlyDone);
   const completeTask = useAppStore((state) => state.completeTask);
+  const reopenTask = useAppStore((state) => state.reopenTask);
   const reorderTasks = useAppStore((state) => state.reorderTasks);
   const [reordering, setReordering] = useState(false);
+  const [doneOpen, setDoneOpen] = useState(false);
 
   return (
     <Screen
@@ -47,7 +56,8 @@ export default function InboxScreen() {
           <Ionicons name="information-circle-outline" size={16} color={theme.textSecondary} />
           <ThemedText type="small" themeColor="textSecondary" style={styles.tipText}>
             有明确时间的事会自动落到日历；剩下没时间的都堆在这里。点一下进详情页定时间，
-            <ThemedText type="smallBold">长按</ThemedText>任一行可以拖动排序。
+            <ThemedText type="smallBold">长按</ThemedText>任一行可以拖动排序。勾掉的会收到下面的
+            「已完成」里，随时能拿回来。
           </ThemedText>
         </View>
       </Card>
@@ -77,6 +87,41 @@ export default function InboxScreen() {
           hint="想到什么就丢进来，不用想清楚它属于哪里"
         />
       )}
+
+      {/* 已完成：勾掉的东西有个地方待着，也能就地拿回来 */}
+      {recentlyDone.length ? (
+        <View style={styles.doneBlock}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: doneOpen }}
+            onPress={() => setDoneOpen((value) => !value)}
+            style={styles.doneHead}>
+            <Ionicons name="checkmark-circle-outline" size={16} color={theme.textSecondary} />
+            <ThemedText type="small" themeColor="textSecondary" style={styles.doneHeadText}>
+              已完成 {recentlyDone.length} 件
+            </ThemedText>
+            <Ionicons
+              name={doneOpen ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={theme.textSecondary}
+            />
+          </Pressable>
+
+          {doneOpen ? (
+            <View style={styles.list}>
+              {recentlyDone.map((task) => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  onPress={(t) => router.push(`/task/${t.id}`)}
+                  // 圈是勾上的，再点一下 = 拿回来（不是再完成一次）
+                  onComplete={(t) => void reopenTask(t.id)}
+                />
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </Screen>
   );
 }
@@ -86,4 +131,7 @@ const styles = StyleSheet.create({
   tipText: { flex: 1, lineHeight: 18 },
   // 行间距由 ReorderableList 的 gap 统一处理（它要用间距算落点）
   list: {},
+  doneBlock: { gap: Spacing.two },
+  doneHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.two },
+  doneHeadText: { flex: 1 },
 });

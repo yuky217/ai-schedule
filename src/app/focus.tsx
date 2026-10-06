@@ -41,7 +41,6 @@ export default function FocusScreen() {
 
   const startFocus = useAppStore((state) => state.startFocus);
   const finishFocus = useAppStore((state) => state.finishFocus);
-  const completeTask = useAppStore((state) => state.completeTask);
   const loadTask = useAppStore((state) => state.loadTask);
 
   const [boundTask, setBoundTask] = useState<Task | null>(null);
@@ -51,8 +50,6 @@ export default function FocusScreen() {
   const [intent, setIntent] = useState('');
   const [note, setNote] = useState('');
   const [alsoComplete, setAlsoComplete] = useState(false);
-  /** 用户自己动过那个开关就不再被默认值覆盖 */
-  const [completeTouched, setCompleteTouched] = useState(false);
   const [finishing, setFinishing] = useState(false);
 
   const elapsedRef = useRef(0);
@@ -79,17 +76,6 @@ export default function FocusScreen() {
     };
   }, [loadTask, taskId]);
 
-  /**
-   * "这段就算把它做完"的默认值，取决于这条任务**有没有被安排过时间**：
-   * - 没安排过（刚在首页「写一件新的事」里建的）= 这是坐下来临时做的，
-   *   默认按"做完了"预期 —— 用户随时能看见这个开关，也随时能关掉；
-   * - 已经排进日历的 = 它有自己原本的目标，完成与否交给用户明说，默认不勾。
-   */
-  useEffect(() => {
-    if (!boundTask || completeTouched) return;
-    setAlsoComplete(boundTask.time.attribute === TimeAttribute.None);
-  }, [boundTask, completeTouched]);
-
   // 进入即开一个会话：允许"先干着，之后再想这是什么事"
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +97,12 @@ export default function FocusScreen() {
     return () => clearInterval(timer);
   }, [running]);
 
-  // 离开页面时兜底收尾，避免留下永远不会结束的会话
+  /**
+   * 离开页面时兜底收尾，避免留下永远不会结束的会话。
+   *
+   * 刻意**不带 markDone** —— 从右上角退出去不等于"我做完了"，
+   * 那只是"我不记了"。真正的完成判定只发生在用户按下「结束」那一刻。
+   */
   useEffect(() => {
     return () => {
       if (finishedRef.current) return;
@@ -126,15 +117,14 @@ export default function FocusScreen() {
     setFinishing(true);
     finishedRef.current = true;
     try {
+      // "这段就算把它做完"跟着这一次落库一起走 —— 这样回执才说得准
+      // （页面一退场，任何还没写进回执的动作用户都看不到了）
       await finishFocus(sessionId, {
         actualSeconds: elapsed,
         intent: intent.trim() || null,
         note: note.trim() || null,
+        markDone: alsoComplete,
       });
-      // 用户明确勾了"这段就算把它做完"，才替他把状态推过去
-      if (alsoComplete && boundTask) {
-        await completeTask(boundTask.id);
-      }
       if (hapticsEnabled) {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       }
@@ -157,7 +147,6 @@ export default function FocusScreen() {
             ? '正在读取这件事…'
             : '没绑定具体任务也可以，先专注再说'
       }
-      scroll={false}
       right={
         <Pressable hitSlop={8} onPress={() => router.back()}>
           <Ionicons name="chevron-down" size={24} color={theme.textSecondary} />
@@ -218,27 +207,19 @@ export default function FocusScreen() {
           title="记到这件事上"
           hint={
             boundTask.time.attribute === TimeAttribute.None
-              ? '它还没安排过时间，结束后会用这一段落到日历上'
+              ? '它还没安排过时间 —— 做完了才会用这一段落到日历上，没做完就只记时长'
               : '这段时长会累加进它的进度，够目标就自动完成'
           }>
           <View style={styles.switchRow}>
             <View style={styles.switchText}>
-              <ThemedText type="smallBold">
-                {boundTask.time.attribute === TimeAttribute.None
-                  ? '这件事已经做完了'
-                  : '这段就算把它做完'}
-              </ThemedText>
+              <ThemedText type="smallBold">这段就算把它做完</ThemedText>
               <ThemedText type="small" themeColor="textSecondary" style={styles.switchHint}>
-                关掉就只记时长，它还留在清单里
+                {alsoComplete
+                  ? '结束时会把它标成完成'
+                  : '默认不勾：干了多久、和这件事算不算做完，是两件事'}
               </ThemedText>
             </View>
-            <Switch
-              value={alsoComplete}
-              onValueChange={(next) => {
-                setCompleteTouched(true);
-                setAlsoComplete(next);
-              }}
-            />
+            <Switch value={alsoComplete} onValueChange={setAlsoComplete} />
           </View>
         </Card>
       ) : null}

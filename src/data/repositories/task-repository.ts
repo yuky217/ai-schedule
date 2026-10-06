@@ -99,6 +99,33 @@ export const taskRepository = {
     return rows.map(taskFromRow);
   },
 
+  /**
+   * 已完成、但没安排过时间的顶层任务 —— 收集箱底部那个"已完成"折叠区。
+   *
+   * 存在的唯一理由是**兜底"查不到"**：一条任务完成后会离开收集箱（收集箱带 status != done），
+   * 如果它又没时间，那它也不在日历（日历带 time_attribute != 'none'）、不在首页今天
+   * （按时间窗匹配）、不在习惯页（只取 kind = habit）。四个列表全都不收，
+   * 用户勾完就等于把它弄丢了 —— 只有知道 id 才打得开。
+   *
+   * 所以这里的条件刻意和收集箱**互补**：收集箱是「未完成 + 无时间」，
+   * 这里是「已完成 + 无时间」，两条拼起来刚好覆盖"无时间的顶层任务"全集。
+   * 有时间的已完成任务不需要它 —— 那些在日历上看得见。
+   */
+  async listRecentlyDone(limit = 20): Promise<Task[]> {
+    const db = await getDatabase();
+    const rows = await db.getAllAsync<TaskRow>(
+      `SELECT * FROM ${TABLE}
+        WHERE ${LIVE}
+          AND ${TOP_LEVEL}
+          AND status = ?
+          AND time_attribute = 'none'
+        ORDER BY completed_at DESC, created_at DESC
+        LIMIT ?`,
+      [TaskStatus.Done, limit],
+    );
+    return rows.map(taskFromRow);
+  },
+
   async listByContainer(containerId: string): Promise<Task[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<TaskRow>(

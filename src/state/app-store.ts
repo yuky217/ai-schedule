@@ -25,6 +25,7 @@ import {
   focusSpanTime,
   shouldStampFocusSpan,
 } from '@/domain/focus-link';
+import { describeFocusReceipt, type FocusMarkOutcome } from '@/domain/focus-receipt';
 import type { FocusSession } from '@/domain/focus';
 import { shiftIsoByDays } from '@/domain/gantt';
 import {
@@ -46,10 +47,20 @@ import type { Task, TaskTime } from '@/domain/task';
  * 写入同理：容器、纪念日、专注联动也全部走这里的动作。
  */
 
-/** 一次专注带来的反馈，绑定到具体任务上，供任务详情页就地展示 */
+/**
+ * 一次专注结束后的**回执**：把"刚才那一下到底干了什么"说成一句话。
+ *
+ * 它不绑定在某一个页面上（以前只在任务详情页展示，而用户根本不经过那里），
+ * 因为结束专注的副作用可能落在任务、日历、打卡表三处中的任意一处，
+ * 用户需要一个"不管落在哪、回到首页就能看到"的地方。
+ * 文案本身由 `domain/focus-receipt.ts` 产出（纯函数，有单测）。
+ */
 export interface FocusFeedback {
-  taskId: string;
+  /** 绑定的（或新建的）那条任务，有就能点进去看 */
+  taskId: string | null;
   message: string;
+  /** 这次专注的净秒数 */
+  seconds: number;
 }
 
 interface AppState {
@@ -60,6 +71,14 @@ interface AppState {
 
   inbox: Task[];
   today: Task[];
+  /**
+   * 已完成、但**从没安排过时间**的顶层任务（收集箱底部那个折叠区）。
+   *
+   * 为什么单拎这一份出来：一条任务完成之后会离开收集箱，如果它又是"没时间"的，
+   * 那它同时也不在日历上、不在首页今天里、不在任何容器里 —— 四个列表全都不收它，
+   * 用户勾完就再也找不到（只有知道 id 才打得开）。这里就是它的落脚点。
+   */
+  recentlyDone: Task[];
   /**
    * 数据版本号：每次 refresh 自增。
    *
@@ -97,6 +116,8 @@ interface AppState {
   /** 局部修改任务字段（提前量、重复规则等），改完统一 refresh */
   updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
   completeTask: (id: string) => Promise<void>;
+  /** 把已完成的任务放回待办（收集箱底部的"已完成"区用它撤销） */
+  reopenTask: (id: string) => Promise<void>;
   removeTask: (id: string) => Promise<void>;
   archiveIdea: (id: string) => Promise<void>;
 
@@ -157,10 +178,21 @@ interface AppState {
 
   /** 开一次专注（可绑定任务）。返回会话，供页面拿到 id */
   startFocus: (taskId: string | null, plannedMinutes?: number | null) => Promise<FocusSession>;
-  /** 结束专注：落库 + 把时长记到任务上（够目标就自动完成） */
+  /**
+   * 结束专注：落库 + 把时长记到任务上（够目标就自动完成）+ 给一句回执。
+   *
+   * `markDone` 是用户当场按下的"这段就算把它做完"。刻意做成参数而不是让页面
+   * 结束后自己再调一次 completeTask —— 那样"完成了"这件事就发生在回执已经写好之后，
+   * 回执说不出来（页面又立刻退场了），用户永远看不到它。
+   */
   finishFocus: (
     sessionId: string,
-    payload: { actualSeconds: number; intent?: string | null; note?: string | null },
+    payload: {
+      actualSeconds: number;
+      intent?: string | null;
+      note?: string | null;
+      markDone?: boolean;
+    },
   ) => Promise<FocusFeedback | null>;
   clearFocusFeedback: () => void;
 
@@ -174,6 +206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   error: null,
   inbox: [],
   today: [],
+  recentlyDone: [],
   dataVersion: 0,
   tasks: [],
   containers: [],
@@ -209,6 +242,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const [
       inbox,
       today,
+      recentlyDone,
       tasks,
       containers,
       marks,
@@ -219,6 +253,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     ] = await Promise.all([
       taskRepository.listInbox(),
       taskRepository.listToday(),
+      taskRepository.listRecentlyDone(),
       taskRepository.listAll(),
       containerRepository.listAll(),
       markRepository.listAll(),
@@ -230,6 +265,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       inbox,
       today,
+      recentlyDone,
       tasks,
       containers,
       marks,
@@ -296,6 +332,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     } else {
       await taskRepository.complete(id);
     }
+    await get().refresh();
+  },
+
+  /** 撤销完成：把任务放回待办。收集箱底部的"已完成"区和任务详情页都用它 */
+  reopenTask: async (id) => {
+    await taskRepository.setStatus(id, TaskStatus.Todo);
     await get().refresh();
   },
 
@@ -490,10 +532,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // 这次专注占用的那段时间：让"我花了多久"变成日历上看得见的"几点到几点"
     const span = focusSpan(session.startedAt, session.actualSeconds);
-    let feedback: FocusFeedback | null = null;
+    const seconds = session.actualSeconds;
+    /**
+     * 所有分支最后都汇到这一处：**先记账，再按事实写回执**。
+     *
+     * 分成"记账"和"说话"两段是有意的 —— 以前每加一条分支就顺手 return 一下，
+     * 于是"没绑定任务"和"太短"这两条路都不留话，用户按完结束什么都看不到。
+     */
+    let feedback: FocusFeedback;
 
     /**
-     * 没绑定任务、但结束时给了名字 —— 这段专注本身就是一条记录。
+     * ① 没绑定任务、但结束时给了名字 —— 这段专注本身就是一条记录。
      *
      * 名字是唯一的凭据：没名字的专注只留在回顾页的统计里，不往日历上塞空白条目。
      * 记成"已完成"是因为这段时间**已经发生了**，它是一条"做过什么"的日志，
@@ -510,35 +559,74 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       await taskRepository.create(logged);
       await taskRepository.complete(logged.id);
-      set({ lastFocus: null });
-      await get().refresh();
-      return null;
-    }
-
-    if (session.taskId) {
+      feedback = {
+        taskId: logged.id,
+        seconds,
+        message: describeFocusReceipt({
+          seconds,
+          boundTitle: null,
+          intent: session.intent,
+          span,
+        }),
+      };
+    } else if (session.taskId) {
       const task = await taskRepository.getById(session.taskId);
-      if (task) {
-        const outcome = applyFocusToTask(task, session.actualSeconds);
-        if (outcome) {
-          // 还没安排过时间的任务，就用这次专注的时段把它落到日历上。
-          // 已经排好的任务不动它的时间 —— 专注只提供"投入了多少"，不重新安排日程。
-          const stamp =
-            span && shouldStampFocusSpan(task) ? { time: focusSpanTime(span) } : {};
-          await taskRepository.update(task.id, { ...outcome.patch, ...stamp });
 
-          let message = outcome.message;
+      if (!task) {
+        // 专注途中用户把这条任务删了。时长仍然进统计，但不能假装它还挂着
+        feedback = {
+          taskId: null,
+          seconds,
+          message: describeFocusReceipt({
+            seconds,
+            boundTitle: payload.intent ?? '这件事',
+            intent: null,
+            span: null,
+            taskMissing: true,
+          }),
+        };
+      } else {
+        const outcome = applyFocusToTask(task, seconds);
+
+        if (!outcome) {
+          // 不到一分钟：不记账（防误触刷数据）。什么都不能写，但这句话必须说
+          feedback = {
+            taskId: task.id,
+            seconds,
+            message: describeFocusReceipt({
+              seconds,
+              boundTitle: task.title,
+              intent: null,
+              span: null,
+            }),
+          };
+        } else {
+          /**
+           * 还没安排过时间的任务，用这次专注的时段把它落到日历上 ——
+           * 但**只在这件事确实算做完了的时候**（够目标了，或用户勾了"这段就算把它做完"）。
+           *
+           * 为什么加这个前提：日历上的时段读出来只有两种意思 —— 「安排」或
+           * 「已经发生并确认的事」。一条**还没做完**的待办被塞进一个刚刚过去的时段，
+           * 会被 `task-state` 判成 `missed`（已过去、没打勾），于是它出现在首页"今天"里、
+           * 在日期上淡出、详情页还弹一张"这段时间已经过去了，怎么处理你说了算"——
+           * 而用户十分钟前刚在这件事上花了 25 分钟。那是自相矛盾。
+           *
+           * 时长照记不误（累计分钟数在详情页/回顾页都看得到），只是不占日历上的一个位置。
+           * 已经排好时间的任务一如既往不动它的时间：专注只提供"投入了多少"。
+           */
+          const willBeDone = outcome.completed || Boolean(payload.markDone);
+          const stamp =
+            span && shouldStampFocusSpan(task) && willBeDone ? { time: focusSpanTime(span) } : {};
+          await taskRepository.update(task.id, { ...outcome.patch, ...stamp });
 
           // 频率型：这次专注算"今天做过一次"，落一条打卡记录。
           // 本期进度只认打卡表，所以这里写完再数一遍，反馈里说的是事实而不是推算。
+          let periodNote: string | null = null;
           if (outcome.countsAsOccurrence) {
             await checkinRepository.checkIn(task.id);
             const keys = (await checkinRepository.listByTask(task.id)).map((row) => row.dayKey);
             const count = occurrencesInPeriod(keys, task.repeat, new Date());
-            message = `${message} · ${describePeriodReached(
-              task.repeat,
-              task.targetOccurrences,
-              count,
-            )}`;
+            periodNote = describePeriodReached(task.repeat, task.targetOccurrences, count);
           }
 
           if (outcome.completed) {
@@ -549,9 +637,53 @@ export const useAppStore = create<AppState>((set, get) => ({
             const fresh = await taskRepository.getById(task.id);
             if (fresh) await scheduleTaskReminder(fresh);
           }
-          feedback = { taskId: task.id, message };
+
+          /**
+           * 用户当场按下的"这段就算把它做完"。
+           *
+           * 走的是和列表里那个勾一样的 completeTask（重复任务要滚期、频率型要打卡），
+           * 所以这里不能自己写 status —— 写完再读一次，按**实际结果**说话：
+           * 否则重复任务会被回执说成"完成了"，而它其实只是滚到了下一次。
+           */
+          let markOutcome: FocusMarkOutcome | null = null;
+          if (payload.markDone) {
+            await get().completeTask(task.id);
+            const after = await taskRepository.getById(task.id);
+            if (after) {
+              if (after.status === TaskStatus.Done) markOutcome = 'done';
+              else if (after.time.startAt !== task.time.startAt) markOutcome = 'rolled';
+              else markOutcome = 'checked-in';
+            }
+          }
+
+          feedback = {
+            taskId: task.id,
+            seconds,
+            message: describeFocusReceipt({
+              seconds,
+              boundTitle: task.title,
+              intent: null,
+              span: stamp.time ? span : null,
+              completed: outcome.completed,
+              keptOffCalendar: Boolean(span && shouldStampFocusSpan(task) && !willBeDone),
+              markOutcome,
+              periodNote,
+            }),
+          };
         }
       }
+    } else {
+      // ② 没绑定任务、也没起名字（或太短）—— 只进统计，不往日历上塞东西
+      feedback = {
+        taskId: null,
+        seconds,
+        message: describeFocusReceipt({
+          seconds,
+          boundTitle: null,
+          intent: session.intent ?? null,
+          span,
+        }),
+      };
     }
 
     set({ lastFocus: feedback });

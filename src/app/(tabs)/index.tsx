@@ -59,6 +59,8 @@ export default function HomeScreen() {
   const inbox = useAppStore((state) => state.inbox);
   const growthSeconds = useAppStore((state) => state.growthSeconds);
   const lastCapture = useAppStore((state) => state.lastCapture);
+  const lastFocus = useAppStore((state) => state.lastFocus);
+  const clearFocusFeedback = useAppStore((state) => state.clearFocusFeedback);
   const ready = useAppStore((state) => state.ready);
   const error = useAppStore((state) => state.error);
   const capture = useAppStore((state) => state.capture);
@@ -299,6 +301,55 @@ export default function HomeScreen() {
             {lastCapture.reminderScheduled ? '（提醒已设好）' : ''}
           </ThemedText>
         </View>
+      ) : null}
+
+      {/*
+        刚结束的那段专注：一行字说清"这一下到底干了什么"，并指到它落的地方。
+        专注结束的副作用可能落在任务 / 日历 / 打卡表任意一处，
+        以前只有进任务详情页才看得到 —— 而从首页进来的这条路径根本不经过那里，
+        于是用户按完"结束"只看到一个计时器消失，剩下全靠猜。
+      */}
+      {lastFocus ? (
+        <Card
+          style={{ borderWidth: StyleSheet.hairlineWidth, borderColor: theme.backgroundSelected }}>
+          <View style={styles.focusReceipt}>
+            <Ionicons name="timer-outline" size={18} color={theme.text} />
+            <ThemedText type="small" style={styles.focusReceiptText}>
+              {lastFocus.message}
+            </ThemedText>
+          </View>
+          <View style={styles.focusReceiptActions}>
+            {lastFocus.taskId ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  const id = lastFocus.taskId;
+                  // 点进去就把它收起来：详情页会把同一句话再显示一遍，看着像没走
+                  clearFocusFeedback();
+                  if (id) router.push(`/task/${id}`);
+                }}
+                style={({ pressed }) => [
+                  styles.ghostButton,
+                  { borderColor: theme.backgroundSelected, opacity: pressed ? 0.6 : 1 },
+                ]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  看看这件
+                </ThemedText>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="button"
+              onPress={clearFocusFeedback}
+              style={({ pressed }) => [
+                styles.ghostButton,
+                { borderColor: theme.backgroundSelected, opacity: pressed ? 0.6 : 1 },
+              ]}>
+              <ThemedText type="small" themeColor="textSecondary">
+                知道了
+              </ThemedText>
+            </Pressable>
+          </View>
+        </Card>
       ) : null}
 
       {/* 专注启动：指针固定、左右滑选 —— 不用瞄准，停在哪件就是哪件 */}
@@ -550,6 +601,9 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   feedback: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  focusReceipt: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
+  focusReceiptText: { flex: 1, lineHeight: 19 },
+  focusReceiptActions: { flexDirection: 'row', gap: Spacing.two, marginTop: Spacing.two },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
   focusHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
   focusHint: { flex: 1, fontSize: 12, lineHeight: 17 },

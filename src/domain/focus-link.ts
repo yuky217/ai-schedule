@@ -34,8 +34,13 @@ export interface FocusOutcome {
   message: string;
 }
 
-/** 不到一分钟的专注不记账，避免误触一下就把次数刷上去 */
-const MIN_FOCUS_SECONDS = 60;
+/**
+ * 不到一分钟的专注不记账，避免误触一下就把次数刷上去。
+ *
+ * 导出是因为"专注结束后那句话怎么说"也依赖这个门槛（`domain/focus-receipt`）——
+ * 两处必须同进同退，否则会出现"没记上账、回执却说记上了"这种自相矛盾。
+ */
+export const MIN_FOCUS_SECONDS = 60;
 
 export function applyFocusToTask(task: Task, seconds: number): FocusOutcome | null {
   const total = Math.max(0, Math.floor(seconds));
