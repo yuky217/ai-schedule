@@ -69,6 +69,25 @@ npx expo export --platform web     --output-dir ../_verify/web
 git config user.email "你的邮箱"
 ```
 
+### 装成独立 App（EAS 云端构建，绕开本机没有 Android SDK 的现实）
+
+本机没有 Android SDK 且 C 盘满（Gradle 缓存写不下），本地 `expo run:android` 不可行。
+走 **EAS 云端构建**：不需要本机 SDK，云端出 `.apk`，手机浏览器打开链接直接装。
+配置已备齐：`app.json` 里有 `android.package` 与 `expo-notifications` 插件
+（**独立 APK 上没有它就不会声明 Android 13+ 通知权限，提醒会静默失败**），
+`eas.json` 的 `preview` 档就是"独立 APK + 自动递增版本号"。
+
+首次构建（需要免费 Expo 账号，交互式登录一次）：
+
+```bash
+npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest login   # 或 signup
+npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest build \
+  -p android --profile preview
+```
+
+构建完成后终端给出 apk 下载链接，手机上打开安装即可（允许"安装未知来源应用"）。
+之后的日常使用就不再经过 Expo Go。
+
 ### 本机踩过的坑
 
 项目根 `.env` 已固化 `EXPO_NO_METRO_LAZY=1` 与 `EXPO_NO_TELEMETRY=1`（Expo CLI 启动时自动读取，**勿删**）。
