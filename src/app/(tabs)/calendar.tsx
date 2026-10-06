@@ -23,7 +23,7 @@ import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
 import { TaskStatus } from '@/domain/enums';
 import { buildPlacedTime, buildRescheduledTime, buildRetimedTime } from '@/domain/schedule-presets';
-import type { Task } from '@/domain/task';
+import { taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { useCrossDayDrag } from '@/hooks/use-cross-day-drag';
 import { useTheme } from '@/hooks/use-theme';
@@ -168,7 +168,7 @@ export default function CalendarScreen() {
     const counts = new Map<string, number>();
     const tasks = new Map<string, Task[]>();
     for (const task of scheduled) {
-      const anchor = task.time.startAt ?? task.time.dueAt;
+      const anchor = taskAnchor(task);
       const date = toDate(anchor);
       if (!date) continue;
       const key = dayKey(date);
@@ -179,8 +179,8 @@ export default function CalendarScreen() {
     }
     for (const bucket of tasks.values()) {
       bucket.sort((a, b) => {
-        const ta = a.time.startAt ?? a.time.dueAt ?? '';
-        const tb = b.time.startAt ?? b.time.dueAt ?? '';
+        const ta = taskAnchor(a) ?? '';
+        const tb = taskAnchor(b) ?? '';
         return ta.localeCompare(tb);
       });
     }
@@ -190,7 +190,7 @@ export default function CalendarScreen() {
   const handleDrop = useCallback(
     (task: Task, key: string) => {
       const targetDate = keyToDate(key);
-      const anchor = task.time.startAt ?? task.time.dueAt;
+      const anchor = taskAnchor(task);
       if (anchor && isSameDay(targetDate, new Date(anchor))) return; // 拖回原格 = 取消
       const time = buildRescheduledTime(task, targetDate);
       if (time) void scheduleTask(task.id, time);
@@ -211,7 +211,7 @@ export default function CalendarScreen() {
   /** 周视图落下：同时拿到"哪一天"和"几点几分" */
   const handlePlace = useCallback(
     async (task: Task, date: Date, minutesOfDay: number) => {
-      const anchor = task.time.startAt ?? task.time.dueAt;
+      const anchor = taskAnchor(task);
       const crossedDay = anchor ? !isSameDay(new Date(anchor), date) : false;
       const time = buildPlacedTime(task, date, minutesOfDay);
       if (!time) return;

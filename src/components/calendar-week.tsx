@@ -12,7 +12,7 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
-import type { Task } from '@/domain/task';
+import { taskAnchor, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
@@ -210,7 +210,7 @@ export function CalendarWeek({
                       />
                     ))}
                     {tasks.map((task) => {
-                      const anchor = task.time.startAt ?? task.time.dueAt;
+                      const anchor = taskAnchor(task);
                       if (!anchor) return null;
                       const start = minutesOfDay(anchor);
                       const end = task.time.endAt

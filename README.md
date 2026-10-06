@@ -126,12 +126,13 @@ src/
 │
 ├── domain/                     # 【纯逻辑】不依赖 React Native / Expo，可单测
 │   ├── enums.ts                #   任务类型、状态、时间属性、完成判定、优先级…
-│   ├── task.ts / idea.ts / container.ts / focus.ts / checkins.ts / marks.ts
+│   ├── task.ts                 #   任务实体 + ★ **时间口径的唯一出处**
+│   │                           #   （taskAnchor=什么时候发生 / taskDue=什么时候到期 /
+│   │                           #    hasAnyTime=落进时间轴了吗；见约定 12）
+│   ├── idea.ts / container.ts / focus.ts / checkins.ts / marks.ts
 │   ├── base.ts                 #   公共字段（含同步预留字段）
 │   ├── factory.ts              #   实体工厂，默认值只有一份定义
 │   ├── routing.ts              #   ★ 两档分流：灵感 vs 待办 → 想法库/收集箱/日历
-│   ├── scheduling.ts           #   优先级打分、自动填充输入、时长/频率自动完成
-│   │                           #   （**目前零引用**：留给自动填充，别当它在生效）
 │   ├── parse-schedule.ts       #   从一句话里解析时间（纯本地启发式，无需 AI）
 │   ├── schedule-presets.ts     #   时间预设 + 自定义时间构造
 │   ├── repeat-next.ts          #   重复规则 → 下一次该排的时间
@@ -219,6 +220,24 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
     "手指按住内层时把外层 `scrollEnabled` 关掉"的保险（`time-wheel` 的
     `onScrollLockChange` 就是这个）。横向嵌竖直不受影响。
     已经踩过两次：`calendar-day` / `calendar-week`（时间轴）和时/分滚轮。
+12. **同一件事只能有一个定义，而且必须有名字。** `time.startAt ?? time.dueAt` 曾经被
+    原样抄了 **13 遍**（日历页 5 处、首页、详情页 2 处、周视图、输入框、选择器、重复、
+    回顾、预设 3 处、提醒），反向的 `dueAt ?? startAt` 还有 4 处。它**不会报错**，
+    所以改一处时没有人会想起另外 12 处 —— 直到某处悄悄漂移，表现成"任务算错天 /
+    提醒错时间"，那时已经查不出是哪一处。现在全收在 `domain/task.ts`，三个名字对应
+    **三个不同的问题**（不是同一个东西的三种读法）：
+
+    | 函数 | 回答 | 用在哪 |
+    |---|---|---|
+    | `taskAnchor` | 什么时候**发生**（优先 startAt） | 归到日历哪一天、排序、排提醒、滚重复 |
+    | `taskDue` | 什么时候**到期**（优先 dueAt） | 期限显示、紧迫度 |
+    | `hasAnyTime` | **落进时间轴了吗**（含 endAt） | 该不该画到日历 / 甘特图上 |
+
+    前两个方向相反、却是**并列的两条事实**（"周三 14:00 开会，但周二前交材料"里，
+    开始与截止指向不同的日子）；第三个含 endAt，前两个刻意不含（单独一个结束时间
+    不构成"什么时候发生"，但它确实占着时间，仍要画出来）。
+    `domain/task-anchor.guard.test.ts` 会**扫源码**守住这条：再手写第 14 处就变红，
+    并直接告诉你该换成哪个函数。
 
 ## 六、数据库
 
@@ -339,7 +358,8 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 日视图里完成项也不再显示勾选圈：**改状态只发生在详情页这一处**。
 
 两条硬规则：**时间过了绝不自动完成**（状态只由用户的明确动作改变）；
-`utils/datetime.ts` 的 `isOverdue` 是死代码，过期口径一律走 `task-state.ts`。
+「过期 / 已经过去 / 已错过」的口径**只有一个** —— `domain/task-state.ts`
+（它区分 `overdue`=欠着 与 `missed`=已错过），不要另写一个"时间比现在早"的判断。
 
 ### 时间怎么选：预设 → 自定义（`time-wheel` + `date-time-picker`）
 
@@ -434,7 +454,5 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 - 识别日程为启发式规则（覆盖今天/明天/周X/M月d日/时刻/相对时间/截止"前"），
   复杂表达（如"下下下周"、"农历"）不在覆盖范围，识别不出就进收集箱，不会瞎猜。
 - 能力层是契约与守卫，未发起真实网络请求。
-- 日历里"已经过去但没做"的固定型事（上周的会）目前只有**淡出**，还没有人工出口
-  （改期 / 改成待办 / 就这样吧），会一直留在那儿。
 - 备份恢复默认整库覆盖，"合并导入"（`importBackup(envelope, 'merge')`）已实现但缺 UI 入口。
 - 优先级**不出现在界面上**（`Priority` 字段保留给将来的自动填充）。

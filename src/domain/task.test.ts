@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { TimeAttribute } from './enums';
-import { hasConcreteTime, normalizeTaskTime } from './task';
+import {
+  hasAnyTime,
+  hasConcreteTime,
+  normalizeTaskTime,
+  taskAnchor,
+  taskDue,
+  timeAnchor,
+  timeDue,
+} from './task';
 
 /**
  * `normalizeTaskTime` 的用例。
@@ -48,5 +56,102 @@ describe('normalizeTaskTime：时间字段的收口', () => {
 
     const real = normalizeTaskTime({ attribute: TimeAttribute.Fixed, startAt: '2026-10-06T06:00:00.000Z' });
     expect(hasConcreteTime({ time: real })).toBe(true);
+  });
+});
+
+/**
+ * 锚点口径的用例。
+ *
+ * 这一组守的是**两件不同的事不能被写成一件**：
+ * - `timeAnchor` = "这件事算哪一刻"（归天 / 排序 / 提醒 / 重复都用它）
+ * - `hasAnyTime` = "这件事落进时间轴了吗"（该不该画到日历上）
+ *
+ * 它们只在一种数据上分道扬镳 —— **只写了结束时间、没写开始和截止**。
+ * 上面 `normalizeTaskTime` 的用例特意保留了这种半截数据（它有事实在里面），
+ * 所以这里必须确认：这种任务**会被画到日历上**（hasAnyTime = true），
+ * 但**没有锚点**（timeAnchor = null），因此不参与"算哪天"。
+ * 收口前 `startAt ?? dueAt` 被抄了 13 遍，任何一处把这两个概念混起来就是 bug。
+ */
+describe('timeAnchor：这件事算哪一刻', () => {
+  it('优先开始时间', () => {
+    expect(
+      timeAnchor({ startAt: '2026-10-06T06:00:00.000Z', dueAt: '2026-10-09T09:00:00.000Z' }),
+    ).toBe('2026-10-06T06:00:00.000Z');
+  });
+
+  it('没有开始时间就用截止时间（执行型常有 ddl）', () => {
+    expect(timeAnchor({ startAt: null, dueAt: '2026-10-09T09:00:00.000Z' })).toBe(
+      '2026-10-09T09:00:00.000Z',
+    );
+  });
+
+  it('**不看 endAt**：只有结束时间的事没有锚点（它就是分水岭）', () => {
+    expect(timeAnchor({ startAt: null, endAt: '2026-10-06T07:00:00.000Z', dueAt: null })).toBeNull();
+  });
+
+  it('三个都空 → null（不是空字符串，调用方靠它判"没有"）', () => {
+    expect(timeAnchor({ startAt: null, dueAt: null })).toBeNull();
+    expect(timeAnchor({})).toBeNull();
+  });
+
+  it('taskAnchor 就是它的 Task 版本', () => {
+    const time = {
+      attribute: TimeAttribute.None,
+      startAt: '2026-10-06T06:00:00.000Z',
+      dueAt: null,
+    };
+    expect(taskAnchor({ time })).toBe(timeAnchor(time));
+  });
+});
+
+/**
+ * 反方向的那件事：**什么时候到期**。
+ *
+ * 它有独立的用例、而不是"锚点的补充说明"，因为它和锚点是**两条并列的事实**：
+ * "周三 14:00 开会，但周二前要交材料" —— 这条任务的开始与截止指向不同的日子，
+ * 归天要用前者、显示期限要用后者。
+ */
+describe('timeDue：这件事什么时候到期', () => {
+  it('优先截止时间（"周五前交"比"周三开会"更能说明期限）', () => {
+    expect(
+      timeDue({ startAt: '2026-10-07T06:00:00.000Z', dueAt: '2026-10-09T09:00:00.000Z' }),
+    ).toBe('2026-10-09T09:00:00.000Z');
+  });
+
+  it('没有截止就退回开始时间（不然期限那一栏会空着）', () => {
+    expect(timeDue({ startAt: '2026-10-07T06:00:00.000Z' })).toBe('2026-10-07T06:00:00.000Z');
+  });
+
+  it('**同一条数据上两个方向给出相反答案** —— 这就是它们必须分开的理由', () => {
+    const time = { startAt: '2026-10-07T06:00:00.000Z', dueAt: '2026-10-09T09:00:00.000Z' };
+    expect(timeAnchor(time)).toBe(time.startAt);
+    expect(timeDue(time)).toBe(time.dueAt);
+    expect(timeAnchor(time)).not.toBe(timeDue(time));
+  });
+
+  it('都空 → null', () => {
+    expect(timeDue({})).toBeNull();
+  });
+
+  it('taskDue 就是它的 Task 版本', () => {
+    const time = { attribute: TimeAttribute.None, startAt: null, dueAt: '2026-10-09T09:00:00.000Z' };
+    expect(taskDue({ time })).toBe(timeDue(time));
+  });
+});
+
+describe('hasAnyTime：这件事落进时间轴了吗', () => {
+  it('三个字段里任意一个有就算（含只有 endAt 的半截数据）', () => {
+    expect(hasAnyTime({ startAt: '2026-10-06T06:00:00.000Z' })).toBe(true);
+    expect(hasAnyTime({ dueAt: '2026-10-09T09:00:00.000Z' })).toBe(true);
+    expect(hasAnyTime({ endAt: '2026-10-06T07:00:00.000Z' })).toBe(true);
+  });
+
+  it('全空 → false（该回收集箱，不该出现在日历上）', () => {
+    expect(hasAnyTime({ startAt: null, endAt: null, dueAt: null })).toBe(false);
+    expect(hasAnyTime({})).toBe(false);
+  });
+
+  it('空字符串不算数（"填过又清空"的字段不该被当成有时间）', () => {
+    expect(hasAnyTime({ startAt: '', endAt: '', dueAt: '' })).toBe(false);
   });
 });

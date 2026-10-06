@@ -12,7 +12,7 @@ import { formatMonthDay, parseDayKey, toDayKey } from '@/utils/datetime';
 import { summarizeCheckins, type Checkin, type StreakInfo } from './checkins';
 import { TaskKind, TaskStatus } from './enums';
 import type { FocusSession } from './focus';
-import type { Task } from './task';
+import { taskAnchor, type Task } from './task';
 
 /**
  * 「回」——回顾与复盘（主流程 记 → 分 → 落 → 行 → 完 → **回**）。
@@ -133,7 +133,7 @@ export function heatmapWeeks(days: number): number {
  * 否则它永远不会出现在任何一期的回顾里。
  */
 export function taskFocusDate(task: Task): Date {
-  const iso = task.time.startAt ?? task.time.dueAt ?? task.createdAt;
+  const iso = taskAnchor(task) ?? task.createdAt;
   const d = new Date(iso);
   if (!Number.isNaN(d.getTime())) return d;
   const fallback = new Date(task.createdAt);

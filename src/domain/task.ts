@@ -109,6 +109,79 @@ export const isIdeaTask = (t: Pick<Task, 'kind'>) => t.kind === 'idea';
 export const hasConcreteTime = (t: Pick<Task, 'time'>) =>
   t.time.attribute === 'fixed' || t.time.attribute === 'deadline';
 
+/* ------------------------------------------------------------------ */
+/* 时间：三个字段，四个问题，一个家                                       */
+/* ------------------------------------------------------------------ */
+/*
+ * 任务的时间有三个字段（startAt / endAt / dueAt），它们能回答几个**不同**的问题，
+ * 而收口前每个问题都在各处被手写了一遍（同一行 `time.startAt ?? time.dueAt`
+ * 抄了 13 遍，反向的 `dueAt ?? startAt` 抄了 4 遍）：
+ *
+ * - `timeAnchor`  "什么时候**发生**" → 归到日历哪一天 / 排序 / 排提醒 / 滚重复
+ * - `timeDue`     "什么时候**到期**" → 期限显示 / 紧迫度
+ * - `hasAnyTime`  "**落进时间轴了吗**" → 该不该画到日历 / 甘特图上
+ *
+ * 关键在它们两两之间都有实质差别，不能当同一个东西：
+ * - 前两个**方向相反**，而且是**并列的两条事实**（"周三 14:00 开会，但周二前交材料"
+ *   里，开始与截止指向不同日子）—— 不是"哪个更优先"，是回答不同的问题；
+ * - 第三个**包含 endAt**，前两个刻意不含（单独一个结束时间不构成"什么时候发生"，
+ *   但它确实占着一段时间，所以仍要画到日历上）。
+ *
+ * 混用它们不会崩溃，只会**日子算错而没人发现** —— 所以每个都只有一处定义，
+ * 并由 `task-anchor.guard.test.ts` 扫源码守着（再手写就变红）。
+ *
+ * 至于"说了有时间、却一个锚点都没填"的退化数据，由 `normalizeTaskTime` 兜底。
+ */
+
+/**
+ * "这件事算哪一刻"：优先开始时间（日程就是那天那点要发生），
+ * 没有才看截止时间（执行型常有 ddl）。
+ *
+ * 签名收下三个时间字段、但**刻意不看 endAt** —— 结束时间是锚点的附属信息
+ * （14:00–15:00 的会锚在 14:00），单独一个 endAt 不构成"它什么时候发生"。
+ * 收下 endAt 只是为了能直接吃一个完整的时间对象，不用调用方先挑字段。
+ */
+export function timeAnchor(
+  time: Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
+): string | null {
+  return time.startAt ?? time.dueAt ?? null;
+}
+
+/** `timeAnchor` 的 Task 版本 */
+export const taskAnchor = (t: Pick<Task, 'time'>): string | null => timeAnchor(t.time);
+
+/**
+ * "这件事什么时候**到期**"：优先截止时间，其次开始时间。
+ *
+ * 方向与 `timeAnchor` 相反，但**它不是 `timeAnchor` 的另一种读法，而是另一条并列的事实**：
+ * 一件任务可以同时有两者 —— "周三 14:00 开会（固定），但周二前要交材料（截止）"。
+ * 所以：
+ * - `taskAnchor` 回答"什么时候**发生**" → 归到日历哪一天 / 排序 / 排提醒 / 滚重复
+ * - `taskDue`    回答"什么时候**到期**" → 期限显示 / 紧迫度
+ *
+ * 混用这两者的后果不是崩溃，而是**日子算错而没人发现**。
+ */
+export function timeDue(
+  time: Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
+): string | null {
+  return time.dueAt ?? time.startAt ?? null;
+}
+
+/** `timeDue` 的 Task 版本 */
+export const taskDue = (t: Pick<Task, 'time'>): string | null => timeDue(t.time);
+
+/**
+ * 三个时间字段里有没有任何一个（**含 endAt**）—— "这条任务落进时间轴了吗"。
+ *
+ * 与 `normalizeTaskTime` 同一口径：规范化之后，"有属性"与"有锚点"必然一致，
+ * 所以这个判断也是"该不该出现在日历 / 甘特图上"的判据。
+ */
+export function hasAnyTime(
+  time: Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
+): boolean {
+  return Boolean(time.startAt || time.endAt || time.dueAt);
+}
+
 /**
  * 时间字段的收口：把"说了有属性、却一个锚点都没填"的时间退化成"没时间"。
  *
@@ -121,8 +194,7 @@ export const hasConcreteTime = (t: Pick<Task, 'time'>) =>
  * （`data/db/mappers.ts`）上，让库里根本存不下这种行、读出来也已经被纠正。
  */
 export function normalizeTaskTime(time: TaskTime): TaskTime {
-  const hasAnchor = Boolean(time.startAt || time.endAt || time.dueAt);
-  if (time.attribute !== 'none' && !hasAnchor) {
+  if (time.attribute !== 'none' && !hasAnyTime(time)) {
     return { attribute: 'none', startAt: null, endAt: null, dueAt: null };
   }
   return time;

@@ -1,7 +1,7 @@
 import { addDays, differenceInCalendarWeeks, startOfWeek } from 'date-fns';
 
 import { TaskStatus } from './enums';
-import type { RepeatRule, Task, TaskTime } from './task';
+import { taskAnchor, type RepeatRule, type Task, type TaskTime } from './task';
 
 /**
  * 重复任务的「下一期」计算与描述。
@@ -103,7 +103,7 @@ export function describeReminder(minutes: number | null | undefined): string {
  */
 export function advanceRepeatingTask(task: Task): Partial<Task> | null {
   if (!task.repeat) return null;
-  const anchor = task.time.startAt ?? task.time.dueAt;
+  const anchor = taskAnchor(task);
   if (!anchor) return null;
 
   const next = nextOccurrence(task.repeat, new Date(anchor));

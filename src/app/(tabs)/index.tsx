@@ -23,7 +23,7 @@ import {
 } from '@/domain/focus-candidate';
 import { describeMark, pickUpcoming, sortMarkViews } from '@/domain/marks';
 import type { CaptureRoute } from '@/domain/routing';
-import type { Task } from '@/domain/task';
+import { taskAnchor, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { formatDateLong, formatDayTime } from '@/utils/datetime';
@@ -138,7 +138,7 @@ export default function HomeScreen() {
       tasks
         .filter((task) => task.status !== TaskStatus.Done)
         .map((task) => {
-          const anchor = task.time.startAt ?? task.time.dueAt;
+          const anchor = taskAnchor(task);
           return {
             key: task.id,
             label: task.title,

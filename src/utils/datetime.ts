@@ -23,12 +23,6 @@ export const isSameDayIso = (a: string | null | undefined, b: Date = new Date())
   return d ? isSameDay(d, b) : false;
 };
 
-/** 是否已经过期 */
-export const isOverdue = (iso: string | null | undefined, now: Date = new Date()): boolean => {
-  const d = toDate(iso);
-  return d ? d.getTime() < now.getTime() : false;
-};
-
 /** 今天 09:00 这类"当天整点" */
 export const atTimeToday = (hours: number, minutes = 0, base: Date = new Date()): string => {
   const d = startOfDay(base);

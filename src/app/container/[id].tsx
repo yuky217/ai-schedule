@@ -15,6 +15,7 @@ import type { Container } from '@/domain/container';
 import { CONTAINER_KIND_LABEL, containerStats } from '@/domain/container-stats';
 import { ContainerKind, ContainerStatus } from '@/domain/enums';
 import type { GanttItem } from '@/domain/gantt';
+import { taskDue } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { describeDue, formatMonthDay, parseDayKey } from '@/utils/datetime';
@@ -452,9 +453,9 @@ export default function ContainerDetailScreen() {
                   <ThemedText type="small" numberOfLines={1} style={styles.pickText}>
                     {task.title}
                   </ThemedText>
-                  {task.time.dueAt ?? task.time.startAt ? (
+                  {taskDue(task) ? (
                     <ThemedText type="small" themeColor="textSecondary">
-                      {describeDue(task.time.dueAt ?? task.time.startAt)}
+                      {describeDue(taskDue(task))}
                     </ThemedText>
                   ) : null}
                 </Pressable>

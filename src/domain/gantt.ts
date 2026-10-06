@@ -1,5 +1,7 @@
 import { addDays, differenceInCalendarDays, startOfDay } from 'date-fns';
 
+import { hasAnyTime } from './task';
+
 /**
  * 甘特图的布局计算（主文档 5.3：**甘特图只是视图，不是新实体**）。
  *
@@ -173,7 +175,7 @@ export function ganttTicks(layout: GanttLayout): GanttTick[] {
  */
 export function canReschedule(item: GanttItem): boolean {
   if (item.kind !== 'task') return false;
-  return Boolean(item.startAt || item.endAt || item.dueAt);
+  return hasAnyTime(item);
 }
 
 /**

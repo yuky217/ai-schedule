@@ -14,6 +14,5 @@ export * from './parse-schedule';
 export * from './repeat-next';
 export * from './routing';
 export * from './schedule-presets';
-export * from './scheduling';
 export * from './subtask-progress';
 export * from './task';

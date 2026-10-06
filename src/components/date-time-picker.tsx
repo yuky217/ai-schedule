@@ -10,7 +10,7 @@ import { TimeWheel } from '@/components/time-wheel';
 import { Spacing } from '@/constants/theme';
 import { TimeAttribute } from '@/domain/enums';
 import { buildCustomTime } from '@/domain/schedule-presets';
-import type { Task, TaskTime } from '@/domain/task';
+import { taskAnchor, type Task, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { parseDayKey, toDayKey } from '@/utils/datetime';
 
@@ -50,7 +50,7 @@ export function defaultDraft(now: Date = new Date()): DateTimeDraft {
 
 /** 从任务现有的时间做草稿；没有时间就回落默认值 */
 export function draftFromTask(task: Pick<Task, 'time'>, now: Date = new Date()): DateTimeDraft {
-  const anchor = task.time.startAt ?? task.time.dueAt;
+  const anchor = taskAnchor(task);
   if (!anchor) return defaultDraft(now);
   const date = new Date(anchor);
   if (Number.isNaN(date.getTime())) return defaultDraft(now);

@@ -30,7 +30,7 @@ import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
 import { subtaskProgress } from '@/domain/subtask-progress';
 import { taskDisplayState } from '@/domain/task-state';
-import type { RepeatRule, Task, TaskTime } from '@/domain/task';
+import { taskAnchor, type RepeatRule, type Task, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { describeDue, formatDayTime } from '@/utils/datetime';
@@ -303,7 +303,7 @@ export default function TaskDetailScreen() {
 
   const handleComplete = async () => {
     if (!task) return;
-    const isRepeating = Boolean(task.repeat) && Boolean(task.time.startAt ?? task.time.dueAt);
+    const isRepeating = Boolean(task.repeat) && taskAnchor(task) !== null;
     await completeTask(task.id);
     if (isRepeating) {
       // 重复任务"完成"= 滚到下一期，人还在这一页，刷新一下看新时间
@@ -422,7 +422,7 @@ export default function TaskDetailScreen() {
     );
   }
 
-  const anchor = task.time.startAt ?? task.time.dueAt ?? null;
+  const anchor = taskAnchor(task);
   const isDeadline = task.time.attribute === 'deadline';
   const done = task.status === TaskStatus.Done;
 

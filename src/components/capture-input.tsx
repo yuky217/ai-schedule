@@ -16,7 +16,7 @@ import { Spacing } from '@/constants/theme';
 import type { Container } from '@/domain/container';
 import { parseSchedule } from '@/domain/parse-schedule';
 import { describeReminder, describeRepeat, REMINDER_PRESETS, REPEAT_PRESETS } from '@/domain/repeat-next';
-import type { RepeatRule, TaskTime } from '@/domain/task';
+import { timeAnchor, type RepeatRule, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
@@ -285,7 +285,7 @@ export function CaptureInput({
 
 /** 把已解析出的 TaskTime 显示成"今天 14:00" */
 function formatTimeOfTime(time: TaskTime): string {
-  const iso = time.startAt ?? time.dueAt;
+  const iso = timeAnchor(time);
   if (!iso) return '时间';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '时间';

@@ -1,6 +1,5 @@
 import { TimeAttribute } from './enums';
-import type { Task } from './task';
-import type { TaskTime } from './task';
+import { taskAnchor, type Task, type TaskTime } from './task';
 
 /**
  * 「安排时间」的预设（对应收集箱的"给它定个时间"动作）。
@@ -53,7 +52,7 @@ export function buildScheduleTime(preset: SchedulePreset, base: Date = new Date(
  * 并保持任务原本的时间属性（固定时间继续是固定时间，截止继续是截止）。
  */
 export function buildRetimedTime(task: Task, minutesOfDay: number): TaskTime | null {
-  const anchor = task.time.startAt ?? task.time.dueAt;
+  const anchor = taskAnchor(task);
   if (!anchor) return null;
   const d = new Date(anchor);
   if (Number.isNaN(d.getTime())) return null;
@@ -72,7 +71,7 @@ export function buildPlacedTime(
   date: Date,
   minutesOfDay: number,
 ): TaskTime | null {
-  const anchor = task.time.startAt ?? task.time.dueAt;
+  const anchor = taskAnchor(task);
   if (!anchor) return null;
   if (Number.isNaN(date.getTime())) return null;
 
@@ -119,7 +118,7 @@ export function buildCustomTime(
  * 日程型挪 startAt，截止型挪 dueAt；无时间任务返回 null（不该出现在日历上）。
  */
 export function buildRescheduledTime(task: Task, date: Date): TaskTime | null {
-  const anchor = task.time.startAt ?? task.time.dueAt;
+  const anchor = taskAnchor(task);
   if (!anchor) return null;
   const old = new Date(anchor);
   if (Number.isNaN(old.getTime())) return null;

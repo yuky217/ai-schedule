@@ -6,7 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { TaskKind, TaskStatus } from '@/domain/enums';
 import { describeRepeat, describeReminder } from '@/domain/repeat-next';
-import type { Task } from '@/domain/task';
+import { taskDue, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { describeDue, formatDayTime } from '@/utils/datetime';
 
@@ -16,14 +16,6 @@ export const KIND_LABEL: Record<TaskKind, string> = {
   [TaskKind.Execution]: '执行',
   [TaskKind.Habit]: '习惯',
   [TaskKind.Idea]: '想法',
-};
-
-/** 状态标签 */
-export const STATUS_LABEL: Record<TaskStatus, string> = {
-  [TaskStatus.Todo]: '待办',
-  [TaskStatus.Doing]: '进行中',
-  [TaskStatus.Waiting]: '等待中',
-  [TaskStatus.Done]: '已完成',
 };
 
 export interface TaskRowProps {
@@ -39,7 +31,8 @@ export interface TaskRowProps {
 export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskRowProps) {
   const theme = useTheme();
   const done = task.status === TaskStatus.Done;
-  const anchor = task.time.dueAt ?? task.time.startAt ?? null;
+  // 行上显示的是"期限"（优先截止），不是"什么时候发生" —— 两者不同，见 taskDue 的注释
+  const anchor = taskDue(task);
 
   return (
     <Pressable

@@ -1,7 +1,7 @@
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Platform } from 'react-native';
 
-import type { Task } from '@/domain/task';
+import { taskAnchor, type Task } from '@/domain/task';
 
 /**
  * 提醒调度。
@@ -179,7 +179,7 @@ async function ensureAndroidChannel(mod: NotificationsModule): Promise<void> {
  * 若提前量时刻已过但准点还没到，退回准点提醒（比不提醒好）。
  */
 export async function scheduleTaskReminder(task: Task): Promise<string | null> {
-  const anchor = task.time.startAt ?? task.time.dueAt ?? null;
+  const anchor = taskAnchor(task);
   if (!anchor) return null;
 
   const anchorDate = new Date(anchor);
