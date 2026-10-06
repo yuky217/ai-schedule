@@ -105,9 +105,17 @@ npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest build \
    HOME="D:/艾粤希/.expo-home" USERPROFILE="D:\\艾粤希\\.expo-home" \
      EXPO_NO_TELEMETRY=1 npx expo start
    ```
-3. **装完后 `tsc` 报一堆 "Could not find a declaration file for module 'expo-router'"**
-   部分包的 `.d.ts` 在安装过程中丢失（只剩 `.d.ts.map`）。修复方式：把官方
-   tarball 直接覆盖解压回 `node_modules/<pkg>`（不删文件、只补缺）。
+3. **npm 装的包随机报 `MODULE_NOT_FOUND`（缺 `.js` / 缺 `.d.ts`）**
+   本机病根（2026-10-07 抓到实锤）：安装时写某些文件的动作会被系统删除守卫拦截，
+   文件被改名成 **`原名.DELETE.<hash>`** 挂在原地 —— `main` 指向的 `index.js`、
+   类型声明 `.d.ts` 都这么丢的，坏的位置随机，所以症状五花八门。
+   **修法一条命令**：把残留复制回原名即可：
+   ```bash
+   find <目录> -name "*.DELETE.*" | while IFS= read -r f; do
+     cp "$f" "${f%.DELETE.*}"; done
+   ```
+   `<目录>` 是出事的 `node_modules`（npx 缓存条目、项目 node_modules 都一样）。
+   以后任何"包文件莫名缺失"先扫 `.DELETE.*`，别再重装碰运气。
 4. **web 打包报 "Unable to resolve module ./wa-sqlite/wa-sqlite.wasm"**
    Metro 默认不把 `.wasm` 当资源解析。已通过根目录 `metro.config.js` 修复：
    `assetExts.push('wasm')` + 开发服务器加 COOP/COEP 响应头
