@@ -69,7 +69,8 @@ export function describeRepeat(rule: RepeatRule): string {
   if (rule.freq === 'monthly') return n > 1 ? `每 ${n} 个月` : '每月';
 
   if (rule.byWeekday?.length) {
-    const sorted = [...new Set(rule.byWeekday)].sort((a, b) => a - b);
+    // 按中文说话习惯排：周一在前、周日收尾（0 = 周日）
+    const sorted = [...new Set(rule.byWeekday)].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
     const isWorkweek =
       n === 1 &&
       sorted.length === 5 &&
@@ -106,7 +107,16 @@ export function advanceRepeatingTask(task: Task): Partial<Task> | null {
   const anchor = taskAnchor(task);
   if (!anchor) return null;
 
-  const next = nextOccurrence(task.repeat, new Date(anchor));
+  // 「下一期必须是未来」：用户可能晚勾 —— 昨天 08:00 的每日任务今天 10:00 才打勾，
+  // 只从原锚点 +1 天算，下一期就是"今天 08:00"= 过去，任务回待办却带着过去的时间，
+  // 立刻被判 missed。所以从锚点一路往后滚，取第一个晚于现在的期。
+  // 提前勾不受影响：那时的下一期本来就还在未来。
+  let next = nextOccurrence(task.repeat, new Date(anchor));
+  let guard = 0;
+  while (next && next.getTime() <= Date.now() && guard < 3660) {
+    next = nextOccurrence(task.repeat, next);
+    guard++;
+  }
   if (!next) return null;
   const iso = next.toISOString();
 

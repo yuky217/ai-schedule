@@ -246,3 +246,20 @@ export async function cancelTaskReminders(taskId: string): Promise<void> {
     // 忽略：通知不可用或取消失败都不影响主流程
   }
 }
+
+/**
+ * 撤掉全部已排通知。备份"覆盖导入"后调用 —— 库已经整体换血，
+ * 分不清哪些旧通知还作数，全撤再按新库重排是最稳的做法。
+ */
+export async function cancelAllReminders(): Promise<void> {
+  const Notifications = await loadNotifications();
+  if (!Notifications) return;
+  try {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const item of scheduled) {
+      await Notifications.cancelScheduledNotificationAsync(item.identifier);
+    }
+  } catch {
+    // 忽略
+  }
+}

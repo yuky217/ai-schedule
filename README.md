@@ -239,6 +239,16 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
     `domain/task-anchor.guard.test.ts` 会**扫源码**守住这条：再手写第 14 处就变红，
     并直接告诉你该换成哪个函数。
 
+13. **加表必须同步挂进三处**：`schema.ts` 的 `TABLES`、`BACKUP_TABLES`（漏了 = 恢复后
+    这张表的数据全部蒸发，打卡表漏过一次）、`client.ts` 的 `clearAllTables`
+    （子表在前；`import.ts` 的 replace 复用它，别再自己写 DELETE 顺序）。
+    `import.test.ts` 有不变量守着第一处。重复任务完成滚期有一条不变量：
+    **下一期必须是未来**（`advanceRepeatingTask` 一路滚过已过去的期）——
+    用户晚勾一天，只从原锚点 +1 会滚进过去、立刻被判 missed。
+    撤销完成（`reopenTask`）必须把提醒排回去：`completeTask` 撤过通知。
+    备份覆盖导入 / 清空数据之后必须处理通知：导入后 `resyncReminders()`、
+    清空后 `cancelAllReminders()`，否则旧任务的提醒照弹、新任务的一条没排。
+
 ## 六、数据库
 
 七张业务表 + 一张元信息表：`tasks` / `ideas` / `containers` / `task_chains` / `marks` / `focus_sessions` / `task_checkins` / `app_meta`。

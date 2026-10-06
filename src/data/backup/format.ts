@@ -10,10 +10,18 @@ import { SCHEMA_VERSION, TABLES } from '@/data/db/schema';
 
 export const BACKUP_FORMAT = 'ai-schedule-backup';
 
-/** 备份覆盖的表，顺序固定（便于 diff 两份备份） */
+/**
+ * 备份覆盖的表，顺序固定（便于 diff 两份备份）。
+ *
+ * **加新表时必须把表名挂进来** —— import.test.ts 有一条不变量
+ * （BACKUP_TABLES 覆盖 schema 除 app_meta 外的所有表）会把漏掉的当场揪红。
+ * task_checkins（打卡）就漏过一次：v3 加了表没进备份，恢复后习惯
+ * 连续天数、频率型达标记录全部蒸发。
+ */
 export const BACKUP_TABLES = [
   TABLES.containers,
   TABLES.tasks,
+  TABLES.checkins,
   TABLES.ideas,
   TABLES.chains,
   TABLES.marks,

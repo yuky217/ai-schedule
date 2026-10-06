@@ -8,7 +8,7 @@ import { ideaRepository } from '@/data/repositories/idea-repository';
 import { markRepository } from '@/data/repositories/mark-repository';
 import { taskRepository } from '@/data/repositories/task-repository';
 import { quickCapture, type QuickCaptureInput, type QuickCaptureResult } from '@/entry/quick-capture';
-import { cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications';
+import { cancelAllReminders, cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
 import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
@@ -118,6 +118,8 @@ interface AppState {
   completeTask: (id: string) => Promise<void>;
   /** 把已完成的任务放回待办（收集箱底部的"已完成"区用它撤销） */
   reopenTask: (id: string) => Promise<void>;
+  /** 备份覆盖导入后重排全部提醒（旧通知还挂着、新通知没排） */
+  resyncReminders: () => Promise<void>;
   removeTask: (id: string) => Promise<void>;
   archiveIdea: (id: string) => Promise<void>;
 
@@ -337,8 +339,28 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   /** 撤销完成：把任务放回待办。收集箱底部的"已完成"区和任务详情页都用它 */
   reopenTask: async (id) => {
-    await taskRepository.setStatus(id, TaskStatus.Todo);
+    const updated = await taskRepository.setStatus(id, TaskStatus.Todo);
+    if (updated) {
+      // completeTask 已经把通知撤了，撤销完成 = 这件事回到"到点该提醒"的行列，
+      // 必须把提醒排回去 —— 否则"取消勾选之后它就再也不提醒了"。
+      await cancelTaskReminders(id);
+      await scheduleTaskReminder(updated);
+    }
     await get().refresh();
+  },
+
+  /**
+   * 重排全部提醒。备份"覆盖导入"后调用：库整体换血了，
+   * 旧任务的已排通知还挂着（会照弹）、新任务的通知一条没排。
+   * 全撤重来，按现库逐条排 —— 提醒不可用的环境里 scheduleTaskReminder
+   * 是 no-op，这条动作照常安全。
+   */
+  resyncReminders: async () => {
+    await cancelAllReminders();
+    const tasks = await taskRepository.listAll();
+    for (const task of tasks) {
+      if (task.status !== TaskStatus.Done) await scheduleTaskReminder(task);
+    }
   },
 
   removeTask: async (id) => {
@@ -633,7 +655,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             // 达标完成 = 这条任务不再需要提醒
             await cancelTaskReminders(task.id);
           } else {
-            // 时间没变，但状态可能从别处改过，重排一次更稳妥
+            // 时间没变，但状态可能从别处改过，撤旧排新才不会出现双提醒
+            await cancelTaskReminders(task.id);
             const fresh = await taskRepository.getById(task.id);
             if (fresh) await scheduleTaskReminder(fresh);
           }

@@ -11,7 +11,7 @@ import { Spacing } from '@/constants/theme';
 import { exportBackup } from '@/data/backup/export';
 import { restoreFromPicker } from '@/data/backup/import';
 import { SCHEMA_VERSION } from '@/data/db/schema';
-import { getReminderSupport, sendTestReminder, type ReminderSupport } from '@/entry/notifications';
+import { getReminderSupport, sendTestReminder, cancelAllReminders, type ReminderSupport } from '@/entry/notifications';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
@@ -95,6 +95,8 @@ export default function SettingsScreen() {
             } else {
               const total = Object.values(summary.imported).reduce((sum, n) => sum + n, 0);
               await refresh();
+              // 库整体换血了：旧任务的已排通知还挂着、新任务的一条没排，全撤重排
+              await useAppStore.getState().resyncReminders();
               setMessage(`导入完成，共恢复 ${total} 条记录`);
             }
           } catch (error) {
@@ -115,6 +117,8 @@ export default function SettingsScreen() {
         style: 'destructive',
         onPress: async () => {
           await wipeLocalData();
+          // 库空了，通知还挂着会照弹 —— 一并撤掉
+          await cancelAllReminders();
           setMessage('本地数据已清空');
         },
       },

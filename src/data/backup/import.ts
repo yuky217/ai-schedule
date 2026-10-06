@@ -1,7 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 
-import { withTransaction } from '@/data/db/client';
+import { clearAllTables, withTransaction } from '@/data/db/client';
 import { insertParams, upsertSql, type ColumnMap } from '@/data/db/sql';
 
 import {
@@ -68,11 +68,14 @@ export async function importBackup(
   const imported: Record<string, number> = {};
 
   await withTransaction(async (db) => {
+    if (mode === 'replace') {
+      // 清空必须按"子表在前"的顺序走 client.ts 的统一实现 ——
+      // 自己按 BACKUP_TABLES 顺序删是反的（containers 在最前、它是被引用方）。
+      // 现在表还没声明外键所以不炸，但一旦补上外键声明，反序删除当场失败。
+      await clearAllTables();
+    }
     for (const table of BACKUP_TABLES) {
       const rows = envelope.tables[table] ?? [];
-      if (mode === 'replace') {
-        await db.execAsync(`DELETE FROM ${table}`);
-      }
       for (const row of rows) {
         const columns = toColumnMap(row);
         if (!Object.keys(columns).length) continue;
