@@ -10,16 +10,28 @@ import { taskAnchor, type Task, type TaskTime } from './task';
  * 注意：domain 层保持纯逻辑，不依赖 React Native；date-fns 是纯库，允许使用。
  */
 
-export interface SchedulePreset {
-  id: string;
-  /** 界面显示文案 */
-  label: string;
-  attribute: Extract<TimeAttribute, 'fixed' | 'deadline'>;
-  /** 距今几天 */
-  dayOffset: number;
-  hour: number;
-  minute: number;
-}
+/**
+ * 预设有两种形状：
+ * - 时钟型：落在"某天某点"（今天上午、明天前……）；
+ * - 相对型：落在"从现在起 N 分钟"（稍后）—— 用户要"安排到近未来"时，
+ *   不该被迫去滚轮上精确对齐一个具体钟点。
+ */
+export type SchedulePreset =
+  | {
+      id: string;
+      label: string;
+      attribute: Extract<TimeAttribute, 'fixed' | 'deadline'>;
+      dayOffset: number;
+      hour: number;
+      minute: number;
+    }
+  | {
+      id: string;
+      label: string;
+      attribute: Extract<TimeAttribute, 'fixed'>;
+      /** 从现在起多少分钟 */
+      relativeMinutes: number;
+    };
 
 export const SCHEDULE_PRESETS: readonly SchedulePreset[] = [
   { id: 'today-am', label: '今天 上午', attribute: 'fixed', dayOffset: 0, hour: 9, minute: 0 },
@@ -27,12 +39,19 @@ export const SCHEDULE_PRESETS: readonly SchedulePreset[] = [
   { id: 'tonight', label: '今晚', attribute: 'fixed', dayOffset: 0, hour: 20, minute: 0 },
   { id: 'tomorrow-am', label: '明天 上午', attribute: 'fixed', dayOffset: 1, hour: 9, minute: 0 },
   { id: 'tomorrow-pm', label: '明天 下午', attribute: 'fixed', dayOffset: 1, hour: 14, minute: 0 },
+  { id: 'later', label: '稍后', attribute: 'fixed', relativeMinutes: 120 },
   { id: 'today-due', label: '今晚前', attribute: 'deadline', dayOffset: 0, hour: 23, minute: 59 },
   { id: 'tomorrow-due', label: '明天前', attribute: 'deadline', dayOffset: 1, hour: 23, minute: 59 },
 ];
 
 /** 把预设换算成具体的 TaskTime（fixed → startAt；deadline → dueAt） */
 export function buildScheduleTime(preset: SchedulePreset, base: Date = new Date()): TaskTime {
+  if ('relativeMinutes' in preset) {
+    const d = new Date(base.getTime() + preset.relativeMinutes * 60_000);
+    const iso = d.toISOString();
+    return { attribute: TimeAttribute.Fixed, startAt: iso, endAt: null, dueAt: null };
+  }
+
   const d = new Date(base);
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + preset.dayOffset);

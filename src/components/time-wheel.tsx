@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import {
+  Pressable,
   ScrollView,
   StyleSheet,
   View,
@@ -22,7 +23,13 @@ import { useTheme } from '@/hooks/use-theme';
  * 分钟步进为 1 分钟（不是常见的 5 分钟）：用户要的是"能设成 19:37"，
  * 5 分钟粒度看着整齐，但会把"会议 14:07 开始"这种事永远挡在门外。
  *
- * ── 滚轮修过的三个坑（都是真机上撞出来的，别改回去）────────────────────────
+ * ── 滚轮修过的坑（都是真机上撞出来的，别改回去）────────────────────────────
+ *
+ * 0. **滚动手势在真机上靠不住，所以行点选不是锦上添花，是保底通道。**
+ *    四层防备（nestedScrollEnabled、外层滚动锁、自动解锁、结算容差）之后，
+ *    真机上仍有"轮子滚不动"的报告。不再赌第五层手势修复：每一行数字
+ *    **可以直接点选**（点谁选谁，iOS 滚轮的同款行为）—— 这条路不经过
+ *    任何滚动冲突，在所有设备上必然可用。滚动只是加速，不是唯一入口。
  *
  * 1. **竖直 ScrollView 套竖直 ScrollView，内层滚不动。**
  *    滚轮的每个使用点（自定义时间面板、安排面板）都把它放在另一个竖直
@@ -258,14 +265,26 @@ function Wheel({
       {values.map((value) => {
         const active = value === index;
         return (
-          <View key={value} style={styles.item}>
+          <Pressable
+            key={value}
+            accessibilityRole="button"
+            accessibilityLabel={format(value)}
+            // 点谁选谁：滚动手势的保底通道（见文件头第 0 条）。
+            // 只在值确实变了时走 onChange，避免点中选行触发多余的父级重渲染。
+            onPress={() => {
+              if (value === index) return;
+              reported.current = value;
+              onIndexChange(value);
+              scrollToIndex(value, true);
+            }}
+            style={styles.item}>
             <ThemedText
               type={active ? 'smallBold' : 'small'}
               themeColor={active ? 'text' : 'textSecondary'}
               style={[styles.itemText, !active && styles.itemIdle]}>
               {format(value)}
             </ThemedText>
-          </View>
+          </Pressable>
         );
       })}
     </ScrollView>
