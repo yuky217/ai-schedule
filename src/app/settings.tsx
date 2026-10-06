@@ -55,7 +55,7 @@ export default function SettingsScreen() {
     const ok = await sendTestReminder(5);
     setTestResult(
       ok
-        ? '已排一条 5 秒后的提醒。把 App 切到后台，等它弹出来。'
+        ? '已排一条 5 秒后的提醒。等 5 秒：弹出来了 = 提醒链路正常；没弹 = 去手机「系统设置 → 应用 → Expo Go → 通知」打开权限，回来再试一次。'
         : '没排上 —— 这台设备当前环境下提醒用不了。',
     );
     setReminder(await getReminderSupport());

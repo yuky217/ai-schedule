@@ -26,6 +26,7 @@ import {
 } from '@/domain/habit-convert';
 import { describePeriodProgress, occurrencesInPeriod } from '@/domain/habit-period';
 import { describePastWindow, planEventShift, toLooseTodo } from '@/domain/past-event';
+import { describeNextFire } from '@/domain/reminder';
 import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
 import { subtaskProgress } from '@/domain/subtask-progress';
@@ -707,6 +708,10 @@ export default function TaskDetailScreen() {
             <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
           </View>
         </Pressable>
+        {/* 提醒是静默调度的（权限被拒、时间已过都不出声），把"排没排上"说在明处 */}
+        <ThemedText type="small" themeColor="textSecondary" style={styles.reminderNote}>
+          {describeNextFire(task)}
+        </ThemedText>
 
         <Pressable
           accessibilityRole="button"
@@ -1113,6 +1118,11 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
   },
   settingValue: { flexDirection: 'row', alignItems: 'center', gap: 2, marginLeft: 'auto' },
+  reminderNote: {
+    paddingHorizontal: Spacing.three,
+    marginTop: -Spacing.one,
+    marginBottom: Spacing.one,
+  },
   inlineInput: {
     borderRadius: Spacing.two,
     borderWidth: StyleSheet.hairlineWidth,
