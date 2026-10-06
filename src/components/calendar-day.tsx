@@ -12,9 +12,10 @@ import Animated, {
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { isMuted, taskDisplayState } from '@/domain/task-state';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
-import { formatTime } from '@/utils/datetime';
+import { describeDue, formatTime } from '@/utils/datetime';
 
 /**
  * 日视图：纵向小时刻度 + 任务块。
@@ -29,6 +30,10 @@ import { formatTime } from '@/utils/datetime';
  * 改时刻：**长按块拾起**（有触感反馈）→ 上下拖 → 吸到 15 分钟刻度 →
  * 松手落库。之前这里长按是"勾选完成"，跟"想拖动"是同一个手势，必然误触；
  * 现在长按只做拾起，完成只能点块上的圆圈。
+ *
+ * 完成态：已经做完的事**照样画出来**（灰掉、划掉、不给拖）——
+ * 日历回答的是"这段时间发生过什么"，不是"还剩什么没做"。
+ * 过了时间的固定型（上周的会）同样弱化，但它不会自动变成完成。
  */
 
 const START_HOUR = 5;
@@ -168,21 +173,37 @@ export function CalendarDay({
             截止
           </ThemedText>
           <View style={styles.deadlineItems}>
-            {deadlines.map((task) => (
-              <Pressable
-                key={task.id}
-                accessibilityRole="button"
-                onPress={() => onSelectTask(task)}
-                style={[styles.deadline, { backgroundColor: theme.backgroundSelected }]}>
-                <Ionicons name="alarm-outline" size={12} color={theme.textSecondary} />
-                <ThemedText type="small" numberOfLines={1} style={styles.deadlineText}>
-                  {task.title}
-                </ThemedText>
-                <ThemedText type="small" themeColor="textSecondary">
-                  {formatTime(task.time.dueAt)}
-                </ThemedText>
-              </Pressable>
-            ))}
+            {deadlines.map((task) => {
+              const state = taskDisplayState(task, now);
+              const done = state === 'done';
+              // 截止型过期 = 欠着，值得显眼一点；把"已过期 3 天"直接说出来
+              const overdue = state === 'overdue';
+              return (
+                <Pressable
+                  key={task.id}
+                  accessibilityRole="button"
+                  onPress={() => onSelectTask(task)}
+                  style={[
+                    styles.deadline,
+                    { backgroundColor: theme.backgroundSelected, opacity: done ? 0.5 : 1 },
+                  ]}>
+                  <Ionicons
+                    name={overdue ? 'alert-circle-outline' : 'alarm-outline'}
+                    size={12}
+                    color={theme.textSecondary}
+                  />
+                  <ThemedText
+                    type="small"
+                    numberOfLines={1}
+                    style={[styles.deadlineText, done ? styles.struck : undefined]}>
+                    {task.title}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    {overdue ? describeDue(task.time.dueAt, now) : formatTime(task.time.dueAt)}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       ) : null}
@@ -261,6 +282,11 @@ function TimedBlock({
   const theme = useTheme();
   const baseMinutes = minutesOfDay(task.time.startAt!);
 
+  /** 完成 / 已经过去 —— 决定这块是"灰掉"还是"正常" */
+  const state = taskDisplayState(task);
+  const done = state === 'done';
+  const muted = isMuted(state);
+
   /** 拖动位移（UI 线程） */
   const dragY = useSharedValue(0);
   /** 原始分钟数也放进 shared value：worklet 里读不到 JS 的变量 */
@@ -332,6 +358,8 @@ function TimedBlock({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
+        // 已完成的不给拖：那天已经过去了，挪它没有意义
+        .enabled(!done)
         .activateAfterLongPress(PICK_UP_DELAY)
         // 横向留给页面翻页，这个手势只认竖直
         .failOffsetX([-16, 16])
@@ -359,7 +387,7 @@ function TimedBlock({
           'worklet';
           runOnJS(cancel)();
         }),
-    [cancel, commit, dragY, lastSnap, origin, pickUp, updateTarget],
+    [cancel, commit, done, dragY, lastSnap, origin, pickUp, updateTarget],
   );
 
   const blockStyle = useAnimatedStyle(() => ({
@@ -381,6 +409,8 @@ function TimedBlock({
             left: `${column * widthPct}%`,
             width: `${widthPct}%`,
             zIndex: pickedUp ? 10 : 1,
+            // 完成的和已经过去的都退到背景里，让"还没做的"自己跳出来
+            opacity: muted ? (done ? 0.5 : 0.72) : 1,
           },
         ]}>
         <Pressable
@@ -397,18 +427,19 @@ function TimedBlock({
           <View
             style={[
               styles.blockBar,
-              { backgroundColor: isDeadline ? theme.textSecondary : theme.text },
+              { backgroundColor: done || isDeadline ? theme.textSecondary : theme.text },
             ]}
           />
           <View style={styles.blockBody}>
-            <ThemedText type="small" numberOfLines={2}>
+            <ThemedText type="small" numberOfLines={2} style={done ? styles.struck : undefined}>
               {task.title}
             </ThemedText>
             <ThemedText type="small" themeColor="textSecondary" style={styles.blockTime}>
               {formatMinutes(baseMinutes)}
             </ThemedText>
           </View>
-          {onComplete ? (
+          {/* 已完成的不再给勾选圈：要取消完成请进详情页，那儿是唯一能改状态的地方 */}
+          {onComplete && !done ? (
             <Pressable
               accessibilityRole="checkbox"
               accessibilityLabel="标记为完成"
@@ -469,8 +500,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.22,
     shadowRadius: 8,
-  },  blockBody: { flex: 1, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
+  },
+  blockBody: { flex: 1, paddingHorizontal: Spacing.two, paddingVertical: Spacing.one },
   blockTime: { fontSize: 11, lineHeight: 15 },
+  struck: { textDecorationLine: 'line-through' },
   blockCheck: {
     width: 22,
     height: 22,

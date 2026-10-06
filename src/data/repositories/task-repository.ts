@@ -79,6 +79,10 @@ export const taskRepository = {
    * 第一个式子是"最早的那个时间点不晚于窗口末端"，
    * 第二个是"最晚的那个时间点不早于窗口起点"，两个都成立才说明有交集。
    * 只比较 startAt 会把"上个月开始、下周截止"的任务漏掉。
+   *
+   * **刻意不过滤状态**：日历回答的是"这段时间发生过什么"，不是"还剩什么没做"，
+   * 所以已完成的事必须查得出来（由界面画成灰色）。以前这里带 `status != done`，
+   * 结果"完成的日程在日历上显示"从查询这一步就断了 —— 界面再怎么写都没用。
    */
   async listScheduledBetween(fromIso: string, toIso: string): Promise<Task[]> {
     const db = await getDatabase();
@@ -86,12 +90,11 @@ export const taskRepository = {
       `SELECT * FROM ${TABLE}
         WHERE ${LIVE}
           AND ${TOP_LEVEL}
-          AND status != ?
           AND time_attribute != 'none'
           AND COALESCE(start_at, due_at) <= ?
           AND COALESCE(due_at, start_at) >= ?
         ORDER BY COALESCE(start_at, due_at) ASC`,
-      [TaskStatus.Done, toIso, fromIso],
+      [toIso, fromIso],
     );
     return rows.map(taskFromRow);
   },

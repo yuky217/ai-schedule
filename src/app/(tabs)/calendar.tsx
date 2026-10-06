@@ -21,8 +21,10 @@ import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
+import { TaskStatus } from '@/domain/enums';
 import { buildPlacedTime, buildRescheduledTime, buildRetimedTime } from '@/domain/schedule-presets';
 import type { Task } from '@/domain/task';
+import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { useCrossDayDrag } from '@/hooks/use-cross-day-drag';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -321,6 +323,13 @@ export default function CalendarScreen() {
         ? '长按任务块左右拖换天、上下拖换时刻；松手跨天会自动进那天的日视图；点表头也能进某天'
         : '长按任务块上下拖可改时刻；点块进详情；左右滑切换日期';
 
+  /**
+   * 灰掉的是"已经结束"的两类：做完的、以及已经过去的时间段（上周的会）。
+   * 判断复用 domain 的同一份口径，不在这里另写一遍 —— 两边一旦不一致，
+   * 就会出现"图例说有灰的，屏幕上一个都没有"。
+   */
+  const hasMuted = scheduled.some((task) => isMuted(taskDisplayState(task)));
+
   return (
     <Screen title="日历" subtitle="有时间的事才会出现在这里" scrollEnabled={!busyDragging}>
       <View ref={containerRef} style={styles.container} collapsable={false}>
@@ -404,7 +413,9 @@ export default function CalendarScreen() {
         <View style={[styles.legend, { borderColor: theme.backgroundSelected }]}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.legendText}>
             {scheduled.length
-              ? legend
+              ? hasMuted
+                ? `${legend}。灰掉的是已完成的、或已经过去的事`
+                : legend
               : '这个范围内还没有安排 —— 换个月份看看，或者记一条带时间的事，它会自动出现在这里并按时提醒你'}
           </ThemedText>
         </View>
@@ -443,19 +454,25 @@ const DraggableTaskRow = memo(function DraggableTaskRow({
   onOpen,
   onComplete,
 }: DraggableTaskRowProps) {
+  // 手势对象必须长期稳定 —— 拖到一半重建会被系统打断，所以无条件建好再用
   const gesture = useMemo(() => gestureFor(task), [gestureFor, task]);
-  return (
-    <GestureDetector gesture={gesture}>
-      <View style={styles.dragRow}>
-        <TaskRow
-          task={task}
-          onComplete={onComplete}
-          onPress={onOpen}
-          trailing={<DragGrip />}
-        />
-      </View>
-    </GestureDetector>
+  const done = task.status === TaskStatus.Done;
+
+  const row = (
+    <View style={styles.dragRow}>
+      <TaskRow
+        task={task}
+        onComplete={onComplete}
+        onPress={onOpen}
+        // 没有抓手 = 拖不动，视觉上先说清楚，不靠"拖了没反应"去教
+        trailing={done ? undefined : <DragGrip />}
+      />
+    </View>
   );
+
+  // 已完成的不给拖：那天已经过去了，挪它没有意义。要改就进详情页
+  if (done) return row;
+  return <GestureDetector gesture={gesture}>{row}</GestureDetector>;
 });
 
 function NavButton({ label, onPress }: { label: string; onPress: () => void }) {

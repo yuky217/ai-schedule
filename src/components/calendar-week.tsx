@@ -11,6 +11,7 @@ import Animated, {
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { isMuted, taskDisplayState } from '@/domain/task-state';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -327,6 +328,11 @@ function WeekBlock({
 }: WeekBlockProps) {
   const theme = useTheme();
 
+  /** 完成 / 已经过去 —— 灰掉，并且不给拖 */
+  const state = taskDisplayState(task);
+  const done = state === 'done';
+  const muted = isMuted(state);
+
   const dragX = useSharedValue(0);
   const dragY = useSharedValue(0);
   /** worklet 里读不到 JS 变量，原始坐标也放进 shared value */
@@ -404,6 +410,8 @@ function WeekBlock({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
+        // 已完成的不给拖：那天已经过去了，挪它没有意义
+        .enabled(!done)
         .activateAfterLongPress(PICK_UP_DELAY)
         .shouldCancelWhenOutside(false)
         .onStart(() => {
@@ -435,7 +443,7 @@ function WeekBlock({
           'worklet';
           runOnJS(cancel)();
         }),
-    [cancel, colWidthSV, commit, dragX, dragY, lastColumn, lastMinutes, originColumn, originMinutes, pickUp, reportHover],
+    [cancel, colWidthSV, commit, done, dragX, dragY, lastColumn, lastMinutes, originColumn, originMinutes, pickUp, reportHover],
   );
 
   const blockStyle = useAnimatedStyle(() => ({
@@ -457,6 +465,7 @@ function WeekBlock({
             left: 1,
             right: 1,
             zIndex: pickedUp ? 12 : 1,
+            opacity: muted ? (done ? 0.5 : 0.72) : 1,
           },
         ]}>
         <Pressable
@@ -467,11 +476,14 @@ function WeekBlock({
             styles.blockInner,
             {
               backgroundColor: pickedUp ? theme.background : theme.backgroundSelected,
-              borderLeftColor: isDeadline ? theme.textSecondary : theme.text,
+              borderLeftColor: done || isDeadline ? theme.textSecondary : theme.text,
             },
             pickedUp ? styles.lifted : null,
           ]}>
-          <ThemedText type="small" style={styles.blockTitle} numberOfLines={height > 46 ? 2 : 1}>
+          <ThemedText
+            type="small"
+            style={[styles.blockTitle, done ? styles.struck : null]}
+            numberOfLines={height > 46 ? 2 : 1}>
             {task.title}
           </ThemedText>
           {showTime ? (
@@ -537,6 +549,7 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
   },
   blockTitle: { fontSize: 10, lineHeight: 13 },
+  struck: { textDecorationLine: 'line-through' },
   blockTime: { fontSize: 9, lineHeight: 12, marginTop: 'auto' },
   hoverColumn: { position: 'absolute', top: 0, bottom: 0, opacity: 0.5 },
   hoverLine: { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center' },
