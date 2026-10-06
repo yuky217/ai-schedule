@@ -130,7 +130,8 @@ src/
 │   ├── base.ts                 #   公共字段（含同步预留字段）
 │   ├── factory.ts              #   实体工厂，默认值只有一份定义
 │   ├── routing.ts              #   ★ 两档分流：灵感 vs 待办 → 想法库/收集箱/日历
-│   ├── scheduling.ts           #   ★ 优先级打分、自动填充输入、时长/频率自动完成
+│   ├── scheduling.ts           #   优先级打分、自动填充输入、时长/频率自动完成
+│   │                           #   （**目前零引用**：留给自动填充，别当它在生效）
 │   ├── parse-schedule.ts       #   从一句话里解析时间（纯本地启发式，无需 AI）
 │   ├── schedule-presets.ts     #   时间预设 + 自定义时间构造
 │   ├── repeat-next.ts          #   重复规则 → 下一次该排的时间
@@ -144,12 +145,14 @@ src/
 │   ├── gantt.ts                #   甘特图纯布局 + 改期纯函数
 │   ├── calendar-window.ts      #   日历数据窗口（月视图按整周网格 + 两端 7 天余量）
 │   ├── review.ts               #   ★「回」的全部口径
+│   ├── past-event.ts           #   ★ 过去没打勾的事：挪一下 / 改成待办 / 拿掉
 │   ├── ordering.ts             #   排序次关键字（保证行序确定）
 │   └── *.test.ts               #   vitest 用例，与源文件同目录
 │
 ├── data/                       # 【数据层】本地优先，预留同步
-│   ├── db/schema.ts            #   DDL 与索引（当前 SCHEMA_VERSION = 3）
-│   ├── db/client.ts            #   连接单例 + 迁移 + 事务封装
+│   ├── db/schema.ts            #   建表 / 索引 / 迁移表（当前 SCHEMA_VERSION = 3）
+│   ├── db/bootstrap.ts         #   ★ 开库顺序 PRAGMA→建表→迁移→建索引（有单测）
+│   ├── db/client.ts            #   连接单例（失败不缓存）+ 事务封装
 │   ├── db/mappers.ts           #   行 ←→ 领域对象（唯一知道列名的地方）
 │   ├── db/sql.ts               #   INSERT/UPDATE 语句拼装
 │   ├── db/touch.ts             #   写入前统一打时间戳、synced → dirty
@@ -188,7 +191,7 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 | **分** | `domain/routing.ts` → `decideRoute()`：灵感进想法库；有时间进日历；没有进收集箱 |
 | **落** | `entry/quick-capture.ts` → 写库 +（有时间才）排提醒 |
 | **行** | 入口是首页的**专注启动选择器**（`components/focus-picker.tsx` + `domain/focus-candidate.ts` 决定默认停在哪一格）；`app/focus.tsx` 进入即计时、退出即结束；`domain/focus-link.ts` 把时长回写到任务，并给"还没安排过时间"的任务补上这一段时段 |
-| **完** | `taskRepository.complete()`；时长/习惯型由 `isCompletionSatisfied()` 自动判定；子任务由 `domain/subtask-progress.ts` 推导父任务完成态；**完成后仍留在日历上**（灰色、不可拖，`domain/task-state.ts` 决定外观） |
+| **完** | `taskRepository.complete()`；时长/习惯型由 `isCompletionSatisfied()` 自动判定；子任务由 `domain/subtask-progress.ts` 推导父任务完成态；**完成后仍留在日历上**（灰色、不可拖，`domain/task-state.ts` 决定外观）。**过去没打勾的不自动完成**，改由详情页的三个出口处理（`domain/past-event.ts`） |
 | **回** | `app/review.tsx` + `domain/review.ts`（口径只有一份，含确定性排序）；备份见 `data/backup/`；AI 复盘能力待接入 |
 
 ## 五、几条必须守住的约定
@@ -217,6 +220,14 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 
 - 嵌套属性（`time`、`progress`、`repeat`、`tags`、`steps`）以 JSON 列存放，领域层看起来仍是嵌套对象，映射细节只在 `data/db/mappers.ts`。
 - 索引按真实查询路径建：状态、截止、开始、所属容器，且都带 `deleted_at`。
+- **开库顺序是 `PRAGMA → 建表 → 迁移 → 建索引`，写死在 `data/db/bootstrap.ts` 里，不能换。**
+  （踩过一次：索引原本跟建表写在同一段 SQL、先于迁移执行。`CREATE TABLE IF NOT EXISTS`
+  对老库是空操作，老库的 `tasks` 表里没有新列，于是 `no such column: parent_task_id`，
+  整段 `execAsync` 失败 —— **只有"用过一段时间的老库"会中招，全新安装完全正常**。
+  所以：**凡是引用"某个迁移才加出来的列"的索引，都只能放 `INDEXES`**。
+  回归测试在 `bootstrap.test.ts`，用 Node 自带的 `node:sqlite` 把 v1 / v2 / 全新库各真跑一遍。）
+- 开库失败时**不缓存那个失败的 promise**（`client.ts`）：缓存了就等于一次失败绑死整个会话，
+  之后每个页面都拿到同一个旧错误，看起来是"到处都无法正常运行"，真因却早飘过去了。
 - 升级表结构时递增 `SCHEMA_VERSION`；备份文件里也带这一版号，便于写迁移。
 - **当前 `SCHEMA_VERSION = 3`。** v3 引入：`tasks.parent_task_id`（子任务，只允许一层）、
   `tasks.sort_order`（手工排序，NULL 视为 0）、`task_checkins`（打卡记录）。
@@ -323,6 +334,26 @@ metro.config.js                 # wasm 资源解析 + COOP/COEP 头（expo-sqlit
 
 两条硬规则：**时间过了绝不自动完成**（状态只由用户的明确动作改变）；
 `utils/datetime.ts` 的 `isOverdue` 是死代码，过期口径一律走 `task-state.ts`。
+
+### 过去的事得有个出口（`domain/past-event.ts`）
+
+淡出只是"看起来不吵"，不解决"它还在那儿"——上周三的会一直挂着，用户每次翻到那天
+都要重新想一遍"这个我到底办没办"。而铁律是时间过了绝不自动完成，所以这个决定只能用户来下。
+详情页在 `missed`（且只有固定型）时给一张卡，三个出口，都是一步到位、没有新概念：
+
+| 出口 | 意图 | 做什么 |
+|---|---|---|
+| **挪到〈今天/明天〉14:00** | 忘了，但还要做 | 换日期、**保留原时刻与时长**（14:00–15:00 整体平移） |
+| **改成待办** | 会不开了，事还得做 | 撤掉四个时间字段 + 类型改执行型 → 回收集箱 |
+| **就这样吧** | 不做了 | 软删除（按两下）；**不标成完成**，不进完成率、不进回顾页 |
+
+两条别写错的地方：
+
+- **「挪到哪天」由 domain 算，不是固定"今天"**：用户晚上 20:37 才来处理"昨天下午的会"，
+  挪到今天 14:00 就是四小时前 —— 卡片不会消失，用户会以为按钮坏了。
+  规则是**挪到下一个还没到的那个时刻**：原时刻今天还没到就今天，已经过了就明天。
+- **只给固定型**。截止型过期是"欠着"，欠着的东西不该被劝着放弃 ——
+  那一类在界面上要显眼，不是要淡出，更不该给"就这样吧"。
 
 ## 七、备份与恢复
 

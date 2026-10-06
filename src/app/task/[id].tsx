@@ -25,9 +25,11 @@ import {
   type HabitCadence,
 } from '@/domain/habit-convert';
 import { describePeriodProgress, occurrencesInPeriod } from '@/domain/habit-period';
+import { describePastWindow, planEventShift, toLooseTodo } from '@/domain/past-event';
 import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
 import { subtaskProgress } from '@/domain/subtask-progress';
+import { taskDisplayState } from '@/domain/task-state';
 import type { RepeatRule, Task, TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -96,8 +98,15 @@ export default function TaskDetailScreen() {
   const deleteSubtaskAction = useAppStore((state) => state.removeSubtask);
 
   const [task, setTask] = useState<Task | null>(null);
-  /** 转换成打卡之后给一句确认（卡片会随之消失，需要留个回声） */
-  const [convertedNote, setConvertedNote] = useState<string | null>(null);
+  /**
+   * 动作完成后留一句回声（"已转成打卡""已挪到明天 14:00"）——
+   * 卡片会随之消失，不留一句话用户会不确定刚才那一下有没有生效。
+   */
+  const [flash, setFlash] = useState<{ icon: keyof typeof Ionicons.glyphMap; message: string } | null>(
+    null,
+  );
+  /** "就这样吧"要按两下：第一下问一句，第二下才拿掉 */
+  const [confirmingDrop, setConfirmingDrop] = useState(false);
 
   /**
    * 频率型的"本期做了几次"**从打卡记录现算**，不读任何计数器 ——
@@ -287,7 +296,7 @@ export default function TaskDetailScreen() {
       if (plan.seedCheckin) await checkInAction(task.id);
       const fresh = await loadTask(task.id);
       if (fresh) setTask(fresh);
-      setConvertedNote(`${plan.message}，以后打卡就行。`);
+      setFlash({ icon: 'repeat-outline', message: `${plan.message}，以后打卡就行。` });
     },
     [task, updateTask, checkInAction, loadTask],
   );
@@ -345,6 +354,46 @@ export default function TaskDetailScreen() {
     void scheduleTask(task.id, cleared);
   };
 
+  /**
+   * 「已经过去的事」的第一个出口：挪到下一个还没到的那个时刻。
+   * 目标由 domain 算（原时刻今天已过就顺延到明天），界面不自己拼日期。
+   */
+  const handleShiftPast = () => {
+    if (!task) return;
+    const plan = planEventShift(task);
+    if (!plan) return;
+    setTask((current) => (current ? { ...current, time: plan.time } : current));
+    void scheduleTask(task.id, plan.time);
+    setFlash({
+      icon: 'time-outline',
+      message: plan.dayOffset === 0 ? `${plan.label}，今天的这件事还在。` : `${plan.label} 了。`,
+    });
+  };
+
+  /** 第二个出口：撤掉时间。会不开了，但这事本身还得做 → 回收集箱 */
+  const handleLooseTodo = () => {
+    if (!task) return;
+    const changes = toLooseTodo(task);
+    setTask((current) => (current ? { ...current, ...changes } : current));
+    void updateTask(task.id, changes);
+    setFlash({ icon: 'file-tray-outline', message: '撤掉时间了，它回到收集箱。' });
+  };
+
+  /**
+   * 第三个出口：就这样吧 = 从日程里拿掉（软删除）。
+   * 刻意**不**标成完成 —— 说好了"不替用户下结论"，也不能替他把没做的事记成做到；
+   * 所以它不进完成率、不进回顾页。跟下面的删除按钮同一条路，同样按两下确认。
+   */
+  const handleDropPast = async () => {
+    if (!task) return;
+    if (!confirmingDrop) {
+      setConfirmingDrop(true);
+      return;
+    }
+    await removeTask(task.id);
+    router.back();
+  };
+
   if (loading) {
     return (
       <Screen title="任务">
@@ -376,6 +425,15 @@ export default function TaskDetailScreen() {
   const anchor = task.time.startAt ?? task.time.dueAt ?? null;
   const isDeadline = task.time.attribute === 'deadline';
   const done = task.status === TaskStatus.Done;
+
+  /**
+   * 「这段时间已经过去了」——只在**固定型**、已过、没打勾时出现。
+   * 截止型过期（欠着的）不给这张卡：欠着的东西不该被劝着放弃。
+   */
+  const pastEvent = taskDisplayState(task) === 'missed';
+  const pastPlan = pastEvent ? planEventShift(task) : null;
+  const pastWindow = pastEvent ? describePastWindow(task) : '';
+
   const timeText = anchor
     ? `${describeDue(anchor)} · ${formatDayTime(anchor)}`
     : '还没定时间';
@@ -412,18 +470,61 @@ export default function TaskDetailScreen() {
         </Pressable>
       ) : null}
 
-      {/* 刚转成打卡习惯：那张卡已经消失了，留一句回声告诉用户刚才发生了什么 */}
-      {convertedNote ? (
-        <Pressable accessibilityRole="button" onPress={() => setConvertedNote(null)}>
+      {/* 动作完成后的一句回声：卡片消失时得有句话说明刚才发生了什么 */}
+      {flash ? (
+        <Pressable accessibilityRole="button" onPress={() => setFlash(null)}>
           <Card style={{ borderWidth: StyleSheet.hairlineWidth, borderColor: theme.backgroundSelected }}>
             <View style={styles.focusFeedback}>
-              <Ionicons name="repeat-outline" size={16} color={theme.text} />
+              <Ionicons name={flash.icon} size={16} color={theme.text} />
               <ThemedText type="small" style={styles.focusFeedbackText}>
-                {convertedNote}
+                {flash.message}
               </ThemedText>
             </View>
           </Card>
         </Pressable>
+      ) : null}
+
+      {/*
+        已经过去的事：给它三个出口。
+        时间过了绝不自动完成（铁律），但也绝不能让一条没人认领的过去
+        永远挂在日历上 —— 用户每次翻到那天都要重新想一遍"这个我到底办没办"。
+        三个出口对应三种真实意图，都能一步到位，没有新概念要学。
+      */}
+      {pastEvent ? (
+        <Card
+          style={{ borderWidth: StyleSheet.hairlineWidth, borderColor: theme.backgroundSelected }}>
+          <View style={styles.pastHeader}>
+            <Ionicons name="alert-circle-outline" size={16} color={theme.textSecondary} />
+            <View style={styles.pastHeaderBody}>
+              <ThemedText type="smallBold">{pastWindow} 的这段时间已经过去了</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
+                没打勾的事我不会自动替你算完成 —— 怎么处理你说了算。
+              </ThemedText>
+            </View>
+          </View>
+
+          <View style={styles.chips}>
+            {pastPlan ? (
+              <Chip
+                label={pastPlan.label}
+                active
+                theme={theme}
+                onPress={handleShiftPast}
+              />
+            ) : null}
+            <Chip label="改成待办" active={false} theme={theme} onPress={handleLooseTodo} />
+            <Chip
+              label={confirmingDrop ? '再点一次就拿掉' : '就这样吧'}
+              active={false}
+              theme={theme}
+              onPress={() => void handleDropPast()}
+            />
+          </View>
+
+          <ThemedText type="small" themeColor="textSecondary" style={styles.goalHint}>
+            「就这样吧」= 从日程里拿掉，不算完成、也不进统计；想要别的时刻就走「时间」卡。
+          </ThemedText>
+        </Card>
       ) : null}
 
       {/* 标题：大字输入，直接改 */}
@@ -990,6 +1091,9 @@ const styles = StyleSheet.create({
   },
   rowBody: { flex: 1, gap: Spacing.half },
   rowHint: { fontSize: 12, lineHeight: 16 },
+  /** 「已经过去的事」那张卡的头：图标 + 两行说明 */
+  pastHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
+  pastHeaderBody: { flex: 1, gap: Spacing.half },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
   chip: {
     flexDirection: 'row',
