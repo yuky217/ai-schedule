@@ -108,3 +108,22 @@ export const isIdeaTask = (t: Pick<Task, 'kind'>) => t.kind === 'idea';
 /** 有明确时间（固定 或 截止），可以直接落到日历上 */
 export const hasConcreteTime = (t: Pick<Task, 'time'>) =>
   t.time.attribute === 'fixed' || t.time.attribute === 'deadline';
+
+/**
+ * 时间字段的收口：把"说了有属性、却一个锚点都没填"的时间退化成"没时间"。
+ *
+ * 这种数据正常路径产不出来，但**备份导入、早期版本写下的行、手改过的库**
+ * 都可能有。它最坏的地方不是报错、而是**安静地消失**：
+ * 收集箱按 `time_attribute = 'none'` 收人，日历按锚点收人 —— 两边都不沾，
+ * 全 App 没有任何一处会报错，任务就是不见了（用户只会说"我的任务丢了"）。
+ *
+ * 所以这条判定不放界面上、也不放某一个查询里，而是收在**读写库的必经之路**
+ * （`data/db/mappers.ts`）上，让库里根本存不下这种行、读出来也已经被纠正。
+ */
+export function normalizeTaskTime(time: TaskTime): TaskTime {
+  const hasAnchor = Boolean(time.startAt || time.endAt || time.dueAt);
+  if (time.attribute !== 'none' && !hasAnchor) {
+    return { attribute: 'none', startAt: null, endAt: null, dueAt: null };
+  }
+  return time;
+}

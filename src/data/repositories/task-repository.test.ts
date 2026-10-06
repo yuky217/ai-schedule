@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapDatabase, type BootstrapDb, type SqlParams } from '@/data/db/bootstrap';
 import { TaskKind, TaskStatus, TimeAttribute } from '@/domain/enums';
 import { createTask } from '@/domain/factory';
+import type { Task } from '@/domain/task';
 
 import { taskRepository } from './task-repository';
 
@@ -155,5 +156,208 @@ describe('taskRepository 的查询口径', () => {
 
     const done = await taskRepository.listRecentlyDone();
     expect(done.map((t) => t.id)).toEqual([newer.id, older.id]);
+  });
+});
+
+/**
+ * 可达性扫描器。
+ *
+ * 上面那些用例是我"想到哪儿测到哪儿"，而这次两个 bug 的共性是：
+ * **它们的组合我没想过**（"已完成 + 从没排过时间""有属性但没锚点"）。
+ * 所以这里不猜具体组合，而是把三个维度**穷举一遍**，
+ * 直接问："这条任务，用户从哪儿能看到它？"
+ *
+ * 之所以现在才写得出来：以前没有能在 node 里真跑的内存库，
+ * 而这把扫描器的价值恰好全在"真的把数据存进去、再真的查出来"。
+ */
+
+/** 一条任务**此刻**能被哪些用户看得到的入口查到（等价于"用户翻到相应页面"） */
+async function surfacesOf(task: Task): Promise<string[]> {
+  const found: string[] = [];
+  const has = (list: readonly Task[]) => list.some((item) => item.id === task.id);
+
+  if (has(await taskRepository.listInbox())) found.push('收集箱');
+  if (has(await taskRepository.listRecentlyDone())) found.push('收集箱·已完成');
+  if (has(await taskRepository.listHabits())) found.push('习惯页');
+  if (task.containerId && has(await taskRepository.listByContainer(task.containerId))) {
+    found.push('容器页');
+  }
+
+  // 日历是"按窗口查"的：用覆盖它自己那一段（前后各一天余量）的窗口去问，
+  // 等价于"用户翻到那一天"。锚点全空则日历无从问起 —— 那正是要抓的情况。
+  const anchors = [task.time.startAt, task.time.dueAt].filter((v): v is string => Boolean(v));
+  if (task.time.attribute !== TimeAttribute.None && anchors.length > 0) {
+    const first = anchors.reduce((a, b) => (a < b ? a : b));
+    const last = anchors.reduce((a, b) => (a > b ? a : b));
+    const pad = 24 * 60 * 60 * 1000;
+    const from = new Date(Date.parse(first) - pad).toISOString();
+    const to = new Date(Date.parse(last) + pad).toISOString();
+    if (has(await taskRepository.listScheduledBetween(from, to))) found.push('日历');
+    if (has(await taskRepository.listToday(new Date(first)))) found.push('首页·今天');
+  }
+
+  return found;
+}
+
+describe('可达性扫描：每条任务都必须有个"看得见"的地方', () => {
+  const STATUSES = [TaskStatus.Todo, TaskStatus.Doing, TaskStatus.Waiting, TaskStatus.Done];
+  const KINDS = [TaskKind.Schedule, TaskKind.Execution, TaskKind.Habit];
+  const TIMES = {
+    无时间: { attribute: TimeAttribute.None, startAt: null, endAt: null, dueAt: null },
+    固定时间: {
+      attribute: TimeAttribute.Fixed,
+      startAt: '2026-10-06T06:00:00.000Z',
+      endAt: '2026-10-06T07:00:00.000Z',
+      dueAt: null,
+    },
+    截止: {
+      attribute: TimeAttribute.Deadline,
+      startAt: null,
+      endAt: null,
+      dueAt: '2026-10-09T09:00:00.000Z',
+    },
+  };
+
+  it('状态 × 类型 × 时间 全组合：没有一条会同时被所有列表排除', async () => {
+    const holes: string[] = [];
+    for (const status of STATUSES) {
+      for (const kind of KINDS) {
+        for (const [timeName, time] of Object.entries(TIMES)) {
+          const task = createTask({ title: `${status}-${kind}-${timeName}`, kind, time });
+          await taskRepository.create(task);
+          if (status !== TaskStatus.Todo) await taskRepository.setStatus(task.id, status);
+
+          if ((await surfacesOf(task)).length === 0) {
+            holes.push(`${status} + ${kind} + ${timeName}`);
+          }
+        }
+      }
+    }
+    expect(holes, `这些组合在全 App 都查不到：\n${holes.join('\n')}`).toEqual([]);
+  });
+
+  /**
+   * 退化的时间：属性说"有时间"，两个锚点却都是空的。
+   *
+   * 正常路径产不出它，但**库里可能已经有**（早期版本写下的、导入的、手改的）。
+   * 它最危险的地方是：收集箱用 `time_attribute = 'none'` 收人、日历用两个锚点收人，
+   * 于是它两边都不沾 —— 而且它不会有任何报错，就是安静地消失。
+   */
+  it('有属性但两个锚点都空：也不能消失', async () => {
+    for (const attribute of [TimeAttribute.Fixed, TimeAttribute.Deadline]) {
+      const task = createTask({
+        title: `空锚点-${attribute}`,
+        kind: TaskKind.Execution,
+        time: { attribute, startAt: null, endAt: null, dueAt: null },
+      });
+      await taskRepository.create(task);
+
+      expect(await surfacesOf(task), `attribute=${attribute} 的任务全 App 都查不到`).not.toEqual([]);
+    }
+  });
+
+  /**
+   * 只有截止、没有起始的截止型任务：日历必须能画出来。
+   * （查询用的是 `COALESCE(start_at, due_at)`，万一排序或筛选写成只看 start_at，这条就会消失。）
+   */
+  it('截止型（只有 dueAt、没有 startAt）在日历上', async () => {
+    const task = createTask({
+      title: '交方案',
+      kind: TaskKind.Execution,
+      time: {
+        attribute: TimeAttribute.Deadline,
+        startAt: null,
+        endAt: null,
+        dueAt: '2026-10-09T09:00:00.000Z',
+      },
+    });
+    await taskRepository.create(task);
+
+    const onCalendar = await taskRepository.listScheduledBetween(
+      '2026-10-09T00:00:00.000Z',
+      '2026-10-10T00:00:00.000Z',
+    );
+    expect(onCalendar.map((t) => t.id)).toEqual([task.id]);
+  });
+});
+
+/**
+ * 日历的取数判据是"时间窗重叠"，而重叠要**两端各取一个锚点**，
+ * 只看开始锚点会漏掉跨午夜的事。
+ */
+describe('日历时间窗（判据 = 整段重叠）', () => {
+  const overnight = () =>
+    createTask({
+      title: '通宵改稿',
+      kind: TaskKind.Execution,
+      time: {
+        attribute: TimeAttribute.Fixed,
+        startAt: '2026-10-06T22:30:00.000Z',
+        endAt: '2026-10-07T01:00:00.000Z',
+        dueAt: null,
+      },
+    });
+
+  it('跨午夜的事在后一天也能查到（22:30 → 次日 01:00）', async () => {
+    const task = overnight();
+    await taskRepository.create(task);
+
+    const day6 = await taskRepository.listScheduledBetween(
+      '2026-10-06T00:00:00.000Z',
+      '2026-10-07T00:00:00.000Z',
+    );
+    const day7 = await taskRepository.listScheduledBetween(
+      '2026-10-07T00:00:00.000Z',
+      '2026-10-08T00:00:00.000Z',
+    );
+
+    expect(day6.map((t) => t.id)).toEqual([task.id]);
+    // 只看开始锚点的话，这一天会是空的 —— 而用户记得自己凌晨在做它
+    expect(day7.map((t) => t.id)).toEqual([task.id]);
+  });
+
+  /**
+   * 反过来也要盯住：判据放宽之后不能变成"什么都能捞出来"。
+   * 把两侧都开成 OR / 或者漏掉一半条件，这条会立刻变红。
+   */
+  it('窗口之外的事不会被顺带捞出来', async () => {
+    const task = overnight();
+    await taskRepository.create(task);
+
+    const lastWeek = await taskRepository.listScheduledBetween(
+      '2026-09-28T00:00:00.000Z',
+      '2026-09-29T00:00:00.000Z',
+    );
+    const nextWeek = await taskRepository.listScheduledBetween(
+      '2026-10-12T00:00:00.000Z',
+      '2026-10-13T00:00:00.000Z',
+    );
+
+    expect(lastWeek).toEqual([]);
+    expect(nextWeek).toEqual([]);
+  });
+
+  it('窗宽为零（就在那一秒问）也能被重叠判据接住', async () => {
+    const task = overnight();
+    await taskRepository.create(task);
+
+    const at = await taskRepository.listScheduledBetween(
+      '2026-10-07T00:30:00.000Z',
+      '2026-10-07T00:30:00.000Z',
+    );
+    expect(at.map((t) => t.id)).toEqual([task.id]);
+  });
+
+  it('「有属性但没锚点」的数据进不了库：写的时候就被收口成没时间', async () => {
+    const task = createTask({
+      title: '半截时间',
+      kind: TaskKind.Execution,
+      time: { attribute: TimeAttribute.Fixed, startAt: null, endAt: null, dueAt: null },
+    });
+    await taskRepository.create(task);
+
+    const stored = await taskRepository.getById(task.id);
+    expect(stored?.time.attribute).toBe(TimeAttribute.None);
+    expect((await taskRepository.listInbox()).map((t) => t.id)).toEqual([task.id]);
   });
 });

@@ -6,7 +6,7 @@ import type { Container, Mark as MarkEntity, TaskChain } from '@/domain/containe
 import type { CaptureSource, Priority, SyncState } from '@/domain/enums';
 import type { FocusSession } from '@/domain/focus';
 import type { Idea } from '@/domain/idea';
-import type { RepeatRule, Task, TaskProgress, TaskTime } from '@/domain/task';
+import { normalizeTaskTime, type RepeatRule, type Task, type TaskProgress, type TaskTime } from '@/domain/task';
 
 import type { ColumnMap } from './sql';
 
@@ -102,12 +102,12 @@ export interface TaskRow extends BaseRow {
 }
 
 export function taskFromRow(row: TaskRow): Task {
-  const time: TaskTime = {
+  const time: TaskTime = normalizeTaskTime({
     attribute: row.time_attribute as TaskTime['attribute'],
     startAt: row.start_at,
     endAt: row.end_at,
     dueAt: row.due_at,
-  };
+  });
   return {
     ...readBase(row),
     title: row.title,
@@ -135,16 +135,18 @@ export function taskFromRow(row: TaskRow): Task {
 }
 
 export function taskColumns(task: Task): ColumnMap {
+  // 写库前先收口：不让"有属性、没锚点"的行进库（详见 normalizeTaskTime）
+  const time = normalizeTaskTime(task.time);
   return {
     id: task.id,
     title: task.title,
     note: task.note ?? null,
     kind: task.kind,
     status: task.status,
-    time_attribute: task.time.attribute,
-    start_at: task.time.startAt ?? null,
-    end_at: task.time.endAt ?? null,
-    due_at: task.time.dueAt ?? null,
+    time_attribute: time.attribute,
+    start_at: time.startAt ?? null,
+    end_at: time.endAt ?? null,
+    due_at: time.dueAt ?? null,
     repeat_json: task.repeat ? JSON.stringify(task.repeat) : null,
     completion: task.completion,
     target_minutes: task.targetMinutes ?? null,

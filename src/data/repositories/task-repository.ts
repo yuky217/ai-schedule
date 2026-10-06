@@ -84,6 +84,16 @@ export const taskRepository = {
    * 所以已完成的事必须查得出来（由界面画成灰色）。以前这里带 `status != done`，
    * 结果"完成的日程在日历上显示"从查询这一步就断了 —— 界面再怎么写都没用。
    */
+  /**
+   * 日历按"时间窗重叠"取数 —— 判据必须用**整段跨度**，两端各取一个锚点：
+   *   起点 = start_at → due_at → end_at；终点 = end_at → due_at → start_at。
+   *
+   * 之前两端都只算 start_at（`COALESCE(start_at, due_at)` / `COALESCE(due_at, start_at)`），
+   * 于是**跨午夜的事在后一天查不到**：22:30–次日 01:00 这条，
+   * 起点锚 22:30 不落在今天的窗口里，今天那一格就是空的 ——
+   * 而用户明明记得自己今天凌晨在做它。终点的降级顺序也顺手接住 end_at，
+   * 让"只写结束、没写开始"这种半截数据至少能出现在它结束的那天。
+   */
   async listScheduledBetween(fromIso: string, toIso: string): Promise<Task[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<TaskRow>(
@@ -91,9 +101,9 @@ export const taskRepository = {
         WHERE ${LIVE}
           AND ${TOP_LEVEL}
           AND time_attribute != 'none'
-          AND COALESCE(start_at, due_at) <= ?
-          AND COALESCE(due_at, start_at) >= ?
-        ORDER BY COALESCE(start_at, due_at) ASC`,
+          AND COALESCE(start_at, due_at, end_at) <= ?
+          AND COALESCE(end_at, due_at, start_at) >= ?
+        ORDER BY COALESCE(start_at, due_at, end_at) ASC`,
       [toIso, fromIso],
     );
     return rows.map(taskFromRow);
