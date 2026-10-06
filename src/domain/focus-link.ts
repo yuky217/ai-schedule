@@ -1,8 +1,8 @@
 import { nowIso } from '@/utils/datetime';
 
-import { CompletionRule, TaskStatus } from './enums';
+import { CompletionRule, TaskStatus, TimeAttribute } from './enums';
 import { describePeriodProgress } from './habit-period';
-import type { Task } from './task';
+import type { Task, TaskTime } from './task';
 
 /**
  * 任务 ←→ 专注的联动（主文档 5.1：执行型"点击 → 进专注"）。
@@ -109,4 +109,52 @@ export function describeProgress(task: Task, countInPeriod?: number | null): str
   }
 
   return accumulatedMinutes > 0 ? `已投入 ${accumulatedMinutes} 分钟` : null;
+}
+
+/* ------------------------------------------------------------------ */
+/* 专注 → 日历                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 把一次专注的起止变成"一段时间"。
+ *
+ * 专注是本项目里**唯一知道"这件事我实际花了多久"的地方**，而日历记的是"什么时候"。
+ * 两者合起来才是一条完整的记录：几点到几点，做了什么。落库之后它会和别的已完成事项
+ * 一样出现在日历上（灰掉的那条）。
+ *
+ * 不到一分钟不落 —— 手滑点开又退出，不该在日历上留下一条垃圾记录。
+ * 结束时间不超过"现在"：会话可能被挂了一夜才收尾，那种时长不能当成真实占用。
+ */
+export function focusSpan(
+  startedAt: string,
+  actualSeconds: number,
+  now: Date = new Date(),
+): { startAt: string; endAt: string } | null {
+  const start = Date.parse(startedAt);
+  if (!Number.isFinite(start)) return null;
+
+  const seconds = Math.max(0, Math.floor(actualSeconds));
+  if (seconds < MIN_FOCUS_SECONDS) return null;
+
+  const end = Math.min(start + seconds * 1000, now.getTime());
+  // 至少留一分钟，否则日历上会是一条零长度的段
+  return {
+    startAt: new Date(start).toISOString(),
+    endAt: new Date(Math.max(end, start + 60_000)).toISOString(),
+  };
+}
+
+/**
+ * 这次专注该不该给任务补上时间？
+ *
+ * **只补"还没安排过"的**（`attribute === 'none'`）—— 已经排到日历上的任务，
+ * 它自己的时间就是它该有的时间，专注只是投入的时长，不要去改用户的安排。
+ */
+export function shouldStampFocusSpan(task: Pick<Task, 'time'>): boolean {
+  return task.time.attribute === TimeAttribute.None;
+}
+
+/** 补时间用的 TaskTime（固定型，只有这一段，不带截止） */
+export function focusSpanTime(span: { startAt: string; endAt: string }): TaskTime {
+  return { attribute: TimeAttribute.Fixed, startAt: span.startAt, endAt: span.endAt, dueAt: null };
 }

@@ -82,6 +82,8 @@ export const CaptureSource = {
   Share: 'share',
   Widget: 'widget',
   Ai: 'ai',
+  /** 从专注里长出来的记录：坐下来做了，结束后才命名 */
+  Focus: 'focus',
 } as const;
 export type CaptureSource = (typeof CaptureSource)[keyof typeof CaptureSource];
 

@@ -12,8 +12,19 @@ import { cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
 import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
-import { createContainer, createFocusSession, createMark, createSubtask } from '@/domain/factory';
-import { applyFocusToTask } from '@/domain/focus-link';
+import {
+  createContainer,
+  createFocusSession,
+  createMark,
+  createSubtask,
+  createTask,
+} from '@/domain/factory';
+import {
+  applyFocusToTask,
+  focusSpan,
+  focusSpanTime,
+  shouldStampFocusSpan,
+} from '@/domain/focus-link';
 import type { FocusSession } from '@/domain/focus';
 import { shiftIsoByDays } from '@/domain/gantt';
 import {
@@ -24,7 +35,7 @@ import {
 import type { Idea } from '@/domain/idea';
 import { advanceRepeatingTask } from '@/domain/repeat-next';
 import { desiredParentStatus } from '@/domain/subtask-progress';
-import { CompletionRule, TaskStatus } from '@/domain/enums';
+import { CaptureSource, CompletionRule, TaskKind, TaskStatus } from '@/domain/enums';
 import type { Task, TaskTime } from '@/domain/task';
 
 /**
@@ -459,14 +470,43 @@ export const useAppStore = create<AppState>((set, get) => ({
     const session = await focusRepository.finish(sessionId, payload);
     if (!session) return null;
 
+    // 这次专注占用的那段时间：让"我花了多久"变成日历上看得见的"几点到几点"
+    const span = focusSpan(session.startedAt, session.actualSeconds);
     let feedback: FocusFeedback | null = null;
+
+    /**
+     * 没绑定任务、但结束时给了名字 —— 这段专注本身就是一条记录。
+     *
+     * 名字是唯一的凭据：没名字的专注只留在回顾页的统计里，不往日历上塞空白条目。
+     * 记成"已完成"是因为这段时间**已经发生了**，它是一条"做过什么"的日志，
+     * 不是一条待办。这与"不许替用户把已有的待办标完成"是两件事：
+     * 我们**新建**了一条记录，而没有改动用户已有的任何决定。
+     */
+    if (!session.taskId && session.intent && span) {
+      const logged = createTask({
+        title: session.intent,
+        kind: TaskKind.Execution,
+        time: focusSpanTime(span),
+        source: CaptureSource.Focus,
+        note: session.note ?? null,
+      });
+      await taskRepository.create(logged);
+      await taskRepository.complete(logged.id);
+      set({ lastFocus: null });
+      await get().refresh();
+      return null;
+    }
 
     if (session.taskId) {
       const task = await taskRepository.getById(session.taskId);
       if (task) {
         const outcome = applyFocusToTask(task, session.actualSeconds);
         if (outcome) {
-          await taskRepository.update(task.id, outcome.patch);
+          // 还没安排过时间的任务，就用这次专注的时段把它落到日历上。
+          // 已经排好的任务不动它的时间 —— 专注只提供"投入了多少"，不重新安排日程。
+          const stamp =
+            span && shouldStampFocusSpan(task) ? { time: focusSpanTime(span) } : {};
+          await taskRepository.update(task.id, { ...outcome.patch, ...stamp });
 
           let message = outcome.message;
 

@@ -1,6 +1,7 @@
 import { formatTime, isSameDayIso } from '@/utils/datetime';
 
 import { TaskStatus, TimeAttribute } from './enums';
+import { isActiveNow } from './task-state';
 import type { Task } from './task';
 
 /**
@@ -101,4 +102,36 @@ export function listFocusCandidates(input: FocusCandidateInput): FocusCandidate[
 /** 提案 = 队列里的第一个；撑不起来就 null */
 export function pickFocusCandidate(input: FocusCandidateInput): FocusCandidate | null {
   return listFocusCandidates(input)[0] ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* 专注选择器（首页那排"指针固定"的格子）                                */
+/* ------------------------------------------------------------------ */
+
+/** 滑动区里最多摆几件 —— 再长就变成"在轮盘里做筛选"，那比打开列表还慢 */
+export const FOCUS_PICKER_LIMIT = 5;
+
+/**
+ * 指针默认停在哪一格（返回候选里的下标；null = 落在"写一件新的事"那一格）。
+ *
+ * 规则很短，但顺序就是"省事程度"：
+ *   ① **时间表上正好有安排的那件** —— 三点有个会，那三点就该指向这个会，
+ *      不用用户自己去列表里对时间；
+ *   ② **标了「进行中」的那件** —— 那是用户自己说过"我在做这个"；
+ *   ③ 都不成立 → 落在「写一件新的事」，让空白输入框当默认。
+ *
+ * 刻意不做成"永远指向第一件待办"：默认项必须能解释自己，
+ * 而"随便挑一件"解释不了。宁可给一个空白输入框（用户自己说要做啥）。
+ */
+export function defaultFocusIndex(
+  candidates: readonly FocusCandidate[],
+  now: Date = new Date(),
+): number | null {
+  const active = candidates.findIndex((candidate) => isActiveNow(candidate.task, now));
+  if (active >= 0) return active;
+
+  const doing = candidates.findIndex((candidate) => candidate.task.status === TaskStatus.Doing);
+  if (doing >= 0) return doing;
+
+  return null;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CaptureSource, CompletionRule, Priority, SyncState, TaskKind, TaskStatus, TimeAttribute } from './enums';
-import { listFocusCandidates, pickFocusCandidate } from './focus-candidate';
+import { defaultFocusIndex, listFocusCandidates, pickFocusCandidate } from './focus-candidate';
 import type { Task } from './task';
 
 /** 基准时刻：2026-10-06（周二）15:00 本地时间 */
@@ -136,5 +136,57 @@ describe('pickFocusCandidate', () => {
     listFocusCandidates({ today, inbox, now: NOW });
     expect(today.map((t) => t.id)).toEqual(todayBefore);
     expect(inbox.map((t) => t.id)).toEqual(inboxBefore);
+  });
+});
+
+/**
+ * 指针默认停在哪一格。
+ *
+ * 这一条的取舍：默认项宁可指向"时间表上正在发生的"或"用户明确标了在做的事"，
+ * 也不要"随便挑一件待办" —— 后者解释不了自己，用户还得先滑走才知道不对。
+ * 都覆盖不到就给空白输入框，让用户自己说。
+ */
+describe('defaultFocusIndex', () => {
+  it('此刻正落在某件安排里 → 指向它，而不是"离现在最近的那件"', () => {
+    const soon = makeTask('soon', { time: fixed(at(15, 10)) });
+    const meeting = makeTask('meeting', {
+      time: { attribute: TimeAttribute.Fixed, startAt: at(14), endAt: at(16), dueAt: null },
+    });
+    const candidates = listFocusCandidates({ today: [soon, meeting], inbox: [], now: NOW });
+    expect(candidates.map((c) => c.task.id)).toEqual(['soon', 'meeting']);
+    expect(defaultFocusIndex(candidates, NOW)).toBe(1);
+  });
+
+  it('正在进行优先于「进行中」', () => {
+    const doing = makeTask('doing', { status: TaskStatus.Doing });
+    const meeting = makeTask('meeting', {
+      time: { attribute: TimeAttribute.Fixed, startAt: at(14), endAt: at(16), dueAt: null },
+    });
+    const candidates = listFocusCandidates({ today: [doing, meeting], inbox: [], now: NOW });
+    expect(candidates[0]?.task.id).toBe('doing');
+    expect(defaultFocusIndex(candidates, NOW)).toBe(1);
+  });
+
+  it('没有正在进行的，就指向标了「进行中」的那件', () => {
+    const doing = makeTask('doing', { status: TaskStatus.Doing });
+    const later = makeTask('later', { time: fixed(at(20)) });
+    const candidates = listFocusCandidates({ today: [later, doing], inbox: [], now: NOW });
+    expect(defaultFocusIndex(candidates, NOW)).toBe(0);
+  });
+
+  it('只有普通待办时返回 null —— 界面据此把指针放到「写一件新的事」', () => {
+    const later = makeTask('later', { time: fixed(at(20)) });
+    const candidates = listFocusCandidates({ today: [later], inbox: [], now: NOW });
+    expect(defaultFocusIndex(candidates, NOW)).toBeNull();
+  });
+
+  it('已经过点的日程不接管默认项（那是"欠着"，不是"正在做"）', () => {
+    const missed = makeTask('missed', { time: fixed(at(9)) });
+    const candidates = listFocusCandidates({ today: [missed], inbox: [], now: NOW });
+    expect(defaultFocusIndex(candidates, NOW)).toBeNull();
+  });
+
+  it('空队列返回 null', () => {
+    expect(defaultFocusIndex([], NOW)).toBeNull();
   });
 });

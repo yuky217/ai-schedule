@@ -9,6 +9,7 @@ import { GrowthOrb } from '@/components/growth-orb';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { TimeAttribute } from '@/domain/enums';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -50,6 +51,8 @@ export default function FocusScreen() {
   const [intent, setIntent] = useState('');
   const [note, setNote] = useState('');
   const [alsoComplete, setAlsoComplete] = useState(false);
+  /** 用户自己动过那个开关就不再被默认值覆盖 */
+  const [completeTouched, setCompleteTouched] = useState(false);
   const [finishing, setFinishing] = useState(false);
 
   const elapsedRef = useRef(0);
@@ -75,6 +78,17 @@ export default function FocusScreen() {
       alive = false;
     };
   }, [loadTask, taskId]);
+
+  /**
+   * "这段就算把它做完"的默认值，取决于这条任务**有没有被安排过时间**：
+   * - 没安排过（刚在首页「写一件新的事」里建的）= 这是坐下来临时做的，
+   *   默认按"做完了"预期 —— 用户随时能看见这个开关，也随时能关掉；
+   * - 已经排进日历的 = 它有自己原本的目标，完成与否交给用户明说，默认不勾。
+   */
+  useEffect(() => {
+    if (!boundTask || completeTouched) return;
+    setAlsoComplete(boundTask.time.attribute === TimeAttribute.None);
+  }, [boundTask, completeTouched]);
 
   // 进入即开一个会话：允许"先干着，之后再想这是什么事"
   useEffect(() => {
@@ -168,7 +182,9 @@ export default function FocusScreen() {
 
       <Card>
         <ThemedText type="small" themeColor="textSecondary">
-          结束时给这段起个名字（也可以留空）
+          {boundTask
+            ? '结束时给这段起个名字（也可以留空）'
+            : '给这段起个名字，它就会像别的事一样记到日历上；留空则只进统计'}
         </ThemedText>
         <TextInput
           value={intent}
@@ -198,15 +214,31 @@ export default function FocusScreen() {
       </Card>
 
       {boundTask ? (
-        <Card title="记到这件事上" hint="这段时长会累加进它的进度，够目标就自动完成">
+        <Card
+          title="记到这件事上"
+          hint={
+            boundTask.time.attribute === TimeAttribute.None
+              ? '它还没安排过时间，结束后会用这一段落到日历上'
+              : '这段时长会累加进它的进度，够目标就自动完成'
+          }>
           <View style={styles.switchRow}>
             <View style={styles.switchText}>
-              <ThemedText type="smallBold">这段就算把它做完</ThemedText>
+              <ThemedText type="smallBold">
+                {boundTask.time.attribute === TimeAttribute.None
+                  ? '这件事已经做完了'
+                  : '这段就算把它做完'}
+              </ThemedText>
               <ThemedText type="small" themeColor="textSecondary" style={styles.switchHint}>
-                关掉就只记时长，完成与否你自己决定
+                关掉就只记时长，它还留在清单里
               </ThemedText>
             </View>
-            <Switch value={alsoComplete} onValueChange={setAlsoComplete} />
+            <Switch
+              value={alsoComplete}
+              onValueChange={(next) => {
+                setCompleteTouched(true);
+                setAlsoComplete(next);
+              }}
+            />
           </View>
         </Card>
       ) : null}

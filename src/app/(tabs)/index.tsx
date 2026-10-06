@@ -1,24 +1,32 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
 import { CaptureInput } from '@/components/capture-input';
 import { EmptyState } from '@/components/empty-state';
+import { FocusPicker, type FocusPickerOption } from '@/components/focus-picker';
 import { GrowthOrb } from '@/components/growth-orb';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
+import { ChoiceSheet, type ChoiceOption } from '@/components/choice-sheet';
 import { Spacing } from '@/constants/theme';
 import { hasCheckedInOn, summarizeCheckins } from '@/domain/checkins';
 import { containerStats, CONTAINER_KIND_LABEL } from '@/domain/container-stats';
-import { listFocusCandidates } from '@/domain/focus-candidate';
+import { TaskStatus } from '@/domain/enums';
+import {
+  defaultFocusIndex,
+  FOCUS_PICKER_LIMIT,
+  listFocusCandidates,
+} from '@/domain/focus-candidate';
 import { describeMark, pickUpcoming, sortMarkViews } from '@/domain/marks';
 import type { CaptureRoute } from '@/domain/routing';
+import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
-import { formatDateLong } from '@/utils/datetime';
+import { formatDateLong, formatDayTime } from '@/utils/datetime';
 
 /**
  * 首页 = 入口层（主文档 3.1）。
@@ -63,10 +71,80 @@ export default function HomeScreen() {
   const checkIn = useAppStore((state) => state.checkIn);
   const undoCheckIn = useAppStore((state) => state.undoCheckIn);
 
-  /** 提案队列：换一件就是往后走一格 */
-  const candidates = useMemo(() => listFocusCandidates({ today, inbox }), [today, inbox]);
-  const [skip, setSkip] = useState(0);
-  const current = candidates.length ? candidates[skip % candidates.length]! : null;
+  /**
+   * 专注选择器的候选：今天要面对的那几件。
+   *
+   * 刻意**只取 today，不掺收集箱** —— 收集箱是"还没安排好"的池子，
+   * 把它铺进滑动区，用户就得在这儿先做一次筛选；那正是「＋」那一格该干的事。
+   */
+  const choices = useMemo(
+    () => listFocusCandidates({ today, inbox: [] }).slice(0, FOCUS_PICKER_LIMIT),
+    [today],
+  );
+
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [newTitle, setNewTitle] = useState('');
+  /** 从「全部」里挑出来的那件：插在「写一件新的事」后面，紧挨着默认位置 */
+  const [extraTask, setExtraTask] = useState<Task | null>(null);
+  const [allOpen, setAllOpen] = useState(false);
+  const [starting, setStarting] = useState(false);
+  /** 用户一旦自己动过指针，就别再用默认项覆盖他的选择 */
+  const pickedRef = useRef(false);
+
+  const options = useMemo<FocusPickerOption[]>(() => {
+    const list: FocusPickerOption[] = [{ kind: 'new', key: 'new' }];
+    if (extraTask) {
+      list.push({ kind: 'task', key: extraTask.id, task: extraTask, reason: '你刚挑的这件' });
+    }
+    for (const candidate of choices) {
+      // 刚挑中的那件本来就可能已经在今天的列表里，跳过以免出现两格一样的
+      if (extraTask && candidate.task.id === extraTask.id) continue;
+      list.push({
+        kind: 'task',
+        key: candidate.task.id,
+        task: candidate.task,
+        reason: candidate.reason,
+      });
+    }
+    list.push({ kind: 'more', key: 'more' });
+    return list;
+  }, [choices, extraTask]);
+
+  /**
+   * 默认停在「时间表上正好有安排的那件」→「标了进行中的那件」→「写一件新的事」。
+   * 规则在 domain/focus-candidate，覆盖不到时给空白输入框 —— 宁可让用户自己说，
+   * 也不要"随便挑一件"当默认（那种默认解释不了自己）。
+   */
+  useEffect(() => {
+    if (pickedRef.current) return;
+    const preferred = defaultFocusIndex(choices);
+    setPickerIndex(preferred === null ? 0 : preferred + 1);
+  }, [choices]);
+
+  // 挑中的那件被删了或已经做完 —— 指针别继续停在一个不存在的东西上
+  useEffect(() => {
+    if (!extraTask) return;
+    const fresh = tasks.find((item) => item.id === extraTask.id);
+    if (!fresh || fresh.status === TaskStatus.Done) setExtraTask(null);
+  }, [tasks, extraTask]);
+
+  const selected = options[pickerIndex] ?? options[0];
+
+  /** 「＋」弹出的那份清单：所有还没做完的顶层任务（收集箱 + 已排时间的） */
+  const allOptions = useMemo<ChoiceOption[]>(
+    () =>
+      tasks
+        .filter((task) => task.status !== TaskStatus.Done)
+        .map((task) => {
+          const anchor = task.time.startAt ?? task.time.dueAt;
+          return {
+            key: task.id,
+            label: task.title,
+            hint: anchor ? formatDayTime(anchor) : '待规划',
+          };
+        }),
+    [tasks],
+  );
 
   /** 慢事收在一行里，展开才看；折叠不代表消失，数量一直摆在明面上 */
   const [expanded, setExpanded] = useState(false);
@@ -121,10 +199,57 @@ export default function HomeScreen() {
   const visibleToday = today.slice(0, PREVIEW_LIMIT);
   const hiddenCount = Math.max(0, today.length - visibleToday.length);
 
-  const startFocus = () => {
-    if (current) router.push({ pathname: '/focus', params: { taskId: current.task.id } });
-    else router.push('/focus');
+  const handleIndexChange = (next: number) => {
+    pickedRef.current = true;
+    setPickerIndex(next);
+    // 停在「＋」上就把清单弹出来 —— 用户滑到那儿的意思本来就是"这儿没有，给我看全部"
+    if (options[next]?.kind === 'more') setAllOpen(true);
   };
+
+  const pickFromAll = (taskId: string) => {
+    setAllOpen(false);
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) return;
+    pickedRef.current = true;
+    setExtraTask(task);
+    // extraTask 固定插在「写一件新的事」后面，所以永远是这一格
+    setPickerIndex(1);
+  };
+
+  const start = async () => {
+    if (!selected || starting) return;
+    if (selected.kind === 'more') {
+      setAllOpen(true);
+      return;
+    }
+    if (selected.kind === 'task') {
+      router.push({ pathname: '/focus', params: { taskId: selected.task.id } });
+      return;
+    }
+    const title = newTitle.trim();
+    if (!title) return;
+    setStarting(true);
+    try {
+      // 先落一条再进专注：带上 id，结束时时长和时段才写得回它身上，它才会出现在日历里
+      const result = await capture({ text: title });
+      setNewTitle('');
+      router.push({ pathname: '/focus', params: { taskId: result.id } });
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const startLabel =
+    selected?.kind === 'more' ? '打开全部' : selected?.kind === 'task' ? '开始' : '记下并开始';
+  const canStart =
+    selected?.kind === 'task'
+      ? true
+      : selected?.kind === 'new'
+        ? newTitle.trim().length > 0
+        : true;
+  const pickerHint = choices.length
+    ? '现在做哪件？左右滑挑一个，停在哪件就是哪件'
+    : '今天还没有安排 —— 写一件新的，或者先干着、结束再命名';
 
   return (
     <Screen
@@ -176,55 +301,55 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      {/* 专注启动：不给选择负担 —— 提案一件事，认同就开始，不认同就换 */}
+      {/* 专注启动：指针固定、左右滑选 —— 不用瞄准，停在哪件就是哪件 */}
       <Card>
-        <View style={styles.focusRow}>
-          <GrowthOrb seconds={growthSeconds} size={76} />
-          <View style={styles.focusText}>
-            <ThemedText type="small" themeColor="textSecondary">
-              {current ? current.reason : '现在没有安排'}
-            </ThemedText>
-            <ThemedText type="smallBold" numberOfLines={2} style={styles.focusTitle}>
-              {current ? current.task.title : '先开一轮专注，做完再命名也行'}
-            </ThemedText>
-          </View>
+        <View style={styles.focusHead}>
+          <GrowthOrb seconds={growthSeconds} size={56} />
+          <ThemedText type="small" themeColor="textSecondary" style={styles.focusHint}>
+            {pickerHint}
+          </ThemedText>
         </View>
+
+        <FocusPicker
+          options={options}
+          index={pickerIndex}
+          onIndexChange={handleIndexChange}
+          newTitle={newTitle}
+          onNewTitleChange={setNewTitle}
+        />
 
         <View style={styles.focusActions}>
           <Pressable
             accessibilityRole="button"
-            onPress={startFocus}
+            accessibilityState={{ disabled: !canStart }}
+            disabled={!canStart || starting}
+            onPress={() => void start()}
             style={({ pressed }) => [
               styles.primaryButton,
-              { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
+              {
+                backgroundColor: canStart ? theme.text : theme.backgroundSelected,
+                opacity: pressed || starting ? 0.8 : 1,
+              },
             ]}>
-            <ThemedText type="smallBold" style={{ color: theme.background }}>
-              {current ? '开始' : '开始专注'}
+            <ThemedText
+              type="smallBold"
+              style={{ color: canStart ? theme.background : theme.textSecondary }}>
+              {starting ? '准备中…' : startLabel}
             </ThemedText>
           </Pressable>
 
-          {current ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setSkip((value) => value + 1)}
-              style={({ pressed }) => [
-                styles.ghostButton,
-                { borderColor: theme.backgroundSelected, opacity: pressed ? 0.6 : 1 },
-              ]}>
-              <ThemedText type="small" themeColor="textSecondary">
-                换一件
-              </ThemedText>
-            </Pressable>
-          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push('/focus')}
+            style={({ pressed }) => [
+              styles.ghostButton,
+              { borderColor: theme.backgroundSelected, opacity: pressed ? 0.6 : 1 },
+            ]}>
+            <ThemedText type="small" themeColor="textSecondary">
+              先干着，结束再命名
+            </ThemedText>
+          </Pressable>
         </View>
-
-        {current ? (
-          <Pressable accessibilityRole="button" onPress={() => router.push('/focus')}>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.linkText}>
-              都不是？不选任务，直接开始
-            </ThemedText>
-          </Pressable>
-        ) : null}
       </Card>
 
       {/* 今天：只有这一处是列表，而且它排在专注后面 */}
@@ -410,6 +535,15 @@ export default function HomeScreen() {
           </Card>
         </>
       ) : null}
+
+      {/* 「＋」那一格的去向：全部还没做完的事，挑一件就把它摆到指针下面 */}
+      <ChoiceSheet
+        visible={allOpen}
+        title="挑一件现在做的"
+        options={allOptions}
+        onSelect={pickFromAll}
+        onClose={() => setAllOpen(false)}
+      />
     </Screen>
   );
 }
@@ -417,10 +551,9 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   feedback: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
-  focusRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
-  focusText: { flex: 1, gap: Spacing.one },
-  focusTitle: { fontSize: 16, lineHeight: 22 },
-  focusActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginTop: Spacing.one },
+  focusHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  focusHint: { flex: 1, fontSize: 12, lineHeight: 17 },
+  focusActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   primaryButton: {
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.two,
@@ -432,7 +565,6 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  linkText: { textDecorationLine: 'underline' },
   moreRow: {
     flexDirection: 'row',
     alignItems: 'center',
