@@ -1,5 +1,5 @@
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { Platform } from 'react-native';
+import { LogBox, Platform } from 'react-native';
 
 import { taskAnchor, type Task } from '@/domain/task';
 
@@ -34,6 +34,16 @@ let cachedModule: NotificationsModule | null | undefined;
 /** 当前是否运行在 Expo Go 里。仅用于给用户提示能力边界，不用来决定开不开提醒。 */
 export function isExpoGo(): boolean {
   return Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+}
+
+// Expo Go（Android，SDK 53+）加载 expo-notifications 模块的那一刻，库自己会打出
+// 一条 "Android Push notifications (remote notifications) ... was removed from Expo Go"
+// 的 ERROR —— 它说的是**远程推送**（自动注册副作用），不是本地通知。
+// 官方文档明确"本地通知在 Expo Go 仍可用"，我们用的只有本地通知。
+// 这条噪音只在会话里弹一次，但正好打在用户第一次安排时间的时刻，会把人吓到 —— 挡掉。
+// 只挡这一条，其他日志照常显示。
+if (Platform.OS === 'android' && isExpoGo()) {
+  LogBox.ignoreLogs(['was removed from Expo Go']);
 }
 
 async function loadNotifications(): Promise<NotificationsModule | null> {
