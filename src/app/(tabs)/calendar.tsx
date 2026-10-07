@@ -19,8 +19,10 @@ import { DragGrip } from '@/components/drag-grip';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
+import { TimetableView } from '@/components/timetable-view';
 import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
+import { weekIndexOf, type CourseSlot } from '@/domain/course';
 import { TaskStatus } from '@/domain/enums';
 import { buildPlacedTime, buildRescheduledTime, buildRetimedTime } from '@/domain/schedule-presets';
 import { taskAnchor, type Task } from '@/domain/task';
@@ -33,18 +35,23 @@ import { toDate } from '@/utils/datetime';
 /**
  * 日历：只呈现"有明确时间"的事。
  *
- * 三个视图共用一套数据与导航（切视图不重新查库、不重挂列表）：
+ * 四个视图共用一套导航（切视图不重新查库、不重挂列表）：
  * - 月：看全局节奏（哪天忙），**长按任意一行**拖到日期格即改期
  * - 周：7 天列 × 小时轴的时间网格，**长按任务块横拖换天、纵拖换时刻**；
  *   跨天落下后自动切到那天的日视图，接着微调；点表头也能直接进某天
  * - 日：看当天时间轴，**长按任务块上下拖**即改时刻（吸 15 分钟刻度）
+ * - 课：一周的课表（周几 × 第几节），课块点一下进课程详情
  *
- * 手势全部交给 react-native-gesture-handler，动画全部交给 react-native-reanimated：
+ * 前三视图手势全部交给 react-native-gesture-handler，动画全部交给 react-native-reanimated：
  * - 手势在原生层识别（长按拾起 / 拖拽 / 翻页互不抢），单击仍然照常触发按钮；
  * - 跟手的浮块与页面位移由 shared value 驱动，跑在 UI 线程，JS 忙也不会掉帧。
+ *
+ * **课表视图例外：它关掉翻页手势。** 课表在窄屏上要横向滚动（7 列放不下），
+ * 而横滑翻页和横滑滚动是同一个方向 —— 两个手势都想要，结果一定是"想滚却翻页了"。
+ * 所以课表里换周只走 ‹ › 两个按钮，横向手势全留给表格。
  */
 
-type CalendarMode = 'month' | 'week' | 'day';
+type CalendarMode = 'month' | 'week' | 'day' | 'timetable';
 
 /** 跟手位移上限（超过就不动，给用户"到头了"的手感） */
 const PAN_LIMIT = 56;
@@ -67,6 +74,9 @@ export default function CalendarScreen() {
   const dataVersion = useAppStore((state) => state.dataVersion);
   const completeTask = useAppStore((state) => state.completeTask);
   const scheduleTask = useAppStore((state) => state.scheduleTask);
+  // 课表的数据不走"按可见范围查"，它整学期就那十几门课，直接拿 store 里的
+  const courses = useAppStore((state) => state.courses);
+  const term = useAppStore((state) => state.term);
 
   const [mode, setMode] = useState<CalendarMode>('month');
   /** 月视图 = 正在看的月份；周视图 = 正在看的周（任取周内一天） */
@@ -162,6 +172,13 @@ export default function CalendarScreen() {
   const changeMode = useCallback((next: CalendarMode) => transition(next, null), [transition]);
   const focusDay = useCallback((date: Date) => transition('day', dayKey(date)), [transition]);
 
+  /** 点课程块 → 进课程详情（跟"点行/点块 = 进详情"同一条规矩） */
+  const openCourseSlot = useCallback(
+    (slot: CourseSlot) => router.push(`/course/${slot.course.id}`),
+    [router],
+  );
+  const openImport = useCallback(() => router.push('/import-courses'), [router]);
+
   /* ---------------- 跨天拖拽改期（月视图） ---------------- */
 
   const { countsByDay, tasksByDay } = useMemo(() => {
@@ -237,7 +254,6 @@ export default function CalendarScreen() {
     },
     [mode],
   );
-
   /**
    * 翻一页：当前内容先朝"滑走方向"退出一点 → 换掉数据 → 新内容从对侧
    * 摆好再弹回原位。换页不闪白，视觉上是一次连续滑动。箭头按钮也走同一条路径。
@@ -258,6 +274,9 @@ export default function CalendarScreen() {
   const pagerGesture = useMemo(
     () =>
       Gesture.Pan()
+        // 课表要横滑看 7 列，翻页手势必须先让开 —— 同一方向的两种手势抢起来，
+        // 结果一定是"想滚表格却把周翻掉了"
+        .enabled(mode !== 'timetable')
         .activeOffsetX([-16, 16])
         // 竖直方向留给滚动，一旦判定为竖划就放弃翻页
         .failOffsetY([-20, 20])
@@ -283,7 +302,7 @@ export default function CalendarScreen() {
           // 向左滑 = 看下一个周期，新内容从右侧进来
           runOnJS(pageBy)(event.translationX < 0 ? 1 : -1);
         }),
-    [dragFlag, pageBy, pagerX],
+    [dragFlag, mode, pageBy, pagerX],
   );
 
   /* ---------------- 派生数据 ---------------- */
@@ -307,21 +326,31 @@ export default function CalendarScreen() {
   const busyDragging = draggingTask !== null || timelineDragging;
 
   const now = new Date();
+  /** 课表视图里，光标那一周是第几周（没有学期或还没开学 → null） */
+  const cursorWeek = mode === 'timetable' && term ? weekIndexOf(term, cursor) : null;
+  const termStarted = cursorWeek != null && cursorWeek >= 1 && cursorWeek <= (term?.totalWeeks ?? 0);
+
   const headerLabel =
     mode === 'month'
       ? format(cursor, 'yyyy年M月')
-      : mode === 'week'
-        ? `${format(weekDays[0], 'M月d日')} - ${format(weekDays[6], 'M月d日')}`
-        : `${format(selected, 'M月d日')} ${format(selected, 'EEEE')}${
-            isSameDay(selected, now) ? ' · 今天' : ''
-          }`;
+      : mode === 'timetable'
+        ? `${
+            termStarted ? `第 ${cursorWeek} 周 · ` : term ? `${term.label} · ` : ''
+          }${format(weekDays[0], 'M月d日')} - ${format(weekDays[6], 'M月d日')}`
+        : mode === 'week'
+          ? `${format(weekDays[0], 'M月d日')} - ${format(weekDays[6], 'M月d日')}`
+          : `${format(selected, 'M月d日')} ${format(selected, 'EEEE')}${
+              isSameDay(selected, now) ? ' · 今天' : ''
+            }`;
 
   const legend =
     mode === 'month'
       ? '长按任意一行拖到日期格上可改期；左右滑切换月份'
       : mode === 'week'
         ? '长按任务块左右拖换天、上下拖换时刻；松手跨天会自动进那天的日视图；点表头也能进某天'
-        : '长按任务块上下拖可改时刻；点块进详情；左右滑切换日期';
+        : mode === 'timetable'
+          ? '左右滑看整周的表格；点课程块看详情；用 ‹ › 切换周次'
+          : '长按任务块上下拖可改时刻；点块进详情；左右滑切换日期';
 
   /**
    * 灰掉的是"已经结束"的两类：做完的、以及已经过去的时间段（上周的会）。
@@ -406,17 +435,29 @@ export default function CalendarScreen() {
                   onDraggingChange={setTimelineDragging}
                 />
               ) : null}
+
+              {mode === 'timetable' ? (
+                <TimetableView
+                  courses={courses}
+                  term={term}
+                  cursor={cursor}
+                  onSelectSlot={openCourseSlot}
+                  onImport={openImport}
+                />
+              ) : null}
             </Animated.View>
           </Animated.View>
         </GestureDetector>
 
         <View style={[styles.legend, { borderColor: theme.backgroundSelected }]}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.legendText}>
-            {scheduled.length
-              ? hasMuted
-                ? `${legend}。灰掉的是已完成的、或已经过去的事`
-                : legend
-              : '这个范围内还没有安排 —— 换个月份看看，或者记一条带时间的事，它会自动出现在这里并按时提醒你'}
+            {mode === 'timetable'
+              ? legend
+              : scheduled.length
+                ? hasMuted
+                  ? `${legend}。灰掉的是已完成的、或已经过去的事`
+                  : legend
+                : '这个范围内还没有安排 —— 换个月份看看，或者记一条带时间的事，它会自动出现在这里并按时提醒你'}
           </ThemedText>
         </View>
 
@@ -491,6 +532,7 @@ const SEGMENTS: Array<{ key: CalendarMode; label: string }> = [
   { key: 'month', label: '月' },
   { key: 'week', label: '周' },
   { key: 'day', label: '日' },
+  { key: 'timetable', label: '课' },
 ];
 
 /** 分段控件：高亮块跟着选中项平移，而不是硬切换 */

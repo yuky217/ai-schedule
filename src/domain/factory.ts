@@ -4,6 +4,7 @@ import { createId } from '@/utils/id';
 import type { BaseEntity } from './base';
 import type { Checkin } from './checkins';
 import type { Container, Mark } from './container';
+import { sanitizeSessions, type Course, type CourseSession, type Term } from './course';
 import { ContainerStatus } from './enums';
 import {
   CaptureSource,
@@ -19,6 +20,7 @@ import type { ContainerKind } from './enums';
 import type { FocusSession } from './focus';
 import type { Idea } from './idea';
 import type { RepeatRule, Task, TaskTime } from './task';
+import { DEFAULT_PERIODS, sanitizePeriods, type ClassPeriod } from './timetable';
 
 /**
  * 工厂函数：把"创建实体"这件事收敛到一处。
@@ -213,5 +215,62 @@ export function createCheckin(
     dayKey: toDayKey(day),
     minuteOfDay: minuteOfDay ?? day.getHours() * 60 + day.getMinutes(),
     note: null,
+  };
+}
+
+/** 课表配色有几种（界面按这个下标取色；领域层只给下标，不碰颜色值） */
+export const COURSE_COLORS = 8;
+
+/**
+ * 课程配色下标：**由课名决定**，同一门课每次都落到同一个颜色。
+ * 随机取色的话，每次刷新/每次导入颜色都在换，课表就没法"看颜色认课"了。
+ */
+export function colorIndexOf(title: string): number {
+  let hash = 0;
+  for (const ch of title) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) % 997;
+  return hash % COURSE_COLORS;
+}
+
+export interface CreateCourseInput {
+  title: string;
+  teacher?: string | null;
+  location?: string | null;
+  note?: string | null;
+  sessions?: CourseSession[];
+  reminderMinutesBefore?: number | null;
+  colorIndex?: number;
+}
+
+export function createCourse(input: CreateCourseInput): Course {
+  const title = input.title.trim();
+  return {
+    ...createBase('course'),
+    title,
+    teacher: input.teacher ?? null,
+    location: input.location ?? null,
+    note: input.note ?? null,
+    colorIndex: input.colorIndex ?? colorIndexOf(title),
+    sessions: sanitizeSessions(input.sessions ?? []),
+    reminderMinutesBefore: input.reminderMinutesBefore ?? null,
+  };
+}
+
+export interface CreateTermInput {
+  /** '2026-2027-1' 这类学期名 */
+  label: string;
+  /** 'YYYY-MM-DD'，**必须是第 1 周的周一** */
+  startDayKey: string;
+  totalWeeks?: number;
+  periods?: readonly ClassPeriod[];
+}
+
+export function createTerm(input: CreateTermInput): Term {
+  const periods = input.periods ? [...input.periods] : [...DEFAULT_PERIODS];
+  return {
+    ...createBase('term'),
+    label: input.label.trim(),
+    startDayKey: input.startDayKey,
+    totalWeeks: input.totalWeeks ?? 18,
+    periods: sanitizePeriods(periods).length ? sanitizePeriods(periods) : [...DEFAULT_PERIODS],
   };
 }

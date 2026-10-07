@@ -11,7 +11,7 @@ import { Spacing } from '@/constants/theme';
 import { exportBackup } from '@/data/backup/export';
 import { restoreFromPicker } from '@/data/backup/import';
 import { SCHEMA_VERSION } from '@/data/db/schema';
-import { getReminderSupport, sendTestReminder, cancelAllReminders, type ReminderSupport } from '@/entry/notifications';
+import { getReminderSupport, sendTestReminder, type ReminderSupport } from '@/entry/notifications';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
@@ -116,9 +116,9 @@ export default function SettingsScreen() {
         text: '确认清空',
         style: 'destructive',
         onPress: async () => {
+          // 撤通知这件事收在 store 的 wipeLocalData 里（"清空数据"的语义
+          // 本来就包含"别再有旧提醒冒出来"），页面不再重复做
           await wipeLocalData();
-          // 库空了，通知还挂着会照弹 —— 一并撤掉
-          await cancelAllReminders();
           setMessage('本地数据已清空');
         },
       },

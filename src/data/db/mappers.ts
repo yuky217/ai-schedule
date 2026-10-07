@@ -3,10 +3,21 @@ import type { SQLiteBindValue } from 'expo-sqlite';
 import type { BaseEntity } from '@/domain/base';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark as MarkEntity, TaskChain } from '@/domain/container';
+import {
+  sanitizeSessions,
+  type Course,
+  type CourseSession,
+  type Term,
+} from '@/domain/course';
 import type { CaptureSource, Priority, SyncState } from '@/domain/enums';
 import type { FocusSession } from '@/domain/focus';
 import type { Idea } from '@/domain/idea';
 import { normalizeTaskTime, type RepeatRule, type Task, type TaskProgress, type TaskTime } from '@/domain/task';
+import {
+  DEFAULT_PERIODS,
+  sanitizePeriods,
+  type ClassPeriod,
+} from '@/domain/timetable';
 
 import type { ColumnMap } from './sql';
 
@@ -364,5 +375,79 @@ export function checkinColumns(checkin: Checkin): ColumnMap {
     minute_of_day: checkin.minuteOfDay ?? null,
     note: checkin.note ?? null,
     ...writeBase(checkin),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Course / Term                                                      */
+/* ------------------------------------------------------------------ */
+
+export interface CourseRow extends BaseRow {
+  title: string;
+  teacher: string | null;
+  location: string | null;
+  note: string | null;
+  color_index: number;
+  sessions_json: string;
+  reminder_minutes_before: number | null;
+}
+
+export function courseFromRow(row: CourseRow): Course {
+  return {
+    ...readBase(row),
+    title: row.title,
+    teacher: row.teacher,
+    location: row.location,
+    note: row.note,
+    colorIndex: row.color_index ?? 0,
+    // 读进来就过一道 sanitize：库里可能有历史/手工改坏的行，
+    // 一个非法节次不该让整张课表画错位置
+    sessions: sanitizeSessions(parseJson<CourseSession[]>(row.sessions_json, [])),
+    reminderMinutesBefore: row.reminder_minutes_before,
+  };
+}
+
+export function courseColumns(course: Course): ColumnMap {
+  return {
+    id: course.id,
+    title: course.title,
+    teacher: course.teacher ?? null,
+    location: course.location ?? null,
+    note: course.note ?? null,
+    color_index: course.colorIndex,
+    sessions_json: JSON.stringify(sanitizeSessions(course.sessions)),
+    reminder_minutes_before: course.reminderMinutesBefore ?? null,
+    ...writeBase(course),
+  };
+}
+
+export interface TermRow extends BaseRow {
+  label: string;
+  start_day_key: string;
+  total_weeks: number;
+  periods_json: string;
+}
+
+export function termFromRow(row: TermRow): Term {
+  const periods = sanitizePeriods(parseJson<ClassPeriod[]>(row.periods_json, []));
+  return {
+    ...readBase(row),
+    label: row.label,
+    startDayKey: row.start_day_key,
+    totalWeeks: row.total_weeks,
+    // 作息表空掉就没法把"第几节"翻译成钟点 —— 用默认表兜住，
+    // 否则课表会整张消失（宁可按默认作息画，也不要空白）
+    periods: periods.length ? periods : DEFAULT_PERIODS,
+  };
+}
+
+export function termColumns(term: Term): ColumnMap {
+  return {
+    id: term.id,
+    label: term.label,
+    start_day_key: term.startDayKey,
+    total_weeks: term.totalWeeks,
+    periods_json: JSON.stringify(sanitizePeriods(term.periods)),
+    ...writeBase(term),
   };
 }

@@ -3,21 +3,26 @@ import { create } from 'zustand';
 import { clearAllTables, getDatabase } from '@/data/db/client';
 import { checkinRepository } from '@/data/repositories/checkin-repository';
 import { containerRepository } from '@/data/repositories/container-repository';
+import { courseRepository } from '@/data/repositories/course-repository';
 import { focusRepository } from '@/data/repositories/focus-repository';
 import { ideaRepository } from '@/data/repositories/idea-repository';
 import { markRepository } from '@/data/repositories/mark-repository';
 import { taskRepository } from '@/data/repositories/task-repository';
+import { termRepository } from '@/data/repositories/term-repository';
 import { quickCapture, type QuickCaptureInput, type QuickCaptureResult } from '@/entry/quick-capture';
 import { cancelAllReminders, cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
+import { mondayOfWeek, type Course, type Term } from '@/domain/course';
 import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
 import {
   createContainer,
+  createCourse,
   createFocusSession,
   createMark,
   createSubtask,
   createTask,
+  createTerm,
 } from '@/domain/factory';
 import {
   applyFocusToTask,
@@ -38,6 +43,7 @@ import { advanceRepeatingTask } from '@/domain/repeat-next';
 import { desiredParentStatus } from '@/domain/subtask-progress';
 import { CaptureSource, CompletionRule, TaskKind, TaskStatus } from '@/domain/enums';
 import type { Task, TaskTime } from '@/domain/task';
+import { toDayKey } from '@/utils/datetime';
 
 /**
  * 全局数据状态。
@@ -200,6 +206,28 @@ interface AppState {
 
   /** 危险操作：清空本地数据，仅用于开发调试 */
   wipeLocalData: () => Promise<void>;
+
+  /* ---------------- 课程表（课表与任务并列，不改任务口径） ---------------- */
+
+  /** 当前学期的课（已按 created_at DESC）；课表视图直接消费 */
+  courses: Course[];
+  /** 当前学期：开学日、总周数、作息表。null = 还没设置过 */
+  term: Term | null;
+
+  loadCourses: () => Promise<Course[]>;
+  loadTerm: () => Promise<Term | null>;
+  /** 改一门课（改名/改时段/换教室/设提醒都走它） */
+  saveCourse: (course: Course) => Promise<void>;
+  /** 删一门课（软删除） */
+  removeCourse: (id: string) => Promise<void>;
+  /**
+   * 导入一批课（导入页确认草稿之后调它）。
+   * `replace` = 先清空现有课表 —— 重新导入整学期的默认动作，
+   * 但要由用户明确选，不替用户决定（老课表可能已经手动调过）。
+   */
+  importCourses: (courses: readonly Course[], options?: { replace?: boolean }) => Promise<void>;
+  /** 学期设置：不传就沿用当前值（首次会自动建一条，开学日默认本周一） */
+  saveTerm: (patch: Partial<Term>) => Promise<Term>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -219,6 +247,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   growthSeconds: 0,
   lastCapture: null,
   lastFocus: null,
+  courses: [],
+  term: null,
 
   init: async () => {
     if (get().ready || get().initializing) return;
@@ -252,6 +282,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       checkins,
       habits,
       growthSeconds,
+      courses,
+      term,
     ] = await Promise.all([
       taskRepository.listInbox(),
       taskRepository.listToday(),
@@ -263,6 +295,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       checkinRepository.listAll(),
       taskRepository.listHabits(),
       focusRepository.totalGrowthSeconds(),
+      courseRepository.listAll(),
+      termRepository.getCurrent(),
     ]);
     set({
       inbox,
@@ -275,6 +309,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       checkins,
       habits,
       growthSeconds,
+      courses,
+      term,
       dataVersion: get().dataVersion + 1,
     });
   },
@@ -716,7 +752,48 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearFocusFeedback: () => set({ lastFocus: null }),
 
+  /* ---------------- 课程表 ---------------- */
+
+  loadCourses: async () => courseRepository.listAll(),
+
+  loadTerm: async () => termRepository.getCurrent(),
+
+  saveCourse: async (course) => {
+    await courseRepository.save(course);
+    await get().refresh();
+  },
+
+  removeCourse: async (id) => {
+    await courseRepository.softDelete(id);
+    await get().refresh();
+  },
+
+  importCourses: async (courses, options) => {
+    if (options?.replace) await courseRepository.softDeleteAll();
+    await courseRepository.createMany(courses);
+    await get().refresh();
+  },
+
+  saveTerm: async (patch) => {
+    const current = await termRepository.getCurrent();
+    // 没有学期就先建一条：开学日默认**本周一** —— 用户看到的是一个能用的
+    // 默认值，而不是一片空白让他自己填（省事原则）。
+    const base =
+      current ??
+      createTerm({
+        label: patch.label ?? '当前学期',
+        startDayKey: patch.startDayKey ?? toDayKey(mondayOfWeek(new Date())),
+        totalWeeks: patch.totalWeeks,
+        periods: patch.periods,
+      });
+    const next = await termRepository.save({ ...base, ...patch, id: base.id });
+    set({ term: next, dataVersion: get().dataVersion + 1 });
+    return next;
+  },
+
   wipeLocalData: async () => {
+    // 清库之前先把通知全撤了：旧任务的提醒还挂在系统里，清完数据它照样会响
+    await cancelAllReminders();
     await clearAllTables();
     await get().refresh();
   },

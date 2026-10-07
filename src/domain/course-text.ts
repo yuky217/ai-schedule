@@ -15,7 +15,13 @@
  * 纯 TypeScript（可单测）。
  */
 
-import { WeekParity, sanitizeSessions, type CourseSession } from './course';
+import {
+  WeekParity,
+  describeWeeks,
+  sanitizeSessions,
+  weeksFromRange,
+  type CourseSession,
+} from './course';
 import { parseClock } from './timetable';
 
 export interface CourseDraft {
@@ -44,12 +50,24 @@ export interface ParseOptions {
 
 const DEFAULT_WEEKS = { start: 1, end: 18 } as const;
 
-/** 全角 → 半角，顺便统一各种破折号与括号；解析前必须先过这一道 */
+/** 导入预览里最常出现的那句提示，写成常量免得三处文案不一致 */
+const WEEKS_NOT_READ = '没读到周次，按整学期处理';
+
+function addWarning(draft: CourseDraft, warning: string): void {
+  if (!draft.warnings.includes(warning)) draft.warnings.push(warning);
+}
+
+/**
+ * 全角 → 半角（数字）、统一各种破折号，解析前必须先过这一道。
+ *
+ * **刻意不转换括号**：中文课名里的"（3）""（中外联合培养）"很常见，
+ * 换成半角之后课名就不再是用户认得的那个样子了（"学术英语(3)"）；
+ * 需要认括号的地方（单双周的"(单)/（双）"）正则里两种都写了。
+ */
 function normalize(text: string): string {
   return text
     .replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .replace(/[：]/g, ':')
-    .replace(/[（）]/g, (c) => (c === '（' ? '(' : ')'))
     .replace(/[–—－~～至]/g, '-')
     .replace(/\u00a0|\u3000/g, ' ');
 }
@@ -88,27 +106,46 @@ export function parsePeriodSpan(text: string): { start: number; end: number } | 
   return null;
 }
 
-/** '第1-16周(单)' / '1~8周' / '第5周' / '单周'（只有单双周时区间交给调用方补） */
-export function parseWeekSpan(
+/** 文本里读出来的周次 */
+export interface ParsedWeeks {
+  weeks: number[];
+  /** 文本里**明确写了**周次（false = 按整学期兜的，界面要提示核对） */
+  explicit: boolean;
+}
+
+/**
+ * 从一段文字里读出周次。支持**多段**（教务系统里"隔几周上一次"很常见）：
+ * '1-16周'、'2-16周(双)'、'4周,8周,12周'、'1-3周,5-7周,9-11周,13-16周'、'单周'
+ *
+ * 单双周只认**紧跟周次后面**的括注 —— 整段里随便哪个"双"字都当规则的话，
+ * "双学位"之类的课名会被读成双周课（踩过的思路，先堵上）。
+ */
+export function parseWeeks(
   text: string,
-  fallback: { start: number; end: number },
-): { start: number; end: number; parity: WeekParity } | null {
-  const parity: WeekParity = /单\s*周|\(\s*单\s*\)|单/.test(text)
-    ? WeekParity.Odd
-    : /双\s*周|\(\s*双\s*\)|双/.test(text)
-      ? WeekParity.Even
-      : WeekParity.All;
-  const range = new RegExp(`(\\d{1,2})\\s*${SEP}\\s*(\\d{1,2})\\s*周`).exec(text);
-  if (range) {
-    return { start: Number(range[1]), end: Number(range[2]), parity };
+  fallback: { start: number; end: number } = DEFAULT_WEEKS,
+): ParsedWeeks | null {
+  const weeks = new Set<number>();
+  const pattern = new RegExp(`(\\d{1,2})\\s*${SEP}\\s*(\\d{1,2})\\s*周|(\\d{1,2})\\s*周`, 'g');
+  let matched: RegExpExecArray | null;
+  while ((matched = pattern.exec(text)) !== null) {
+    const start = Number(matched[1] ?? matched[3]);
+    const end = matched[2] ? Number(matched[2]) : start;
+    const after = text.slice(matched.index + matched[0].length, matched.index + matched[0].length + 4);
+    const parity = /^\s*[（(【\[]?\s*单/.test(after)
+      ? WeekParity.Odd
+      : /^\s*[（(【\[]?\s*双/.test(after)
+        ? WeekParity.Even
+        : WeekParity.All;
+    for (const week of weeksFromRange(start, end, parity)) weeks.add(week);
   }
-  const single = /(\d{1,2})\s*周/.exec(text);
-  if (single) {
-    const n = Number(single[1]);
-    return { start: n, end: n, parity };
+  if (weeks.size) return { weeks: [...weeks].sort((a, b) => a - b), explicit: true };
+  // 只写了"单周/双周"，没写周数 —— 用整学期兜住（用户可在预览里改）
+  if (/单\s*周|[（(]\s*单\s*[）)]/.test(text)) {
+    return { weeks: weeksFromRange(fallback.start, fallback.end, WeekParity.Odd), explicit: false };
   }
-  // 只写了"单周/双周"，没写区间 —— 用整学期兜住（用户可在预览里改）
-  if (parity !== WeekParity.All) return { ...fallback, parity };
+  if (/双\s*周|[（(]\s*双\s*[）)]/.test(text)) {
+    return { weeks: weeksFromRange(fallback.start, fallback.end, WeekParity.Even), explicit: false };
+  }
   return null;
 }
 
@@ -140,9 +177,61 @@ function looksLikeTitleOnly(line: string): boolean {
   return /^[\u4e00-\u9fa5A-Za-z()（）·、\-—\s]+$/.test(text);
 }
 
-/** 明确写了教师的格子 */
+const LOCATION_LABELS = '场地|教室|上课地点|上课教室|地点|位置';
+const TEACHER_LABELS = '任课教师|授课教师|上课教师|教师姓名|任课老师|教师|老师';
+
+/**
+ * 从"标签:取值"里把值取出来："场地:教B112" → "教B112"。
+ *
+ * 这是教务系统导出文本里**最可靠**的一类信号（标签是它自己写的，
+ * 不需要猜）。所以它排在所有"猜"的前面。
+ *
+ * `allowCommas`：教师名常写成"林德丰,朱宏邦"，地点里基本不会有逗号 ——
+ * 所以按用途区分：取地点时逗号算分隔符，取教师时不算。
+ */
+export function labeledValue(text: string, labels: string, allowCommas = false): string | null {
+  const stop = allowCommas ? '[^/\\\\;；|]' : '[^/\\\\;；,，、|]';
+  const matched = new RegExp(`(?:${labels})\\s*[:：]\\s*(${stop}+)`).exec(text);
+  const value = matched?.[1]?.trim();
+  if (!value) return null;
+  if (/^(无|暂无|待定|-+)$/.test(value)) return null;
+  return value;
+}
+
+/** 课程名后缀的课程性质标记：* 理论 / # 实践 / & 实验（教务系统的图例这么定的） */
+export function stripCourseKindMark(title: string): string {
+  return title.replace(/[\s]*[*#&]\s*$/, '').trim();
+}
+
+/**
+ * 课程名 = 第一个"节次"记号之前、去掉各种噪声的那一段。
+ *
+ * 教务系统把课名写在格子最前面（"学术英语(3)* (1-2节)1-16周/校区:…"），
+ * 所以"截到节次为止"比"剥掉已知片段再看剩什么"更稳 —— 后者会把
+ * 破折号、括号里的数字一起剥掉。**同时打散"理论/实验"两条记录**：
+ * "学术英语(3)*" 与 "学术英语(3)&" 截出来同名，于是同一门课的
+ * 理论课与实验课会合并成一门课的两个时段，而不是两门课。
+ */
+function cutCourseName(cell: string): string | null {
+  const cut = /\d{1,2}\s*(?:-\s*\d{1,2}\s*)?节/.exec(cell);
+  if (!cut) return null;
+  const head = cell
+    .slice(0, cut.index)
+    .replace(/(?:星期|周|礼拜)\s*[一二三四五六日天\d]/g, ' ')
+    .replace(/\b\d{1,2}:\d{2}\b/g, ' ')
+    .replace(/[\s(（\[【、·:：,，|]+$/, '');
+  const name = stripCourseKindMark(head);
+  if (name.length < 2 || name.length > 30) return null;
+  return name;
+}
+
+/** 明确写了教师的格子（**短、且不带标签冒号** —— 一整段文字里冒出"教师"
+ *  两个字不是教师名，踩过：整格被当成教师名，课名和地点全丢） */
 function looksLikeTeacher(cell: string): boolean {
-  return /(老师|教师|教授|讲师|助教)/.test(cell);
+  const text = cell.trim();
+  if (!text || text.length > 12) return false;
+  if (/[:：]/.test(text)) return false;
+  return /(老师|教师|教授|讲师|助教)/.test(text);
 }
 
 type ColumnRole = 'name' | 'weekday' | 'period' | 'week' | 'location' | 'teacher' | 'clock' | 'unknown';
@@ -180,11 +269,24 @@ function splitCells(line: string): string[] {
   return [line.trim()];
 }
 
+/**
+ * 网格行的切分：**只认制表符 / 连续空格**，不做"单空格也切"的兜底。
+ *
+ * 网格靠**列的位置**对齐，乱切会把列错位。踩过的：一行末尾的空列被
+ * trim 掉之后，剩下的内容被按单空格切碎，"高等数学"和"(1-2节)1-16周/…"
+ * 分到了两个格子 —— 于是课名丢了、课表信息被当成课程名。
+ */
+function splitGridCells(line: string): string[] {
+  if (line.includes('\t')) return line.split('\t').map((c) => c.trim());
+  if (/\s{2,}/.test(line)) return line.split(/\s{2,}/).map((c) => c.trim());
+  return [line.trim()];
+}
+
 interface SessionCell {
   weekday: number | null;
   weekdayText: string | null;
   periods: { start: number; end: number } | null;
-  weeks: { start: number; end: number; parity: WeekParity } | null;
+  weeks: ParsedWeeks | null;
   location: string | null;
   teacher: string | null;
   clock: { start: number; end: number } | null;
@@ -208,6 +310,22 @@ function emptyCell(): SessionCell {
 function extractFromText(cell: string, out: SessionCell, leftovers: string[]): void {
   let matched = false;
 
+  // ① 标签取值优先 —— "场地:教B112/教师:吕晨歌"，标签是教务系统自己写的，不用猜
+  if (!out.location) {
+    const place = labeledValue(cell, LOCATION_LABELS);
+    if (place) {
+      out.location = place;
+      matched = true;
+    }
+  }
+  if (!out.teacher) {
+    const teacher = labeledValue(cell, TEACHER_LABELS, true);
+    if (teacher) {
+      out.teacher = teacher;
+      matched = true;
+    }
+  }
+
   const weekday = parseWeekdayToken(cell);
   if (weekday != null) {
     out.weekday ??= weekday;
@@ -219,7 +337,7 @@ function extractFromText(cell: string, out: SessionCell, leftovers: string[]): v
     out.periods ??= periods;
     matched = true;
   }
-  const weeks = parseWeekSpan(cell, DEFAULT_WEEKS);
+  const weeks = parseWeeks(cell, DEFAULT_WEEKS);
   if (weeks) {
     out.weeks ??= weeks;
     matched = true;
@@ -228,6 +346,12 @@ function extractFromText(cell: string, out: SessionCell, leftovers: string[]): v
   if (clock) {
     out.clock ??= clock;
     matched = true;
+  }
+  // ② 课程名：截到"节次"为止（教务系统把课名写在最前）
+  const cutName = cutCourseName(cell);
+  if (cutName) {
+    out.name ??= cutName;
+    return;
   }
   if (looksLikeLocation(cell) && !out.location) {
     out.location = cell;
@@ -278,7 +402,7 @@ function classifyCells(cells: readonly string[], roles: readonly ColumnRole[] | 
         return;
       }
       case 'week': {
-        const weeks = parseWeekSpan(cell, DEFAULT_WEEKS);
+        const weeks = parseWeeks(cell, DEFAULT_WEEKS);
         if (weeks) out.weeks = weeks;
         else leftovers.push(cell);
         return;
@@ -328,7 +452,8 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   const defaults = options.defaultWeeks ?? DEFAULT_WEEKS;
   const lines = normalize(text)
     .split(/\r?\n/)
-    .map((line) => line.trimEnd())
+    // **刻意不 trimEnd**：网格行末尾的空列是"这一天没课"的表达，
+    // 砍掉之后列就错位了（踩过）
     .filter((line) => line.trim().length > 0);
 
   const problems: string[] = [];
@@ -342,9 +467,100 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   let pendingTeacher: string | null = null;
   /** 最近一次成功解析出来的课程：后面的"光秃秃地点/教师"行归它（卡片式格式） */
   let lastDraft: CourseDraft | null = null;
+  /** 网格模式：表头那一行（每列是一个星期）。教务系统的课表页就是这种表 */
+  let grid: string[] | null = null;
+
+  /**
+   * 把一格内容落成一条安排。
+   * 普通行、网格格子、卡片式三处共用它 —— 免得"周次没读到"这类提示写三遍
+   * （写三遍的下场是其中一处忘了改，界面上少一句提示，而没人知道）。
+   */
+  const commit = (
+    info: SessionCell,
+    weekday: number,
+    rowPeriods: { start: number; end: number } | null,
+    rawLine: string,
+    carried: { title?: string | null; location?: string | null; teacher?: string | null },
+  ): CourseDraft | null => {
+    const periods = info.periods ?? rowPeriods;
+    if (!periods) return null;
+    const parsed = info.weeks ?? {
+      weeks: weeksFromRange(defaults.start, defaults.end),
+      explicit: false,
+    };
+    const session: CourseSession = {
+      weekday,
+      startPeriod: periods.start,
+      endPeriod: periods.end,
+      weeks: parsed.weeks,
+      location: info.location ?? carried.location ?? null,
+    };
+    const title = stripCourseKindMark((info.name ?? carried.title ?? '').trim());
+    const teacher = info.teacher ?? carried.teacher ?? null;
+    let draft: CourseDraft | null = null;
+    if (title) {
+      draft = pushDraft(byTitle, title, session, { ...info, teacher }, rawLine, []);
+    } else {
+      // 没有课程名：退回"这一格原文"当名字，并标记要核对（不静默丢）
+      const guess = stripCourseKindMark(rawLine).slice(0, 40);
+      if (guess) {
+        draft = pushDraft(byTitle, guess, session, { ...info, teacher }, rawLine, [
+          '这一格没读到课程名，请核对',
+        ]);
+      }
+    }
+    if (!draft) return null;
+    if (!parsed.explicit) addWarning(draft, WEEKS_NOT_READ);
+    return draft;
+  };
 
   for (const line of lines) {
     const cells = splitCells(line);
+    const gridCells = splitGridCells(line);
+
+    /**
+     * 网格表头：一行里出现 ≥3 个"星期X"。
+     * 教务系统课表页全选复制出来就是这种 —— 每列一天，格子里**不含**星期，
+     * 星期只出现在表头。不认这一层的话，整张表会被当成"没有星期的行"全部丢掉。
+     */
+    if (gridCells.filter((cell) => parseWeekdayToken(cell) != null).length >= 3) {
+      grid = gridCells;
+      roles = null;
+      continue;
+    }
+    if (grid && gridCells.length >= 2) {
+      // 节次可能写在这一行的"节次"列里（表头写着"节次"，格子里只有一个数字）
+      let rowPeriods: { start: number; end: number } | null = null;
+      for (let index = 0; index < gridCells.length; index += 1) {
+        const header = (grid[index] ?? '').replace(/\s/g, '');
+        if (!/节次|节数|节$/.test(header)) continue;
+        const cell = (gridCells[index] ?? '').trim();
+        rowPeriods =
+          parsePeriodSpan(cell) ??
+          (/^\d{1,2}$/.test(cell) ? { start: Number(cell), end: Number(cell) } : null);
+        break;
+      }
+      let committed = 0;
+      for (let index = 0; index < Math.min(gridCells.length, grid.length); index += 1) {
+        const cell = (gridCells[index] ?? '').trim();
+        if (!cell) continue;
+        const day = parseWeekdayToken(grid[index] ?? '');
+        if (day == null) continue; // 非星期列（时间段/节次/说明列）不当内容
+        if (commit(classifyCells([cell], null), day, rowPeriods, cell, {})) parsedAny = true;
+        committed += 1;
+      }
+      /**
+       * 还要不要继续按网格读下一行？
+       * 「上午 / 下午 / 晚上」「1 / 2 / 3」这类**短标签行**是网格的结构部分，
+       * 继续；而一张表后面跟着的普通长文本（"其他课程：…#…/1-12周"）不是，
+       * 这时必须退出网格，否则后面的内容会被网格分支整段吞掉。
+       */
+      const structural = gridCells.every((cell) => cell.trim().length <= 8);
+      if (committed > 0 || rowPeriods || structural) continue;
+      grid = null;
+    }
+    // 单格的说明行（"其他课程：…"、"*: 理论 #: 实践"）：网格到此结束
+    if (grid && gridCells.length === 1) grid = null;
     // 先判"这行像不像数据行"：含"周一"或"1-2节"这类**取值**的行，绝不是表头。
     // 否则 "高等数学 周一 1-2节 … 张三老师" 会因为结尾的"张三老师"命中"教师"
     // 被误判成表头，整行数据被静默吃掉（踩过）。
@@ -361,7 +577,14 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     if (weekday == null || !info.periods) {
       // 只处理"整行就是一个字段"的情况（卡片式格式）；
       // 多格的表格行缺信号，说明这行本身不完整，直接跳过
-      if (cells.length !== 1) continue;
+      if (cells.length !== 1) {
+        // 例外：读到了周次 = 它确实是门课，只是没排上课时间（实践/网课）。
+        // 这种要说一句，否则用户只看到"课表少了一门"却不知道少在哪。
+        if (info.weeks && !info.periods) {
+          problems.push(`「${line.trim().slice(0, 24)}」没读到上课节次，未加入课表（可能时间待定）`);
+        }
+        continue;
+      }
       const text = line.trim();
       // 单格行可能是课程名，也可能是教室/教师 —— 按内容分派
       const candidate = info.name ?? text;
@@ -387,35 +610,25 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       continue;
     }
 
-    const weeks = info.weeks ?? { ...defaults, parity: WeekParity.All };
-    const session: CourseSession = {
-      weekday,
-      startPeriod: info.periods.start,
-      endPeriod: info.periods.end,
-      startWeek: weeks.start,
-      endWeek: weeks.end,
-      parity: weeks.parity,
-      location: info.location ?? pendingLocation,
-    };
-    const title = (info.name ?? pendingTitle ?? '').trim();
-    const teacher = info.teacher ?? pendingTeacher;
-    if (!title) {
-      // 没有课程名：把整行当名字太长，退回"整行原文"作为名字并标记需核对
-      const guess = cells.filter(Boolean).join(' ').slice(0, 40);
-      if (!guess) continue;
-      lastDraft = pushDraft(byTitle, guess, session, { ...info, teacher }, line, [
-        '这一行没读到课程名，请核对',
-      ]);
-    } else {
-      lastDraft = pushDraft(byTitle, title, session, { ...info, teacher }, line, []);
+    if (!info.periods) {
+      /**
+       * 有周次、没节次：多半是"实践 / 网课 / 时间待定"那类课程
+       * （教务系统里写成"…/1-12周/无"）。记一句说明，**不静默丢** ——
+       * 用户得知道少了一门课、以及少在哪儿，否则就是"课表怎么少了一门"。
+       */
+      problems.push(`「${line.trim().slice(0, 24)}」没读到上课节次，未加入课表（可能时间待定）`);
+      continue;
     }
-    if (!info.weeks && !lastDraft.warnings.includes('没读到周次，按整学期处理')) {
-      lastDraft.warnings.push('没读到周次，按整学期处理');
-    }
+
+    lastDraft = commit(info, weekday, null, line, {
+      title: pendingTitle,
+      location: pendingLocation,
+      teacher: pendingTeacher,
+    });
+    if (lastDraft) parsedAny = true;
     pendingTitle = null;
     pendingLocation = null;
     pendingTeacher = null;
-    parsedAny = true;
   }
 
   if (!parsedAny) {
@@ -424,7 +637,7 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       const weekday = parseWeekdayToken(line);
       const periods = parsePeriodSpan(line);
       if (weekday == null || !periods) continue;
-      const weeks = parseWeekSpan(line, defaults) ?? { ...defaults, parity: WeekParity.All };
+      const weeks = parseWeeks(line, defaults);
       const title = line
         .replace(/(?:星期|周|礼拜)\s*[一二三四五六日天\d]/g, '')
         .replace(/(\d{1,2}\s*-\s*\d{1,2}\s*周[^ ]*|\d{1,2}\s*周[^ ]*)/g, '')
@@ -440,9 +653,7 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
           weekday,
           startPeriod: periods.start,
           endPeriod: periods.end,
-          startWeek: weeks.start,
-          endWeek: weeks.end,
-          parity: weeks.parity,
+          weeks: weeks?.weeks ?? weeksFromRange(defaults.start, defaults.end),
           location: null,
         },
         emptyCell(),
@@ -461,7 +672,24 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   return { courses: [...byTitle.values()], problems };
 }
 
-/** 同名课程合并：session 去重（同星期同节次视为同一次），并把地点/教师补齐 */
+/** 同一门课的"同一格"：周几 + 节次 + 地点。周次不同不算同一格 */
+function sameSlot(a: CourseSession, b: CourseSession): boolean {
+  return (
+    a.weekday === b.weekday &&
+    a.startPeriod === b.startPeriod &&
+    a.endPeriod === b.endPeriod &&
+    (a.location ?? '') === (b.location ?? '')
+  );
+}
+
+/**
+ * 同名课程合并。
+ *
+ * **判重不能只看"周几 + 节次"** —— 真课表里同一门课同一节次的周次/教室都可能
+ * 不一样（毛概 1-3、5-7、9-11、13-16 周在教A108，而 4、8、12 周在在线教室）。
+ * 只看前两项会把后一条当重复丢掉，用户看到的是"课表少了三周的课"。
+ * 现在：同格 → 周次取并集；不同格 → 各留一条。
+ */
 function pushDraft(
   map: Map<string, CourseDraft>,
   title: string,
@@ -473,18 +701,17 @@ function pushDraft(
   const key = title.trim();
   const existing = map.get(key);
   if (existing) {
-    const duplicate = existing.sessions.some(
-      (s) =>
-        s.weekday === session.weekday &&
-        s.startPeriod === session.startPeriod &&
-        s.endPeriod === session.endPeriod,
-    );
-    if (!duplicate) existing.sessions.push(session);
+    const same = existing.sessions.find((s) => sameSlot(s, session));
+    if (same) {
+      same.weeks = [...new Set([...same.weeks, ...session.weeks])].sort((a, b) => a - b);
+    } else {
+      existing.sessions.push(session);
+    }
     existing.sessions = sanitizeSessions(existing.sessions);
     if (!existing.location && session.location) existing.location = session.location;
     if (!existing.teacher && info.teacher) existing.teacher = info.teacher;
     if (rawLine && !existing.raw.includes(rawLine)) existing.raw.push(rawLine);
-    for (const w of warnings) if (!existing.warnings.includes(w)) existing.warnings.push(w);
+    for (const warning of warnings) addWarning(existing, warning);
     return existing;
   }
   const draft: CourseDraft = {
@@ -504,11 +731,8 @@ export function describeDraft(draft: CourseDraft, totalWeeks?: number): string {
   const parts = draft.sessions.map((s) => {
     const periodText =
       s.startPeriod === s.endPeriod ? `第${s.startPeriod}节` : `第${s.startPeriod}-${s.endPeriod}节`;
-    const parity = s.parity === WeekParity.Odd ? '单' : s.parity === WeekParity.Even ? '双' : '';
-    const weekText =
-      s.startWeek === s.endWeek ? `第${s.startWeek}周` : `第${s.startWeek}-${s.endWeek}周`;
     const weekday = ['日', '一', '二', '三', '四', '五', '六'][s.weekday] ?? '';
-    return `周${weekday} ${periodText} ${weekText}${parity}`;
+    return `周${weekday} ${periodText} ${describeWeeks(s.weeks, totalWeeks)}`;
   });
   const suffix = totalWeeks ? `（共 ${totalWeeks} 周）` : '';
   return `${draft.title}：${parts.join('；')}${suffix}`;

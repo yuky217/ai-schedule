@@ -33,6 +33,7 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="task/[id]" />
+          <Stack.Screen name="course/[id]" />
           <Stack.Screen name="container/[id]" />
           <Stack.Screen name="marks" />
           <Stack.Screen name="habits" />
@@ -40,6 +41,7 @@ export default function RootLayout() {
           <Stack.Screen name="capture" options={{ presentation: 'modal' }} />
           <Stack.Screen name="focus" options={{ presentation: 'modal' }} />
           <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="import-courses" options={{ presentation: 'modal' }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

@@ -26,6 +26,8 @@ export const BACKUP_TABLES = [
   TABLES.chains,
   TABLES.marks,
   TABLES.focusSessions,
+  TABLES.courses,
+  TABLES.terms,
 ] as const;
 
 export type BackupTableName = (typeof BACKUP_TABLES)[number];

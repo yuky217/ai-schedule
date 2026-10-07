@@ -22,7 +22,7 @@ import { addDays, endOfDay, endOfWeek, startOfDay, startOfMonth, startOfWeek } f
  *    多读几天的代价可以忽略，读漏一天就是用户看得见的 bug。
  */
 
-export type CalendarRangeMode = 'month' | 'week' | 'day';
+export type CalendarRangeMode = 'month' | 'week' | 'day' | 'timetable';
 
 export interface CalendarWindow {
   /** 起点（当天 00:00） */
@@ -58,7 +58,9 @@ export function calendarWindow(
   if (mode === 'month') {
     from = startOfWeek(startOfMonth(cursor), WEEK_OPTIONS);
     to = endOfDay(addDays(from, MONTH_GRID_ROWS * 7 - 1));
-  } else if (mode === 'week') {
+  } else if (mode === 'week' || mode === 'timetable') {
+    // 课表视图和"周"看的是同一段范围：它的数据走 store 里的课程，但日历下方
+    // 仍然按这一周取任务（课表周的同一批时间窗，不另开一套口径）
     from = startOfWeek(cursor, WEEK_OPTIONS);
     to = endOfWeek(cursor, WEEK_OPTIONS);
   } else {

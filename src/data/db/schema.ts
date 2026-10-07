@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -21,6 +21,8 @@ export const TABLES = {
   marks: 'marks',
   focusSessions: 'focus_sessions',
   checkins: 'task_checkins',
+  courses: 'courses',
+  terms: 'terms',
   meta: 'app_meta',
 } as const;
 
@@ -147,6 +149,36 @@ CREATE TABLE IF NOT EXISTS ${TABLES.checkins} (
   ${COMMON_COLUMNS}
 );
 
+-- 课程（课程表）：与任务并列的独立实体。
+-- 为什么不塞进任务表：课没有"完成态"（下周它还得在），而且课表描述的是
+-- "第几周、周几、第几节"这种学期框架，不是某天要做的一件事。
+-- 上课安排（周几/节次/周次/地点）存成 sessions_json —— 它是课程的固有部分，
+-- 没有单独查询的需要（课表按整门课读出来画格子），拆表只会多一层 join。
+CREATE TABLE IF NOT EXISTS ${TABLES.courses} (
+  id            TEXT PRIMARY KEY NOT NULL,
+  title         TEXT NOT NULL,
+  teacher       TEXT,
+  location      TEXT,
+  note          TEXT,
+  color_index   INTEGER NOT NULL DEFAULT 0,
+  sessions_json TEXT NOT NULL DEFAULT '[]',
+  reminder_minutes_before INTEGER,
+  ${COMMON_COLUMNS}
+);
+
+-- 学期：把"第几周"落到具体日期的唯一依据，也存作息表（第几节 = 几点）。
+-- 做成表而不是塞进 app_meta：**它是用户数据，必须跟着备份走** ——
+-- 藏在 meta 里的话，恢复备份之后学期起始日没了，整张课表算不出一周是第几周，
+-- 界面上就是"课表空了"，而且是静默的。
+CREATE TABLE IF NOT EXISTS ${TABLES.terms} (
+  id            TEXT PRIMARY KEY NOT NULL,
+  label         TEXT NOT NULL,
+  start_day_key TEXT NOT NULL,
+  total_weeks   INTEGER NOT NULL,
+  periods_json  TEXT NOT NULL DEFAULT '[]',
+  ${COMMON_COLUMNS}
+);
+
 `;
 
 /**
@@ -170,6 +202,7 @@ export const INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_focus_task        ON ${TABLES.focusSessions}(task_id, deleted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_focus_started     ON ${TABLES.focusSessions}(started_at, deleted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_checkins_task     ON ${TABLES.checkins}(task_id, day_key, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_courses_title     ON ${TABLES.courses}(title, deleted_at)`,
 ];
 
 /**
@@ -194,4 +227,10 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
     `ALTER TABLE ${TABLES.tasks} ADD COLUMN parent_task_id TEXT`,
     `ALTER TABLE ${TABLES.tasks} ADD COLUMN sort_order REAL`,
   ],
+  /**
+   * v4 = 课程表（courses + terms）。
+   * 两张都是**新表**，由 DDL 的 `CREATE TABLE IF NOT EXISTS` 建出来，
+   * 老库升级不需要任何 ALTER —— 这里留空数组是为了让版本号照常推进。
+   */
+  4: [],
 };

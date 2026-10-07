@@ -44,8 +44,13 @@ for (const [version, statements] of Object.entries(MIGRATIONS)) {
   }
 }
 
-/**
- * 造出一个"当时那个版本"的表结构：把后来版本才加的列从建表语句里删掉。
+/** 从 from 版本升到当前版本，应该被补上的版本号序列。
+ *  **从 SCHEMA_VERSION 推出来**，新增迁移版本时测试自动跟上 ——
+ *  写死 [2, 3] 的话，加一个版本就要回来手改两处，迟早漏掉一处。 */
+const versionsAppliedFrom = (from: number): number[] =>
+  Array.from({ length: Math.max(0, SCHEMA_VERSION - from) }, (_, i) => from + 1 + i);
+
+/** 造出一个"当时那个版本"的表结构：把后来版本才加的列从建表语句里删掉。
  * 这样老库的样子永远由 schema.ts 推导出来，不会随开发漂移。
  */
 function ddlAtVersion(version: number): string {
@@ -107,7 +112,7 @@ describe('bootstrapDatabase', () => {
     const report = await bootstrapDatabase(adapter);
 
     expect(report.fromVersion).toBe(2);
-    expect(report.applied).toEqual([3]);
+    expect(report.applied).toEqual(versionsAppliedFrom(2));
     expect(report.failedIndexes).toEqual([]);
     expect(columnsOf(db, TABLES.tasks)).toEqual(expect.arrayContaining(['parent_task_id', 'sort_order']));
     for (const name of declaredIndexNames) {
@@ -132,7 +137,7 @@ describe('bootstrapDatabase', () => {
 
     const report = await bootstrapDatabase(adapter);
 
-    expect(report.applied).toEqual([2, 3]);
+    expect(report.applied).toEqual(versionsAppliedFrom(1));
     expect(columnsOf(db, TABLES.tasks)).toEqual(
       expect.arrayContaining(['reminder_minutes_before', 'parent_task_id', 'sort_order']),
     );

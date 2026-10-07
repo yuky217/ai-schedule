@@ -8,6 +8,7 @@ import { CaptureInput } from '@/components/capture-input';
 import { EmptyState } from '@/components/empty-state';
 import { FocusPicker, type FocusPickerOption } from '@/components/focus-picker';
 import { GrowthOrb } from '@/components/growth-orb';
+import { NextCourseCard } from '@/components/next-course-card';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
@@ -302,6 +303,13 @@ export default function HomeScreen() {
           </ThemedText>
         </View>
       ) : null}
+
+      {/*
+        下一节课：跟"我想做什么"是两回事 —— 课是别人定好的时间，
+        它一动，今天剩下的时间怎么排全得跟着改。所以摆在最上面。
+        没有课表、或者下一节还远（后天之后）就整块不渲染。
+      */}
+      <NextCourseCard onPress={(courseId) => router.push(`/course/${courseId}`)} />
 
       {/*
         刚结束的那段专注：一行字说清"这一下到底干了什么"，并指到它落的地方。
