@@ -316,7 +316,7 @@ function QuickButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={active ? `${label}（点击修改）` : label}
+      accessibilityLabel={active ? `${label}（点一下修改）` : label}
       onPress={onPress}
       onLongPress={onClear}
       style={[

@@ -28,6 +28,21 @@ import { toDayKey } from '@/utils/datetime';
  * 导入策略：**替换**。按钮上写清楚会替换掉几门课，用户点之前就知道结果，
  * 所以不再加二次确认弹窗（多一次点击换不来更多安全感）。
  */
+
+/**
+ * "怎么拿到课表文本"——按"从省事到麻烦"排，第一条不行就看下一条。
+ *
+ * 为什么要明写这三条：课表文本在手机上**不是随手可得**的东西。教务系统本来
+ * 就是给电脑做的，手机浏览器打开常常排版错乱、甚至根本选不中文字。
+ * 早先这里写的是"在课表页 Ctrl+A 全选"——那是桌面上的动作，手机上不存在，
+ * 写出来等于没写。
+ */
+const TEXT_TIPS = [
+  '在课表页长按文字 → 点「全选」→ 点「拷贝」；回到这里，长按下面的输入框点「粘贴」',
+  '选不中的话：先给课表截图，再到相册里打开那张图，长按上面的文字就能选中复制（iPhone 自带这个本事，多数安卓也有）',
+  '还是不行就借一下电脑：在电脑上打开教务系统复制课表，用微信发给自己，再回到手机粘贴',
+];
+
 export default function ImportCoursesScreen() {
   const theme = useTheme();
   const router = useRouter();
@@ -47,6 +62,8 @@ export default function ImportCoursesScreen() {
 
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  /** "怎么拿到这段文本"平时收起 —— 会粘贴的人不需要多看一段说明 */
+  const [tipsOpen, setTipsOpen] = useState(false);
 
   const totalWeeks = Math.min(30, Math.max(1, Number(totalWeeksText) || 18));
 
@@ -81,7 +98,7 @@ export default function ImportCoursesScreen() {
   return (
     <Screen
       title="导入课表"
-      subtitle="从教务系统复制过来，粘进去就行"
+      subtitle="把教务系统的课表复制过来，粘进去就行"
       right={
         <Pressable hitSlop={8} onPress={() => router.back()}>
           <Ionicons name="close" size={24} color={theme.text} />
@@ -159,7 +176,7 @@ export default function ImportCoursesScreen() {
       {/* 粘贴区 */}
       <Card
         title="课表文本"
-        hint="在教务系统课表页 Ctrl+A 全选、复制，粘到下面 —— 表格和一行一门课都认"
+        hint="长按课表选中 → 全选 → 拷贝，粘到下面。表格和一行一门课都认"
         right={
           text ? (
             <Pressable hitSlop={8} onPress={() => setText('')}>
@@ -181,6 +198,35 @@ export default function ImportCoursesScreen() {
             { color: theme.text, backgroundColor: theme.background, borderColor: theme.backgroundSelected },
           ]}
         />
+
+        {/* 还没粘东西时才露这条 —— 粘上了就不占位置了 */}
+        {!text ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setTipsOpen((open) => !open)}
+              hitSlop={8}
+              style={({ pressed }) => [styles.tipsToggle, { opacity: pressed ? 0.7 : 1 }]}>
+              <Ionicons
+                name={tipsOpen ? 'chevron-up' : 'help-circle-outline'}
+                size={13}
+                color={theme.textSecondary}
+              />
+              <ThemedText type="small" themeColor="textSecondary" style={styles.tipsToggleText}>
+                在手机上怎么拿到这段文本？
+              </ThemedText>
+            </Pressable>
+            {tipsOpen ? (
+              <View style={styles.tips}>
+                {TEXT_TIPS.map((tip) => (
+                  <ThemedText key={tip} type="small" themeColor="textSecondary" style={styles.tip}>
+                    · {tip}
+                  </ThemedText>
+                ))}
+              </View>
+            ) : null}
+          </>
+        ) : null}
       </Card>
 
       {/* 预览：先让用户核对，再写库 */}
@@ -193,7 +239,7 @@ export default function ImportCoursesScreen() {
                 : `读到 ${drafted.length} 门课，但都没有上课时间`
               : '没认出课程'
           }
-          hint={drafted.length ? '核对一下，没问题就导入' : '换个复制方式，或者用下面的「手动添加」'}>
+          hint={drafted.length ? '核对一下，没问题就导入' : '重新选一次（记得带上表头那行星期），或者用下面的「手动添加」'}>
           {result.problems.length ? (
             <View style={styles.problems}>
               {result.problems.map((problem) => (
@@ -314,6 +360,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   problems: { gap: Spacing.half },
+  tipsToggle: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one, paddingTop: Spacing.one },
+  tipsToggleText: { fontSize: 12 },
+  tips: { gap: Spacing.half, paddingTop: Spacing.half },
+  tip: { fontSize: 12, lineHeight: 17, opacity: 0.8 },
   problem: { fontSize: 12, lineHeight: 17, opacity: 0.8 },
   course: { gap: 2, paddingVertical: Spacing.one },
   courseHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },

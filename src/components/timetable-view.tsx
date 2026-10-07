@@ -83,7 +83,7 @@ export function TimetableView({
         <EmptyState
           icon="school-outline"
           title={hasCourses ? '还差一个开学日' : '还没有课表'}
-          hint="把教务系统的课表文本粘进来就能导入。开学日填第 1 周的周一 —— 有了它，每节课是第几周才算得出来。"
+          hint="把教务系统的课表复制进来就能导入。开学日填第 1 周的周一 —— 有了它，每节课是第几周才算得出来。"
         />
         <View style={styles.emptyActions}>
           <TextButton label="导入课表" onPress={onImport} primary />

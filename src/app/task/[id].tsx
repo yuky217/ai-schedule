@@ -621,7 +621,7 @@ export default function TaskDetailScreen() {
             value={newSubtask}
             onChangeText={setNewSubtask}
             onSubmitEditing={() => void addSubtaskNow()}
-            placeholder="加一步，回车确认"
+            placeholder="加一步，点键盘上的「完成」"
             placeholderTextColor={theme.textSecondary}
             returnKeyType="done"
             style={[styles.subtaskInput, { color: theme.text }]}

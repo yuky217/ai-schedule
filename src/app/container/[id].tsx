@@ -393,7 +393,7 @@ export default function ContainerDetailScreen() {
             <TextInput
               value={newTaskTitle}
               onChangeText={setNewTaskTitle}
-              placeholder="任务名字，回车接着加下一条"
+              placeholder="任务名字，点键盘上的「完成」接着加下一条"
               placeholderTextColor={theme.textSecondary}
               autoFocus
               returnKeyType="done"
