@@ -210,13 +210,20 @@ describe('教务系统文本 → 课程草稿（五种常见形态）', () => {
   it('完全读不出来时给出明确说明（而不是静默返回空）', () => {
     const { courses, problems } = parseCourseText('今天天气不错\n随手记一笔');
     expect(courses).toEqual([]);
-    expect(problems[0]).toContain('没从这段文字里读到');
+    expect(problems[0]).toContain('不太像课表');
   });
 
-  it('有周次没节次（实践/网课/时间待定）→ 说明白为什么没进课表', () => {
+  it('有周次没节次（实践/网课/时间待定）→ 照样建出来，标注"没有上课时间"', () => {
+    /**
+     * 教务系统里这类课本来就长这样（"其他课程：游戏基础设计…/1-12周/无"）。
+     * 早先的版本把它当"解析失败"丢掉，用户看到的是"课表少了一门"却查不出少在哪；
+     * 成熟课表软件（WakeUp / 超级课程表）都是允许"没有时间的课"存在的。
+     */
     const { courses, problems } = parseCourseText(tab('游戏基础设计#舒纲旭(共12周)', '1-12周', '无'));
-    expect(courses).toEqual([]);
-    expect(problems.join()).toContain('没读到上课节次');
+    expect(problems).toEqual([]);
+    expect(courses).toHaveLength(1);
+    expect(courses[0]).toMatchObject({ title: '游戏基础设计', teacher: '舒纲旭', sessions: [] });
+    expect(courses[0]!.warnings.join()).toContain('没有上课时间');
   });
 });
 

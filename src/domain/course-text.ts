@@ -53,6 +53,9 @@ const DEFAULT_WEEKS = { start: 1, end: 18 } as const;
 /** 导入预览里最常出现的那句提示，写成常量免得三处文案不一致 */
 const WEEKS_NOT_READ = '没读到周次，按整学期处理';
 
+/** 这门课在教务系统里**本来就没有排上课时间**（实践/网课/待定） */
+const NO_TIME_WARNING = '这门课没有上课时间，导入后请补上';
+
 function addWarning(draft: CourseDraft, warning: string): void {
   if (!draft.warnings.includes(warning)) draft.warnings.push(warning);
 }
@@ -232,6 +235,41 @@ function looksLikeTeacher(cell: string): boolean {
   if (!text || text.length > 12) return false;
   if (/[:：]/.test(text)) return false;
   return /(老师|教师|教授|讲师|助教)/.test(text);
+}
+
+/**
+ * 整行**只有一个**星期号（"星期一"、"周三"）。
+ *
+ * 为什么单列出来：从 PDF、或者从课表页里只框选数据区复制时，表头那一行的
+ * "星期一/星期二…"会和课程内容**分开**（星期单独成行，课程各自成行）。
+ * 只认"行内带星期"的话，这些内容行会被整段丢掉 —— 用户看到的就是
+ * "粘了半天，一门课都没认出来"。
+ *
+ * 措辞刻意收紧到"整行只有星期"：只有行里除了星期什么都没有时，才敢把它
+ * 当作**后面几行**的星期上下文。否则"周一至周五上课"这类说明文字会把
+ * 后面所有课都带偏。
+ */
+const SOLE_WEEKDAY = /^(?:星期|周|礼拜)\s*[一二三四五六日天\d]$/;
+
+/** 课程性质标记（`*`/`#`/`&`）后面紧跟的 2-4 个汉字 = 老师："游戏基础设计#舒纲旭(共12周)" */
+const TEACHER_AFTER_MARK = /[*#&]\s*([\u4e00-\u9fa5]{2,4})\s*[（(]/;
+
+/**
+ * 没有"节次"可截的时候，怎么抠课程名。
+ *
+ * 用在"其他课程：游戏基础设计#舒纲旭(共12周)/1-12周/无"这类**本来就没有排时间**
+ * 的课上（教务系统把它们单列在课表下面）。切法：去掉"其他课程："前缀 →
+ * 取第一个 `/` 之前 → 只保留开头连续的中文/字母（遇到 `#`、`(` 就停）。
+ *
+ * 首字符必须是汉字或字母，且长度 ≥2 —— 这样"1-16周"、"1-2节"这类片段
+ * 不会摇身变成课名。
+ */
+function titleWithoutPeriod(cell: string): string | null {
+  const head = cell.replace(/^其他课程\s*[:：]\s*/, '').split(/[/|]/)[0] ?? '';
+  const matched = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9（）()·]{1,27}/.exec(head.trim());
+  const name = matched?.[0]?.trim();
+  if (!name || name.length < 2) return null;
+  return stripCourseKindMark(name);
 }
 
 type ColumnRole = 'name' | 'weekday' | 'period' | 'week' | 'location' | 'teacher' | 'clock' | 'unknown';
@@ -469,6 +507,15 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   let lastDraft: CourseDraft | null = null;
   /** 网格模式：表头那一行（每列是一个星期）。教务系统的课表页就是这种表 */
   let grid: string[] | null = null;
+  /** 竖版网格：表头那一行的节次（每列一个），星期在最左列 */
+  let columnPeriods: Array<{ start: number; end: number } | null> | null = null;
+  /**
+   * "当前正在讲哪一天"。只被 SOLE_WEEKDAY（整行只有一个星期号）更新。
+   * 用于 PDF / 数据区复制那种"星期单独成行、课程各自成行"的形态。
+   */
+  let carryWeekday: number | null = null;
+  /** 连续出现了几个"整行只有一个星期号"的行（用来识别"表头串"，见下） */
+  let weekdayRun = 0;
 
   /**
    * 把一格内容落成一条安排。
@@ -514,7 +561,70 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     return draft;
   };
 
+  /**
+   * 建一门"没有上课时间"的课。
+   *
+   * 教务系统里有一类课**本来就没排时间**（课表下方单列的
+   * "其他课程：游戏基础设计#舒纲旭(共12周)/1-12周/无"），实践课、网课、
+   * 时间待定的课都长这样。它不是"解析失败" —— 按成熟课表软件
+   * （WakeUp 课程表、超级课程表）的做法，这类课要能进课表，
+   * 只是画不进时间网格，用户之后自己补时间。
+   */
+  const commitTimeless = (
+    info: SessionCell,
+    rawLine: string,
+    carried: { title?: string | null; location?: string | null; teacher?: string | null },
+  ): CourseDraft | null => {
+    // 先走 titleWithoutPeriod：它能从"其他课程：游戏基础设计#舒纲旭(共12周)/…"
+    // 里干净地抠出课名；info.name 在这类行上会把整行当成名字（太脏）
+    const title = stripCourseKindMark(
+      (titleWithoutPeriod(rawLine) ?? info.name ?? carried.title ?? '').trim(),
+    );
+    if (!title) return null;
+    const teacher =
+      info.teacher ?? carried.teacher ?? TEACHER_AFTER_MARK.exec(rawLine)?.[1] ?? null;
+    const existing = byTitle.get(title);
+    if (existing) {
+      if (info.location && !existing.location) existing.location = info.location;
+      if (teacher && !existing.teacher) existing.teacher = teacher;
+      if (rawLine && !existing.raw.includes(rawLine)) existing.raw.push(rawLine);
+      addWarning(existing, NO_TIME_WARNING);
+      return existing;
+    }
+    const draft: CourseDraft = {
+      title,
+      teacher,
+      location: info.location ?? carried.location ?? null,
+      sessions: [],
+      warnings: [NO_TIME_WARNING],
+      raw: rawLine ? [rawLine] : [],
+    };
+    byTitle.set(title, draft);
+    return draft;
+  };
+
   for (const line of lines) {
+    /**
+     * 整行只有一个星期号 → 记下"现在讲的是哪一天"，给后面那些**没有写星期**
+     * 的内容行用（从 PDF / 课表数据区复制就是这种形态）。这一行本身没有
+     * 课程内容，认出来就跳过。
+     */
+    if (SOLE_WEEKDAY.test(line.trim())) {
+      const sole = parseWeekdayToken(line.trim());
+      if (sole != null) {
+        weekdayRun += 1;
+        /**
+         * 连续第二个起 = 这是**表头串**（"星期一 星期二 …"挤在一块，
+         * 课程内容在另一块）。这时最后一个星期根本代表不了后面所有课，
+         * 拿它当"当前天"会把整周的课全算到星期五头上 —— 猜错比认不出更糟，
+         * 所以直接停用上下文，交给结尾的 problems 去说明。
+         */
+        carryWeekday = weekdayRun >= 2 ? null : sole;
+        continue;
+      }
+    }
+    weekdayRun = 0;
+
     const cells = splitCells(line);
     const gridCells = splitGridCells(line);
 
@@ -525,9 +635,48 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
      */
     if (gridCells.filter((cell) => parseWeekdayToken(cell) != null).length >= 3) {
       grid = gridCells;
+      columnPeriods = null;
       roles = null;
       continue;
     }
+
+    /**
+     * 竖版课表的表头：**表头是节次**（"1-2节 3-4节 5-6节 …"），星期在最左列。
+     * 判据：一行里出现 ≥2 个节次、且一个"星期X"都没有、也没有周次/地点标签。
+     * 不单独认这一层的话，竖版课表会掉进"普通行"（一行只产一条课），
+     * 一天里第二节之后的课全被丢掉 —— 真数据上就是"5 门只认出来 3 门"。
+     */
+    if (
+      gridCells.length >= 2 &&
+      gridCells.filter((cell) => parsePeriodSpan(cell) != null).length >= 2 &&
+      !/\d{1,2}\s*周/.test(line) &&
+      !/(?:场地|教室|地点|教师|老师)[:：]/.test(line)
+    ) {
+      columnPeriods = gridCells.map((cell) => parsePeriodSpan(cell));
+      grid = null;
+      roles = null;
+      continue;
+    }
+
+    /** 竖版课表的数据行：第一格是星期，其余格子按列头给的节次各成一条安排 */
+    if (columnPeriods) {
+      if (gridCells.length < 2) {
+        columnPeriods = null; // 单格行 = 网格结束（后面多半是"其他课程：…"）
+      } else {
+        const day = parseWeekdayToken((gridCells[0] ?? '').trim());
+        if (day != null) {
+          for (let index = 1; index < gridCells.length; index += 1) {
+            const cell = (gridCells[index] ?? '').trim();
+            if (!cell) continue;
+            const periods = parsePeriodSpan(cell) ?? columnPeriods[index] ?? null;
+            if (!periods) continue;
+            if (commit(classifyCells([cell], null), day, periods, cell, {})) parsedAny = true;
+          }
+        }
+        continue;
+      }
+    }
+
     if (grid && gridCells.length >= 2) {
       // 节次可能写在这一行的"节次"列里（表头写着"节次"，格子里只有一个数字）
       let rowPeriods: { start: number; end: number } | null = null;
@@ -571,21 +720,34 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       continue;
     }
     const info = classifyCells(cells, roles);
-    // 缺星期的行：如果这一整块都在同一列（网格粘贴），用整列的星期兜底
-    const weekday = info.weekday ?? options.fallbackWeekday ?? null;
+    // 缺星期的行：先用"整行只有一个星期号"记下来的上下文兜（PDF / 数据区
+    // 复制时星期单独成行），再退到调用方给的整列星期
+    const weekday = info.weekday ?? carryWeekday ?? options.fallbackWeekday ?? null;
 
-    if (weekday == null || !info.periods) {
-      // 只处理"整行就是一个字段"的情况（卡片式格式）；
-      // 多格的表格行缺信号，说明这行本身不完整，直接跳过
-      if (cells.length !== 1) {
-        // 例外：读到了周次 = 它确实是门课，只是没排上课时间（实践/网课）。
-        // 这种要说一句，否则用户只看到"课表少了一门"却不知道少在哪。
-        if (info.weeks && !info.periods) {
-          problems.push(`「${line.trim().slice(0, 24)}」没读到上课节次，未加入课表（可能时间待定）`);
-        }
-        continue;
-      }
+    /**
+     * ① 没读到节次。
+     *    - 读到了周次 → 它**就是一门课**，只是教务系统本来就没给它排时间
+     *      （"其他课程：游戏基础设计…/1-12周/无"）。建出来并标注，让用户补。
+     *    - 没周次、又是单格 → 当"卡片式"的课程名 / 地点 / 教师行分派。
+     *    - 其余（多格又没周次）说明这行本身不完整，跳过。
+     */
+    if (!info.periods) {
       const text = line.trim();
+      if (info.weeks) {
+        const draft = commitTimeless(info, text, {
+          title: pendingTitle,
+          location: pendingLocation,
+          teacher: pendingTeacher,
+        });
+        if (draft) {
+          parsedAny = true;
+          pendingTitle = null;
+          pendingLocation = null;
+          pendingTeacher = null;
+          continue;
+        }
+      }
+      if (cells.length !== 1) continue;
       // 单格行可能是课程名，也可能是教室/教师 —— 按内容分派
       const candidate = info.name ?? text;
       if (looksLikeTitleOnly(candidate)) {
@@ -610,15 +772,12 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       continue;
     }
 
-    if (!info.periods) {
-      /**
-       * 有周次、没节次：多半是"实践 / 网课 / 时间待定"那类课程
-       * （教务系统里写成"…/1-12周/无"）。记一句说明，**不静默丢** ——
-       * 用户得知道少了一门课、以及少在哪儿，否则就是"课表怎么少了一门"。
-       */
-      problems.push(`「${line.trim().slice(0, 24)}」没读到上课节次，未加入课表（可能时间待定）`);
-      continue;
-    }
+    /**
+     * ② 有节次、就是没有星期。**绝不猜** —— 星期猜错会让整张课表都错位，
+     *    比"认不出来"更糟（认不出来用户还会去手动加，错了未必看得出来）。
+     *    这种情况由结尾的 problems 说明原因，让用户换一种复制方式。
+     */
+    if (weekday == null) continue;
 
     lastDraft = commit(info, weekday, null, line, {
       title: pendingTitle,
@@ -665,8 +824,30 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   }
 
   if (!parsedAny) {
-    problems.push('没从这段文字里读到任何"周几 + 第几节"的课程安排。');
-    if (!lines.length) problems.push('粘贴的内容是空的。');
+    /**
+     * 失败时最要紧的一句话不是"没读到"，而是**为什么**没读到 ——
+     * 用户手上只有一次粘贴，说清楚原因他才知道该怎么改。
+     * "有内容、没星期"多半是从 PDF 复制的，或者只框选了课表中间的数据区。
+     */
+    const hasWeekday = lines.some((line) => parseWeekdayToken(line) != null);
+    const hasContent = lines.some((line) => /\d{1,2}\s*[节周]/.test(line));
+    if (!lines.length) {
+      problems.push('粘贴的内容是空的。');
+    } else if (hasContent && !hasWeekday) {
+      problems.push(
+        '读到了课程内容，但整段里一个"星期X"都没有。可能是从 PDF 复制的，或者只框选了课表中间的数据区 —— 把表头那行的"星期一 星期二 …"一起复制进来就好了。',
+      );
+    } else if (hasWeekday && !hasContent) {
+      problems.push(
+        '读到了星期，但没读到"第几节"。请确认复制的内容里包含"(1-2节)"这样的节次信息。',
+      );
+    } else if (hasWeekday && hasContent) {
+      problems.push(
+        '"星期X"和"第几节"都读到了，但它们在文字里对不上号（星期挤在一起、课程在另一处）。请在课表页从左上角拖到右下角整表复制，让每行的格子里同时能看到星期和课程。',
+      );
+    } else {
+      problems.push('这段文字不太像课表 —— 既没有"星期X"，也没有"第几节"。');
+    }
   }
 
   return { courses: [...byTitle.values()], problems };

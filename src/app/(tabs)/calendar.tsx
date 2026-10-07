@@ -22,7 +22,7 @@ import { ThemedText } from '@/components/themed-text';
 import { TimetableView } from '@/components/timetable-view';
 import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
-import { weekIndexOf, type CourseSlot } from '@/domain/course';
+import { weekIndexOf, type Course, type CourseSlot } from '@/domain/course';
 import { TaskStatus } from '@/domain/enums';
 import { buildPlacedTime, buildRescheduledTime, buildRetimedTime } from '@/domain/schedule-presets';
 import { taskAnchor, type Task } from '@/domain/task';
@@ -177,7 +177,13 @@ export default function CalendarScreen() {
     (slot: CourseSlot) => router.push(`/course/${slot.course.id}`),
     [router],
   );
+  /** 点"没有上课时间"清单里的一门 → 也进课程详情（在那儿补时间） */
+  const openCourse = useCallback(
+    (course: Course) => router.push(`/course/${course.id}`),
+    [router],
+  );
   const openImport = useCallback(() => router.push('/import-courses'), [router]);
+  const openAddCourse = useCallback(() => router.push('/add-course'), [router]);
 
   /* ---------------- 跨天拖拽改期（月视图） ---------------- */
 
@@ -442,7 +448,9 @@ export default function CalendarScreen() {
                   term={term}
                   cursor={cursor}
                   onSelectSlot={openCourseSlot}
+                  onSelectCourse={openCourse}
                   onImport={openImport}
+                  onAddCourse={openAddCourse}
                 />
               ) : null}
             </Animated.View>

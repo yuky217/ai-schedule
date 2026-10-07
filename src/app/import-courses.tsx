@@ -186,8 +186,14 @@ export default function ImportCoursesScreen() {
       {/* 预览：先让用户核对，再写库 */}
       {result ? (
         <Card
-          title={drafted.length ? `识别到 ${drafted.length} 门课 · ${sessionCount} 条上课时间` : '没认出课程'}
-          hint={drafted.length ? '核对一下，没问题就导入' : undefined}>
+          title={
+            drafted.length
+              ? sessionCount
+                ? `识别到 ${drafted.length} 门课 · ${sessionCount} 条上课时间`
+                : `读到 ${drafted.length} 门课，但都没有上课时间`
+              : '没认出课程'
+          }
+          hint={drafted.length ? '核对一下，没问题就导入' : '换个复制方式，或者用下面的「手动添加」'}>
           {result.problems.length ? (
             <View style={styles.problems}>
               {result.problems.map((problem) => (
@@ -213,16 +219,22 @@ export default function ImportCoursesScreen() {
                     </ThemedText>
                   ) : null}
                 </View>
-                {draft.sessions.map((session, index) => (
-                  <ThemedText
-                    key={`${session.weekday}-${session.startPeriod}-${index}`}
-                    type="small"
-                    themeColor="textSecondary"
-                    style={styles.session}>
-                    {describeSession(session, totalWeeks)}
-                    {session.location ?? draft.location ? ` · ${session.location ?? draft.location}` : ''}
+                {draft.sessions.length ? (
+                  draft.sessions.map((session, index) => (
+                    <ThemedText
+                      key={`${session.weekday}-${session.startPeriod}-${index}`}
+                      type="small"
+                      themeColor="textSecondary"
+                      style={styles.session}>
+                      {describeSession(session, totalWeeks)}
+                      {session.location ?? draft.location ? ` · ${session.location ?? draft.location}` : ''}
+                    </ThemedText>
+                  ))
+                ) : (
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.session}>
+                    没有上课时间
                   </ThemedText>
-                ))}
+                )}
                 {draft.warnings.map((warning) => (
                   <ThemedText key={warning} type="small" themeColor="textSecondary" style={styles.warning}>
                     ⚠ {warning}
@@ -252,6 +264,17 @@ export default function ImportCoursesScreen() {
                 ? `导入 ${drafted.length} 门课`
                 : '导入'}
         </ThemedText>
+      </Pressable>
+
+      {/* 认不出来时的兜底出口 —— 成熟课表软件（WakeUp、超级课程表）都留着这一步 */}
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => router.push('/add-course')}
+        style={({ pressed }) => [
+          styles.secondary,
+          { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+        ]}>
+        <ThemedText type="small">认不出来？手动添加一门</ThemedText>
       </Pressable>
 
       {courses.length ? (
@@ -300,6 +323,11 @@ const styles = StyleSheet.create({
   primary: {
     alignItems: 'center',
     paddingVertical: Spacing.three,
+    borderRadius: Spacing.three,
+  },
+  secondary: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
     borderRadius: Spacing.three,
   },
   footnote: { fontSize: 12, lineHeight: 17, opacity: 0.75 },

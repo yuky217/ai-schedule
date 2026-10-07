@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { courseColor } from '@/constants/course-colors';
@@ -11,6 +12,7 @@ import { Spacing } from '@/constants/theme';
 import {
   describePeriods,
   describeWeeks,
+  sanitizeSessions,
   weekdayLabel,
   type Course,
   type CourseSession,
@@ -28,8 +30,12 @@ import { useAppStore } from '@/state/app-store';
  * 课表的格子太小，放不下任何编辑动作，点一下就进这里。
  *
  * 课名、教师、地点是"改一个字就保存"（没有保存按钮）—— 这些字段不值得
- * 让用户多点一次；时段则只给删不给改：改时段意味着"这课换时间了"，
- * 重新导入一次课表比在手机上逐格调更快也更准。
+ * 让用户多点一次；已有的时段只给删不给改（改时间意味着"这课换时间了"，
+ * 重新导入一次课表比在手机上逐格调更快也更准）。
+ *
+ * **例外**：这门课一段时段都没有的时候，"加一段"是唯一的出路 ——
+ * 教务系统里那些没排时间的课（实践/网课/待定）就靠它补上，
+ * 不给这个入口的话它们永远是"没有时间的课"。
  */
 export default function CourseDetailScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
@@ -47,6 +53,7 @@ export default function CourseDetailScreen() {
 
   const course = courses.find((item) => item.id === id) ?? null;
   const [removing, setRemoving] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const patch = useCallback(
     async (changes: Partial<Course>) => {
@@ -122,8 +129,20 @@ export default function CourseDetailScreen() {
       </Card>
 
       <Card
-        title={`上课时间 · ${course.sessions.length} 段`}
-        hint={course.sessions.length ? '换时间了就重新导入一次课表，比在这里一格一格改快' : undefined}>
+        title={course.sessions.length ? `上课时间 · ${course.sessions.length} 段` : '上课时间'}
+        hint={
+          course.sessions.length
+            ? '换时间了就重新导入一次课表，比在这里一格一格改快'
+            : '这类课（实践、网课、时间待定）教务系统里本来就不排时间 —— 知道的时候补上就行'
+        }
+        right={
+          <Pressable hitSlop={8} onPress={() => setSheetOpen(true)}>
+            <View style={styles.addRow}>
+              <Ionicons name="add" size={14} color={theme.text} />
+              <ThemedText type="small">加一段</ThemedText>
+            </View>
+          </Pressable>
+        }>
         {course.sessions.length ? (
           course.sessions.map((session, index) => {
             const clock = describePeriodSpan(periods, session.startPeriod, session.endPeriod);
@@ -153,11 +172,22 @@ export default function CourseDetailScreen() {
             );
           })
         ) : (
-          <ThemedText type="small" themeColor="textSecondary">
-            这门课还没有上课时间（导入时没读到节次）。
-          </ThemedText>
+          <Pressable accessibilityRole="button" onPress={() => setSheetOpen(true)}>
+            <ThemedText type="small">还没有上课时间 —— 点这里补上一段</ThemedText>
+          </Pressable>
         )}
       </Card>
+
+      <CourseSessionSheet
+        visible={sheetOpen}
+        totalWeeks={term?.totalWeeks ?? 18}
+        periodCount={term?.periods.length}
+        onClose={() => setSheetOpen(false)}
+        onSubmit={(session) => {
+          void patch({ sessions: sanitizeSessions([...course.sessions, session]) });
+          setSheetOpen(false);
+        }}
+      />
 
       <Pressable
         accessibilityRole="button"
@@ -224,6 +254,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.half },
+  addRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.half },
   sessionText: { flex: 1, gap: 1 },
   sessionMeta: { fontSize: 12, lineHeight: 17 },
   danger: { alignSelf: 'center', paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },

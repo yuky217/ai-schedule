@@ -42,6 +42,7 @@ export default function RootLayout() {
           <Stack.Screen name="focus" options={{ presentation: 'modal' }} />
           <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
           <Stack.Screen name="import-courses" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="add-course" options={{ presentation: 'modal' }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>
