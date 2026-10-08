@@ -1,9 +1,49 @@
+/* Web 端的字体与基础可达性（原生端不用这份文件）。
+   Spline Sans 一直在 --font-display 里声明着，但此前从未真正加载过，
+   实际一直回退到 Inter —— 现在补上真实的加载（display=swap，离线时静默回退）。 */
+@import url('https://fonts.googleapis.com/css2?family=Spline+Sans:wght@400;500;600;700&display=swap');
+
 :root {
   --font-display:
-    Spline Sans, Inter, ui-sans-serif, system-ui, sans-serif, Apple Color Emoji, Segoe UI Emoji,
+    'Spline Sans', ui-sans-serif, system-ui, sans-serif, Apple Color Emoji, Segoe UI Emoji,
     Segoe UI Symbol, Noto Color Emoji;
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace;
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
+}
+
+/* 页面露底处（滚动回弹、宽屏两侧）跟应用色板一致 ——
+   色值与 constants/theme.ts 成对维护，改一边要改另一边。 */
+html,
+body,
+#root {
+  background: #faf9f7;
+  color: #1b1a18;
+}
+
+@media (prefers-color-scheme: dark) {
+  html,
+  body,
+  #root {
+    background: #111110;
+    color: #f2f0eb;
+  }
+}
+
+/* 键盘可达：Tab 聚焦时给看得见的描边。日常鼠标/触摸点按不触发（:focus-visible）。 */
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 尊重系统的"减少动态效果"设置：动效降级到接近瞬时。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

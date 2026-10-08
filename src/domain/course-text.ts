@@ -29,10 +29,29 @@ export interface CourseDraft {
   teacher: string | null;
   location: string | null;
   sessions: CourseSession[];
+  /**
+   * 读到了节次、**没读到星期**的时段。
+   *
+   * 为什么不塞进 `sessions`：`weekday` 是必填的 1-7，塞个假值（0 或者 1）
+   * 进领域层会污染所有下游 —— 课表会把它画到某一天上，用户以为排好了。
+   * 单独放，由界面让用户点一下补上：**绝不猜，但也绝不丢**。
+   *
+   * 什么时候会出现：从教务系统直接复制（表格的列没跟着文本过来）、
+   * 或者只选中了数据区。这两种情况下整段里一个"星期X"都没有。
+   */
+  pending: PendingSession[];
   /** 需要用户核对的点（缺周次、缺节次、认不出教室…） */
   warnings: string[];
   /** 原始文本片段，界面折叠展示 */
   raw: string[];
+}
+
+/** 知道第几节、不知道周几的一段课 */
+export interface PendingSession {
+  startPeriod: number;
+  endPeriod: number;
+  weeks: number[];
+  location: string | null;
 }
 
 export interface ParseResult {
@@ -109,6 +128,34 @@ export function parsePeriodSpan(text: string): { start: number; end: number } | 
   return null;
 }
 
+/**
+ * 一个格子里的"第几节"：写了"节"字的照常读，
+ * 表头已经写明"节次"、格子里只剩一个光秃秃的数字时也认。
+ */
+function periodFromCell(cell: string): { start: number; end: number } | null {
+  const text = cell.trim();
+  if (!text) return null;
+  return parsePeriodSpan(text) ?? (/^\d{1,2}$/.test(text) ? { start: Number(text), end: Number(text) } : null);
+}
+
+/**
+ * 单格行看起来像**课表的行标**（网格结构的一部分）吗。
+ *
+ * 教务系统的行标常常是两行 —— "第一大节" / "第1-2节" —— 复制出来各占一行。
+ * 这类行必须留在网格里（见下面 `gridRowPeriods`），而"其他课程：…#…"这种
+ * 跟在表后面的普通文字必须让网格退出，否则它会被网格分支整段吞掉。
+ *
+ * **刻意用白名单，不用"短且不像内容"这种判据**：那样会把课名也吞掉 ——
+ * 教务系统的格子常常是"课名 / 教师 / 周次 / 教室"各占一行，切完行之后
+ * "大学英语"就是一行 4 个字的单格行，看着跟"第一大节"一模一样。
+ * 拿不准就当**不是**行标（宁可让网格退出、退回普通解析，也不能静默丢课）。
+ */
+const ROW_LABEL = /^(?:上午|下午|晚上|早上|早晨|中午|晚间|第?[一二三四五六七八九十\d]{1,2}(?:大节|小节|节))$/;
+
+function looksLikeRowLabel(text: string): boolean {
+  return ROW_LABEL.test(text.trim());
+}
+
 /** 文本里读出来的周次 */
 export interface ParsedWeeks {
   weeks: number[];
@@ -168,16 +215,44 @@ function looksLikeLocation(cell: string): boolean {
   if (/节|周|星期|老师|教师/.test(cell)) return false;
   if (/(楼|室|馆|场|机房|实验|中心|校区|区|号|阶|楼栋)/.test(cell)) return true;
   // "教一101""A203""西12" 这类：汉字/字母 + 门牌号，且不带"节/周"等课表词
-  return /^[\u4e00-\u9fa5A-Za-z]{1,6}[A-Za-z]?\d{2,4}$/.test(cell);
+  if (/^[\u4e00-\u9fa5A-Za-z]{1,6}[A-Za-z]?\d{2,4}$/.test(cell)) return true;
+  // "南海 教B112""南海 在线网络教室03" —— 教务系统最常见的地点写法是
+  // "校区 + 空格 + 教室"。上面两条都认不出它（那个空格把它挡住了）。
+  // 收紧到"两段、长度有界"，免得把班级行（"25软件工程(中外联合培养)1班;…"）也吃进来。
+  return /^[\u4e00-\u9fa5]{2,6}\s+\S{2,12}$/.test(cell);
 }
 
-/** 看起来像"课程名单独一行"的格子（有字、无数字、不太长） */
+/** 看起来像"课程名单独一行"的格子（有字、不太长、不是数据行） */
 function looksLikeTitleOnly(line: string): boolean {
   const text = line.trim();
-  if (text.length < 2 || text.length > 20) return false;
-  if (/\d/.test(text)) return false;
+  /**
+   * "南海 健美操房"这种"校区 + 空格 + 教室"和课名一样短、一样不带数字，
+   * 但它**含空格**，而课名在教务系统里从来不会折成两截。
+   * 不排掉它的话，这一行会被当成新课的课名，下面紧跟着的教师名
+   * （"刘俊"）也就跟着认不出来 —— 真数据上"大学体育"的教室和老师就是这么丢的。
+   */
+  if (/\s/.test(text) && looksLikeLocation(text)) return false;
+  // 上限跟 cutCourseName 对齐（30）：真课名可以很长 ——
+  // "【调】毛泽东思想和中国特色社会主义理论体系概论*" 是 23 个字符，
+  // 卡在 20 会让它认不出来，课名位就被上面残留的"考查""未安排"顶掉。
+  if (text.length < 2 || text.length > 30) return false;
   if (/节|周|星期|礼拜|老师|教师|课程表|作息/.test(text)) return false;
-  return /^[\u4e00-\u9fa5A-Za-z()（）·、\-—\s]+$/.test(text);
+  /**
+   * 课名里常见"（3）"（课程序号）和末尾的 `*`/`#`/`&`（理论/实践/实验标记），
+   * **先摘掉再判**。不摘的话"学术英语（3）*"会因为那个 3 和星号被判成数据行，
+   * 于是课名位被上一行残留的"考试""上午""普拉提"顶掉 ——
+   * 整张课表的课名会全错，而节次/周次/地点全是对的，一眼看不出问题（踩过）。
+   */
+  const cleaned = text
+    // 教务系统给课名加的方括号标记（"【调】"= 调课）不是课名的一部分
+    .replace(/^【[^】]{1,4}】\s*/, '')
+    .replace(/[（(]\s*\d+\s*[)）]/g, '')
+    .replace(/\s*[*#&]\s*$/, '');
+  if (!cleaned) return false;
+  // 以数字开头的行是数据（"1"、"25软工联培3班"、"2026-2027学年第1学期…"）
+  if (/^\d/.test(cleaned)) return false;
+  if (/\d\s*[节周]/.test(cleaned)) return false;
+  return /^[\u4e00-\u9fa5A-Za-z()（）·、\-—\s]+$/.test(cleaned);
 }
 
 const LOCATION_LABELS = '场地|教室|上课地点|上课教室|地点|位置';
@@ -235,6 +310,29 @@ function looksLikeTeacher(cell: string): boolean {
   if (!text || text.length > 12) return false;
   if (/[:：]/.test(text)) return false;
   return /(老师|教师|教授|讲师|助教)/.test(text);
+}
+
+/**
+ * 教务系统课表里的教师名通常是**光秃秃的一行**："吕晨歌"、"朱斌"、"陈赣浪"，
+ * 不带"老师"二字 —— 上面那个 looksLikeTeacher 认不出这类。
+ *
+ * 判定只有"2-4 个汉字（可以用顿号/逗号并列）"这一条，所以**必须**由调用方
+ * 配上两个前提：① 上一行刚认出一个教室；② 下一行不是节次行。
+ * 少了①，"考试""普拉提"这些也会中招；少了②，地点后面紧跟课名的版式里，
+ * 课名同样是 2-4 个汉字（"高等数学"），会被当成教师名吞掉。
+ */
+const NOT_TEACHER = /^(?:考试|考查|未安排|待定|必修|选修|限选|任选|公选|理论|实践|实验|无)$/;
+
+function looksLikeBareTeacher(cell: string): boolean {
+  const text = cell.trim();
+  if (!/^[\u4e00-\u9fa5]{2,4}(?:[,，、][\u4e00-\u9fa5]{2,4})*$/.test(text)) return false;
+  return !NOT_TEACHER.test(text);
+}
+
+/** 这一行是不是"节次行"（"(1-2节)"、"1-2节 1-16周"）—— 用来做下一行的前瞻判断 */
+function isPeriodLine(line: string | undefined): boolean {
+  if (!line) return false;
+  return /^[（(]?\s*\d{1,2}\s*(?:[-~～–—－至]\s*\d{1,2}\s*)?\s*节/.test(line.trim());
 }
 
 /**
@@ -336,6 +434,41 @@ function emptyCell(): SessionCell {
     weekday: null, weekdayText: null, periods: null, weeks: null,
     location: null, teacher: null, clock: null, name: null,
   };
+}
+
+/**
+ * 一格里的多行用什么连起来（App 内嵌浏览器抓回来的表格）。
+ *
+ * 抓取脚本把每一格压成"一行"（不压的话整张表会散成一堆单格行、列全错位），
+ * 格子里的行用 U+2028 连接 —— 它不是普通换行，也不会有哪段真实文本里出现它。
+ * 到这里再拆回多行，按**格子的读法**（课名 / (节次)周次 / 地点 / 教师…）
+ * 把字段取全：抓回来的格子是"一个格子里的完整一张卡片"，不是一句挤在一起的文字。
+ */
+const INNER_BREAK = '\u2028';
+
+/** 抓回来的格子（含 U+2028）→ 一个格子里能认出的所有字段 */
+function innerCellInfo(cell: string): SessionCell {
+  const lines = cell
+    .split(INNER_BREAK)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const info = emptyCell();
+  if (!lines.length) return info;
+  const joined = lines.join(' ');
+  info.periods = parsePeriodSpan(joined);
+  info.weeks = parseWeeks(joined, DEFAULT_WEEKS);
+  info.name = cutCourseName(joined) ?? stripCourseKindMark(lines[0]!);
+  // 地点在前、教师在后 —— 教务系统每一格都是这个次序（课名/节次/地点/教师/…）
+  for (const line of lines) {
+    if (!info.location && looksLikeLocation(line)) info.location = line;
+    else if (info.location && !info.teacher && looksLikeBareTeacher(line)) info.teacher = line;
+  }
+  return info;
+}
+
+/** 抓回来的格子拿去当"原文片段"展示时，把 U+2028 换成看得见的斜杠 */
+function readableCell(cell: string): string {
+  return cell.split(INNER_BREAK).join(' / ');
 }
 
 /**
@@ -507,6 +640,15 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   let lastDraft: CourseDraft | null = null;
   /** 网格模式：表头那一行（每列是一个星期）。教务系统的课表页就是这种表 */
   let grid: string[] | null = null;
+  /**
+   * 网格里**行标上写的节次**。教务系统的行标常被复制成两行
+   * （"第一大节" / "第1-2节"），节次落在单独一行的格子里；
+   * 后面那行数据（课名/周次/教室）自己就只剩空白的节次格了 ——
+   * 不留住这个值，那些行会因为"读不到节次"被整行丢掉，或者更糟：
+   * 网格模式退出、它们被当成"没有时间的课"建出来（用户看到的是一整张课表
+   * 全是"没有上课时间"，课名地点周次都对 —— 真报过）。
+   */
+  let gridRowPeriods: { start: number; end: number } | null = null;
   /** 竖版网格：表头那一行的节次（每列一个），星期在最左列 */
   let columnPeriods: Array<{ start: number; end: number } | null> | null = null;
   /**
@@ -516,6 +658,12 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
   let carryWeekday: number | null = null;
   /** 连续出现了几个"整行只有一个星期号"的行（用来识别"表头串"，见下） */
   let weekdayRun = 0;
+  /**
+   * 上一行是不是"教室行"。教务系统固定排成"教室 / 教师"两行，而且教师名是
+   * 光秃秃的两三个字（"吕晨歌"）—— 不看这个上下文根本没法同课名区分开。
+   * 只影响**紧邻的下一行**，每轮循环开头就清掉。
+   */
+  let prevWasLocation = false;
 
   /**
    * 把一格内容落成一条安排。
@@ -596,6 +744,7 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       teacher,
       location: info.location ?? carried.location ?? null,
       sessions: [],
+      pending: [],
       warnings: [NO_TIME_WARNING],
       raw: rawLine ? [rawLine] : [],
     };
@@ -603,7 +752,11 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     return draft;
   };
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    /** 上一行是教室 → 这一行可能是光秃秃的教师名（用完即清，只影响紧邻一行） */
+    const afterLocation = prevWasLocation;
+    prevWasLocation = false;
     /**
      * 整行只有一个星期号 → 记下"现在讲的是哪一天"，给后面那些**没有写星期**
      * 的内容行用（从 PDF / 课表数据区复制就是这种形态）。这一行本身没有
@@ -636,6 +789,7 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     if (gridCells.filter((cell) => parseWeekdayToken(cell) != null).length >= 3) {
       grid = gridCells;
       columnPeriods = null;
+      gridRowPeriods = null;
       roles = null;
       continue;
     }
@@ -654,6 +808,7 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     ) {
       columnPeriods = gridCells.map((cell) => parsePeriodSpan(cell));
       grid = null;
+      gridRowPeriods = null;
       roles = null;
       continue;
     }
@@ -678,24 +833,43 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     }
 
     if (grid && gridCells.length >= 2) {
+      /**
+       * 课表下面常常还挂着**另一张表**（"其他课程"：课程名称/教师/学分/起止周/…）。
+       * 认出它的表头就必须收网 —— 不收的话那张表的数据行会被当成网格的一行
+       * （它们的位置正好落在某几个"星期"列上），整张"其他课程"表被默默吃掉：
+       * 没排时间的课全不见了。
+       *
+       * 判据刻意收得很紧（第一列就是"课程名称"、且这一行自己不带星期）：
+       * 宽一档的判据（"像表头"）会把正常的网格行也误伤 —— 网格里的格子
+       * 本来就写着"场地:"这类词，一收网整张课表就没了。
+       */
+      const otherTableHeader = /^(?:课程名称|课程名|课程|课名|科目)$/.test(
+        (gridCells[0] ?? '').replace(/\s/g, ''),
+      );
+      if (otherTableHeader && gridCells.every((cell) => parseWeekdayToken(cell) == null)) {
+        grid = null;
+        roles = columnRoles(gridCells); // 让紧接着的那几行按列取值
+        continue;
+      }
       // 节次可能写在这一行的"节次"列里（表头写着"节次"，格子里只有一个数字）
-      let rowPeriods: { start: number; end: number } | null = null;
+      let ownPeriods: { start: number; end: number } | null = null;
       for (let index = 0; index < gridCells.length; index += 1) {
         const header = (grid[index] ?? '').replace(/\s/g, '');
         if (!/节次|节数|节$/.test(header)) continue;
-        const cell = (gridCells[index] ?? '').trim();
-        rowPeriods =
-          parsePeriodSpan(cell) ??
-          (/^\d{1,2}$/.test(cell) ? { start: Number(cell), end: Number(cell) } : null);
+        ownPeriods = periodFromCell(gridCells[index] ?? '');
         break;
       }
+      // 自己没写 → 用上一行行标里读到的那个（见 gridRowPeriods 的说明）
+      const rowPeriods = ownPeriods ?? gridRowPeriods;
       let committed = 0;
       for (let index = 0; index < Math.min(gridCells.length, grid.length); index += 1) {
         const cell = (gridCells[index] ?? '').trim();
         if (!cell) continue;
         const day = parseWeekdayToken(grid[index] ?? '');
         if (day == null) continue; // 非星期列（时间段/节次/说明列）不当内容
-        if (commit(classifyCells([cell], null), day, rowPeriods, cell, {})) parsedAny = true;
+        // 格子里有多行（内嵌浏览器抓回来的）就走"格子的读法"，否则按挤在一起的文字猜
+        const info = cell.includes(INNER_BREAK) ? innerCellInfo(cell) : classifyCells([cell], null);
+        if (commit(info, day, rowPeriods, readableCell(cell), {})) parsedAny = true;
         committed += 1;
       }
       /**
@@ -703,13 +877,34 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
        * 「上午 / 下午 / 晚上」「1 / 2 / 3」这类**短标签行**是网格的结构部分，
        * 继续；而一张表后面跟着的普通长文本（"其他课程：…#…/1-12周"）不是，
        * 这时必须退出网格，否则后面的内容会被网格分支整段吞掉。
+       *
+       * 判"这一行有没有落进网格"用的是它**自己写明的**节次（ownPeriods），
+       * 不是上面兜下来的 rowPeriods —— 否则一旦记住过一个节次，
+       * 后面任何一行都会被当成网格内容吞掉。
        */
       const structural = gridCells.every((cell) => cell.trim().length <= 8);
-      if (committed > 0 || rowPeriods || structural) continue;
+      if (committed > 0 || ownPeriods || structural) continue;
       grid = null;
     }
-    // 单格的说明行（"其他课程：…"、"*: 理论 #: 实践"）：网格到此结束
-    if (grid && gridCells.length === 1) grid = null;
+    /**
+     * 单格行：可能**还是网格的一部分** —— 行标（"第一大节"、"第1-2节"）。
+     * 认出来就记下节次、留着网格；真的不是（"其他课程：…#…"这类普通文字）
+     * 才收网 —— 收网的判据不变，免得表后面的内容被吞掉。
+     */
+    if (grid && gridCells.length === 1) {
+      const label = (gridCells[0] ?? '').trim();
+      const labelPeriods = parsePeriodSpan(label);
+      if (labelPeriods) {
+        gridRowPeriods = labelPeriods;
+        continue;
+      }
+      if (looksLikeRowLabel(label)) {
+        // "上午/下午/晚上"：只说时段，节次由数据行自己写 —— 别留旧的
+        gridRowPeriods = null;
+        continue;
+      }
+      grid = null;
+    }
     // 先判"这行像不像数据行"：含"周一"或"1-2节"这类**取值**的行，绝不是表头。
     // 否则 "高等数学 周一 1-2节 … 张三老师" 会因为结尾的"张三老师"命中"教师"
     // 被误判成表头，整行数据被静默吃掉（踩过）。
@@ -750,19 +945,40 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
       if (cells.length !== 1) continue;
       // 单格行可能是课程名，也可能是教室/教师 —— 按内容分派
       const candidate = info.name ?? text;
-      if (looksLikeTitleOnly(candidate)) {
+      /**
+       * **顺序要紧：先判教师。**
+       * "吕晨歌"这种光秃秃的教师名同样是"2-4 个汉字、没有数字"，
+       * 放到 looksLikeTitleOnly 后面一定会被当成课程名 —— 于是下一门课
+       * 的课名被这个人名顶掉，用户看到的是"课表里少了一门课"。
+       * 两个前提缺一不可：上一行刚认出一个教室，且下一行不是节次行
+       * （地点后面紧跟课名的版式里，课名也长这样）。
+       */
+      if (afterLocation && looksLikeBareTeacher(text) && !isPeriodLine(lines[index + 1])) {
+        pendingTeacher = text;
+        if (lastDraft && !lastDraft.teacher) lastDraft.teacher = text;
+      } else if (looksLikeTitleOnly(candidate)) {
         // 新课程名出现 = 上一张卡片结束，清掉上一门留下的零碎
         pendingTitle = candidate;
         pendingLocation = null;
         pendingTeacher = null;
       } else if (looksLikeLocation(text)) {
         pendingLocation = text;
+        prevWasLocation = true;
         // 卡片式："课程名 / 星期节次 / 教室 / 教师" —— 教室在节次之后出现，
-        // 这时它属于**刚刚解析出来**的那门课，不是下一门
-        if (lastDraft && !lastDraft.location) {
-          lastDraft.location = text;
+        // 这时它属于**刚刚解析出来**的那段，不是下一门
+        if (lastDraft) {
+          if (!lastDraft.location) lastDraft.location = text;
           lastDraft.sessions.forEach((s) => {
             if (!s.location) s.location = text;
+          });
+          /**
+           * 待定时段也要补，而且**不能**跟着上面那个 `if` 一起被跳过：
+           * 毛概在 4/8/12 周换到"在线网络教室03"，课程级的地点早就被
+           * 第一段的"教A108"占住了 —— 跟着跳的话第二段永远没有地点，
+           * 用户补星期时就分不清哪一段该填哪天。
+           */
+          lastDraft.pending.forEach((item) => {
+            if (!item.location) item.location = text;
           });
         }
       } else if (looksLikeTeacher(text)) {
@@ -773,11 +989,40 @@ export function parseCourseText(text: string, options: ParseOptions = {}): Parse
     }
 
     /**
-     * ② 有节次、就是没有星期。**绝不猜** —— 星期猜错会让整张课表都错位，
-     *    比"认不出来"更糟（认不出来用户还会去手动加，错了未必看得出来）。
-     *    这种情况由结尾的 problems 说明原因，让用户换一种复制方式。
+     * ② 有节次、就是没有星期。
+     *
+     * **绝不猜**是周几 —— 猜错会让整张课表错位，比认不出来更糟（认不出来
+     * 用户还会去手动加，排错了未必看得出来）。但也**绝不丢**：从教务系统
+     * 直接复制（表格的列没跟着文本过来）、或者只选了数据区，整段里就是
+     * 一个"星期X"都没有；丢掉的话用户看到的是"粘了一大段、一门课都没认出来"，
+     * 而他从这句话里根本猜不到问题出在"没带列"。
+     *
+     * 所以记成**待定条目**，交给界面让用户点一下补 —— 该知道的（课名、
+     * 第几节、哪些周、教室、老师）我们都替他填好，只留那个真的猜不出来的问号。
      */
-    if (weekday == null) continue;
+    if (weekday == null) {
+      const title = stripCourseKindMark((info.name ?? pendingTitle ?? '').trim());
+      // 课名要么写在这一行里，要么写在上面那一行（教务系统常把课名单独一行）
+      if (title.length >= 2 && (info.weeks || pendingTitle)) {
+        lastDraft = pushPending(
+          byTitle,
+          title,
+          {
+            startPeriod: info.periods.start,
+            endPeriod: info.periods.end,
+            weeks: (info.weeks ?? { weeks: weeksFromRange(defaults.start, defaults.end) }).weeks,
+            location: info.location ?? pendingLocation ?? null,
+          },
+          { teacher: info.teacher ?? pendingTeacher ?? null },
+          line,
+        );
+        parsedAny = true;
+      }
+      pendingTitle = null;
+      pendingLocation = null;
+      pendingTeacher = null;
+      continue;
+    }
 
     lastDraft = commit(info, weekday, null, line, {
       title: pendingTitle,
@@ -900,7 +1145,56 @@ function pushDraft(
     teacher: info.teacher ?? null,
     location: session.location ?? info.location ?? null,
     sessions: sanitizeSessions([session]),
+    pending: [],
     warnings: [...warnings],
+    raw: rawLine ? [rawLine] : [],
+  };
+  map.set(key, draft);
+  return draft;
+}
+
+/**
+ * 往草稿里加一条"知道第几节、不知道星期"的时段。
+ *
+ * 和 `pushDraft` 分开写，是因为它**不能**走 `sanitizeSessions` ——
+ * 那会把没有合法 weekday 的条目直接过滤掉，等于又丢一次。也**不能**和
+ * `sessions` 混在一起：用户补星期之前，这些条目压根不算有效的上课时间，
+ * 混进去课表就会把它们画到某一天上，用户以为已经排好了。
+ */
+function pushPending(
+  map: Map<string, CourseDraft>,
+  title: string,
+  pending: PendingSession,
+  info: { teacher?: string | null },
+  rawLine: string,
+): CourseDraft {
+  const key = title.trim();
+  const existing = map.get(key);
+  if (existing) {
+    // 判重口径跟 pushDraft 一致：同节次 + 同地点算同一段，周次取并集
+    const same = existing.pending.find(
+      (item) =>
+        item.startPeriod === pending.startPeriod &&
+        item.endPeriod === pending.endPeriod &&
+        (item.location ?? '') === (pending.location ?? ''),
+    );
+    if (same) {
+      same.weeks = [...new Set([...same.weeks, ...pending.weeks])].sort((a, b) => a - b);
+    } else {
+      existing.pending.push(pending);
+    }
+    if (!existing.location && pending.location) existing.location = pending.location;
+    if (!existing.teacher && info.teacher) existing.teacher = info.teacher;
+    if (rawLine && !existing.raw.includes(rawLine)) existing.raw.push(rawLine);
+    return existing;
+  }
+  const draft: CourseDraft = {
+    title: key,
+    teacher: info.teacher ?? null,
+    location: pending.location ?? null,
+    sessions: [],
+    pending: [pending],
+    warnings: [],
     raw: rawLine ? [rawLine] : [],
   };
   map.set(key, draft);

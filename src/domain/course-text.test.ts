@@ -171,8 +171,58 @@ describe('教务系统文本 → 课程草稿（五种常见形态）', () => {
     expect(java.sessions[0]).toMatchObject({ weekday: 3, startPeriod: 5, endPeriod: 6 });
   });
 
-  it('网格之后跟着普通文本时，网格要能退出（不能把后面整段吞掉）', () => {
+  it('网格的行标被复制成两行（"第一大节" / "第1-2节"）时，课不能丢掉星期或变成"没有时间的课"', () => {
     const text = [
+      tab('节次', '星期一', '星期二', '星期三', '星期四', '星期五'),
+      '第一大节',
+      '第1-2节',
+      tab('', '', '大学英语(1-2节)1-16周/场地:外语楼203', '', '', ''),
+      '下午',
+      '第5-6节',
+      tab('', '高等数学(5-6节)1-16周/场地:教一101', '', '', '', ''),
+    ].join('\n');
+
+    const { courses, problems } = parseCourseText(text);
+    expect(problems).toEqual([]);
+    expect(courses.map((c) => c.title).sort()).toEqual(['大学英语', '高等数学']);
+
+    const english = courses.find((c) => c.title === '大学英语')!;
+    // 认不出星期的话它会掉进 pending（"请补上星期"），认不出节次的话会变成"没有时间的课"
+    expect(english.pending).toEqual([]);
+    expect(english.warnings).toEqual([]);
+    expect(english.sessions[0]).toMatchObject({ weekday: 2, startPeriod: 1, endPeriod: 2 });
+
+    const math = courses.find((c) => c.title === '高等数学')!;
+    expect(math.pending).toEqual([]);
+    expect(math.sessions[0]).toMatchObject({ weekday: 1, startPeriod: 5, endPeriod: 6 });
+  });
+
+  it('行标"上午/下午"只说时段 —— 不漏下节次，也不把上一行的节次粘给下一行', () => {
+    const text = [
+      tab('节次', '星期一', '星期二', '星期三'),
+      '上午',
+      '第1-2节',
+      tab('', '高等数学', '', ''),
+      '下午',
+      '第5-6节',
+      tab('', '大学英语', '', ''),
+    ].join('\n');
+
+    const { courses } = parseCourseText(text);
+    expect(courses.map((c) => c.title).sort()).toEqual(['大学英语', '高等数学']);
+    expect(courses.find((c) => c.title === '高等数学')!.sessions[0]).toMatchObject({
+      weekday: 1,
+      startPeriod: 1,
+      endPeriod: 2,
+    });
+    expect(courses.find((c) => c.title === '大学英语')!.sessions[0]).toMatchObject({
+      weekday: 1,
+      startPeriod: 5,
+      endPeriod: 6,
+    });
+  });
+
+  it('网格之后跟着普通文本时，网格要能退出（不能把后面整段吞掉）', () => {    const text = [
       tab('星期一', '星期二', '星期三', '星期四', '星期五'),
       tab('高等数学 (1-2节)1-16周/场地:教一101', '', '', '', ''),
       '其他课程：游戏基础设计#舒纲旭(共12周)/1-12周/无',

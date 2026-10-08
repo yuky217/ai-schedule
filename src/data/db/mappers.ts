@@ -10,6 +10,7 @@ import {
   type Term,
 } from '@/domain/course';
 import type { CaptureSource, Priority, SyncState } from '@/domain/enums';
+import type { CalEvent } from '@/domain/event';
 import type { FocusSession } from '@/domain/focus';
 import type { Idea } from '@/domain/idea';
 import { normalizeTaskTime, type RepeatRule, type Task, type TaskProgress, type TaskTime } from '@/domain/task';
@@ -449,5 +450,42 @@ export function termColumns(term: Term): ColumnMap {
     total_weeks: term.totalWeeks,
     periods_json: JSON.stringify(sanitizePeriods(term.periods)),
     ...writeBase(term),
+  };
+}
+
+export interface EventRow extends BaseRow {
+  kind: string;
+  title: string;
+  location: string | null;
+  note: string | null;
+  start_at: string;
+  end_at: string | null;
+  source: string;
+}
+
+export function eventFromRow(row: EventRow): CalEvent {
+  return {
+    ...readBase(row),
+    kind: row.kind,
+    title: row.title,
+    location: row.location,
+    note: row.note,
+    startAt: row.start_at,
+    endAt: row.end_at,
+    source: row.source,
+  };
+}
+
+export function eventColumns(event: CalEvent): ColumnMap {
+  return {
+    id: event.id,
+    kind: event.kind,
+    title: event.title,
+    location: event.location ?? null,
+    note: event.note ?? null,
+    start_at: event.startAt,
+    end_at: event.endAt ?? null,
+    source: event.source,
+    ...writeBase(event),
   };
 }

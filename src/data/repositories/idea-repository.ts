@@ -32,6 +32,30 @@ export const ideaRepository = {
     return rows.map(ideaFromRow);
   },
 
+  /**
+   * 已归档的想法。
+   *
+   * 存在的理由：归档此前是一道**单向门** —— 界面上的归档按钮点一下，
+   * 想法就从列表里消失，而没有任何地方能看到它、更没有地方能把它找回来
+   * （`archived_at` 只被 `listActive` 用来过滤）。用户分不清"归档了"
+   * 和"弄丢了"，而那一下点击还不需要确认。
+   */
+  async listArchived(): Promise<Idea[]> {
+    const db = await getDatabase();
+    const rows = await db.getAllAsync<IdeaRow>(
+      `SELECT * FROM ${TABLE} WHERE ${LIVE} AND archived_at IS NOT NULL ORDER BY archived_at DESC`,
+    );
+    return rows.map(ideaFromRow);
+  },
+
+  async countArchived(): Promise<number> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ${TABLE} WHERE ${LIVE} AND archived_at IS NOT NULL`,
+    );
+    return row?.n ?? 0;
+  },
+
   async getById(id: string): Promise<Idea | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<IdeaRow>(
@@ -60,6 +84,15 @@ export const ideaRepository = {
     await db.runAsync(
       `UPDATE ${TABLE} SET archived_at = ?, updated_at = ? WHERE id = ?`,
       [nowIso(), nowIso(), id],
+    );
+  },
+
+  /** 反归档：把想法放回主列表。跟 `archive` 对称，缺了它归档就是单向门。 */
+  async unarchive(id: string): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync(
+      `UPDATE ${TABLE} SET archived_at = NULL, updated_at = ? WHERE id = ?`,
+      [nowIso(), id],
     );
   },
 

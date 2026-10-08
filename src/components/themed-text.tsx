@@ -14,7 +14,10 @@ export function ThemedText({ style, type = 'default', themeColor, ...rest }: The
   return (
     <Text
       style={[
-        { color: theme[themeColor ?? 'text'] },
+        {
+          color: theme[themeColor ?? (type === 'linkPrimary' ? 'tint' : 'text')],
+        },
+        styles.base,
         type === 'default' && styles.default,
         type === 'title' && styles.title,
         type === 'small' && styles.small,
@@ -31,6 +34,14 @@ export function ThemedText({ style, type = 'default', themeColor, ...rest }: The
 }
 
 const styles = StyleSheet.create({
+  /**
+   * 等宽数字（tabular-nums）全局生效：日程 app 里日期、时刻、计数无处不在，
+   * 比例数字会让"08"和"10"宽度不同，列表刷新时右侧的时间列会轻轻抖动。
+   * 只影响数字与表格标点，中文完全不受影响。
+   * fontFamily 显式接上 Fonts.sans：web 端指向 --font-display（Spline Sans），
+   * 原生端是系统字体，等于没变。之前声明了字体却没人引用，一直回退默认。
+   */
+  base: { fontVariant: ['tabular-nums'], fontFamily: Fonts.sans },
   small: {
     fontSize: 14,
     lineHeight: 20,
@@ -63,7 +74,6 @@ const styles = StyleSheet.create({
   linkPrimary: {
     lineHeight: 30,
     fontSize: 14,
-    color: '#3c87f7',
   },
   code: {
     fontFamily: Fonts.mono,

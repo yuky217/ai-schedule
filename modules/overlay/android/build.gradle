@@ -1,0 +1,27 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.aiyuexi.aischedule.overlay'
+version = '1.0.0'
+
+android {
+  namespace "com.aiyuexi.aischedule.overlay"
+
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+
+  // 这是自用模块，lint 的"硬编码文案""过时 API"这类提示不该挡住打包
+  lint {
+    abortOnError = false
+  }
+}
+
+dependencies {
+  // NotificationCompat / ContextCompat：自己写 Build.VERSION 分支也能行，
+  // 但那些分支是 Android 升级时最容易踩空的地方，用官方兼容层更划算
+  implementation 'androidx.core:core:1.17.0'
+}

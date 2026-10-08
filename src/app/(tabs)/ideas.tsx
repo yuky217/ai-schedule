@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
@@ -23,19 +23,43 @@ import { formatMonthDay } from '@/utils/datetime';
  * - 想法不提醒、不催办，只负责"记下来不丢"；
  * - 检索默认是本地模糊匹配，开了「语义检索」后升级成"用一句话找回"；
  * - 归档而不是删除：想法只有被想起来的价值，没有清理的义务。
+ *
+ * ⚠️ 但"归档"必须**可逆**：归档按钮此前点一下就永久消失（`archived_at`
+ * 只被用来过滤，没有任何界面能看到归档过的东西）—— 那就不是"归档"，
+ * 是"删掉但骗自己说还能找回来"。所以页脚有一个归档箱：能翻、能放回、也能真删。
  */
 export default function IdeasScreen() {
   const theme = useTheme();
   const router = useRouter();
 
   const ideas = useAppStore((state) => state.ideas);
+  const dataVersion = useAppStore((state) => state.dataVersion);
   const capture = useAppStore((state) => state.capture);
   const archiveIdea = useAppStore((state) => state.archiveIdea);
+  const loadArchivedIdeas = useAppStore((state) => state.loadArchivedIdeas);
+  const unarchiveIdea = useAppStore((state) => state.unarchiveIdea);
+  const removeIdea = useAppStore((state) => state.removeIdea);
 
   const aiEnabled = useSettings((state) => state.aiEnabled);
   const semanticSearchOn = useSettings((state) => state.capabilities[AiCapability.SemanticSearch]);
 
   const [keyword, setKeyword] = useState('');
+
+  /**
+   * 归档箱：默认收起，翻的时候才拉数据。
+   * 归档/恢复/删除之后 `dataVersion` 会变，靠它重新拉一遍（不进 refresh）。
+   */
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archived, setArchived] = useState<Idea[]>([]);
+
+  const reloadArchived = useCallback(async () => {
+    setArchived(await loadArchivedIdeas());
+  }, [loadArchivedIdeas]);
+
+  useEffect(() => {
+    if (!archiveOpen) return;
+    void reloadArchived();
+  }, [archiveOpen, dataVersion, reloadArchived]);
 
   const visible = useMemo(() => {
     const k = keyword.trim().toLowerCase();
@@ -101,6 +125,62 @@ export default function IdeasScreen() {
           hint={keyword ? '换个说法试试' : '随手记一句，将来的你会感谢现在的你'}
         />
       )}
+
+      {/*
+        归档箱。默认收起（它不该跟主列表抢注意力），但必须存在 ——
+        否则"归档"按钮就是"永久删除"的委婉说法。
+      */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: archiveOpen }}
+        onPress={() => setArchiveOpen((open) => !open)}
+        style={({ pressed }) => [styles.archiveToggle, { opacity: pressed ? 0.6 : 1 }]}>
+        <Ionicons
+          name={archiveOpen ? 'chevron-up' : 'archive-outline'}
+          size={14}
+          color={theme.textSecondary}
+        />
+        <ThemedText type="small" themeColor="textSecondary">
+          归档箱
+        </ThemedText>
+      </Pressable>
+
+      {archiveOpen ? (
+        <Card hint="归档只是收起来，想法本身还在。想留就放回去，想清就删掉。">
+          {archived.length ? (
+            archived.map((idea) => (
+              <View key={idea.id} style={styles.archivedRow}>
+                <View style={styles.ideaBody}>
+                  <ThemedText type="small" numberOfLines={3}>
+                    {idea.content}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={styles.ideaMeta}>
+                    {formatMonthDay(new Date(idea.createdAt))} 记下
+                  </ThemedText>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="放回想法库"
+                  hitSlop={8}
+                  onPress={() => void unarchiveIdea(idea.id)}>
+                  <Ionicons name="arrow-undo-outline" size={17} color={theme.textSecondary} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="彻底删掉这条想法"
+                  hitSlop={8}
+                  onPress={() => void removeIdea(idea.id)}>
+                  <Ionicons name="trash-outline" size={17} color={theme.textSecondary} />
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <ThemedText type="small" themeColor="textSecondary">
+              还没有归档过东西。
+            </ThemedText>
+          )}
+        </Card>
+      ) : null}
     </Screen>
   );
 }
@@ -115,7 +195,11 @@ function IdeaRow({ idea, onArchive }: { idea: Idea; onArchive: (id: string) => v
           {formatMonthDay(new Date(idea.createdAt))} 记下
         </ThemedText>
       </View>
-      <Pressable hitSlop={8} onPress={() => onArchive(idea.id)}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="归档这条想法（可以在下面的归档箱里找回来）"
+        hitSlop={8}
+        onPress={() => onArchive(idea.id)}>
         <Ionicons name="archive-outline" size={18} color={theme.textSecondary} />
       </Pressable>
     </View>
@@ -146,4 +230,17 @@ const styles = StyleSheet.create({
   },
   ideaBody: { flex: 1, gap: Spacing.one },
   ideaMeta: { fontSize: 12 },
+  archiveToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.one,
+    paddingVertical: Spacing.two,
+  },
+  archivedRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
 });

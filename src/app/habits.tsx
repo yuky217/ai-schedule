@@ -110,7 +110,7 @@ export default function HabitsScreen() {
         <EmptyState
           icon="repeat-outline"
           title="还没有习惯"
-          hint="在首页记一条，把类型设成习惯型（比如「每天早上跑步 30 分钟」），它就会出现在这里"
+          hint="在首页记一条，把类型设成「习惯」（比如「每天早上跑步 30 分钟」）"
         />
       ) : null}
 

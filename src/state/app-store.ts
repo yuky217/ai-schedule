@@ -4,16 +4,23 @@ import { clearAllTables, getDatabase } from '@/data/db/client';
 import { checkinRepository } from '@/data/repositories/checkin-repository';
 import { containerRepository } from '@/data/repositories/container-repository';
 import { courseRepository } from '@/data/repositories/course-repository';
+import { eventRepository } from '@/data/repositories/event-repository';
 import { focusRepository } from '@/data/repositories/focus-repository';
 import { ideaRepository } from '@/data/repositories/idea-repository';
 import { markRepository } from '@/data/repositories/mark-repository';
 import { taskRepository } from '@/data/repositories/task-repository';
 import { termRepository } from '@/data/repositories/term-repository';
 import { quickCapture, type QuickCaptureInput, type QuickCaptureResult } from '@/entry/quick-capture';
-import { cancelAllReminders, cancelTaskReminders, scheduleTaskReminder } from '@/entry/notifications';
+import {
+  cancelAllReminders,
+  cancelTaskReminders,
+  scheduleTaskReminder,
+  syncCourseReminders,
+  syncEventReminders,
+} from '@/entry/notifications';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
-import { mondayOfWeek, type Course, type Term } from '@/domain/course';
+import { guessTermStart, mondayOfWeek, type Course, type Term } from '@/domain/course';
 import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
 import {
   createContainer,
@@ -33,6 +40,7 @@ import {
 import { describeFocusReceipt, type FocusMarkOutcome } from '@/domain/focus-receipt';
 import type { FocusSession } from '@/domain/focus';
 import { shiftIsoByDays } from '@/domain/gantt';
+import type { CalEvent } from '@/domain/event';
 import {
   describePeriodReached,
   desiredFrequencyStatus,
@@ -122,12 +130,29 @@ interface AppState {
   /** 局部修改任务字段（提前量、重复规则等），改完统一 refresh */
   updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
   completeTask: (id: string) => Promise<void>;
+  /**
+   * 勾选圈的语义是**开关**：没做的做完，点错了再点一下就回来。
+   * 完成动作只由明确的勾选触发，但"撤销"也必须就地可得 ——
+   * 否则误点一下完成，日历/项目列表里那个圈就再也点不动了
+   * （completeTask 对已完成的任务是空操作，等于把人锁在门外）。
+   */
+  toggleTaskDone: (id: string) => Promise<void>;
   /** 把已完成的任务放回待办（收集箱底部的"已完成"区用它撤销） */
   reopenTask: (id: string) => Promise<void>;
   /** 备份覆盖导入后重排全部提醒（旧通知还挂着、新通知没排） */
   resyncReminders: () => Promise<void>;
   removeTask: (id: string) => Promise<void>;
   archiveIdea: (id: string) => Promise<void>;
+  /**
+   * 归档箱。**不进 refresh()** —— 它是"偶尔翻一次"的地方，跟着每次勾任务
+   * 重拉一遍纯属浪费。页面自己 load，用 `dataVersion` 当失效信号
+   * （跟日历"按可见范围查"是同一个模式）。
+   */
+  loadArchivedIdeas: () => Promise<Idea[]>;
+  /** 从归档箱放回主列表 —— 没有它，归档就是一道单向门 */
+  unarchiveIdea: (id: string) => Promise<void>;
+  /** 真删一条想法（软删除）。只在归档箱里露出来：主列表上给"删除"太容易手滑。 */
+  removeIdea: (id: string) => Promise<void>;
 
   /**
    * 在某个容器下**直接新建**一条任务（容器页的「新建」）。
@@ -228,6 +253,13 @@ interface AppState {
   importCourses: (courses: readonly Course[], options?: { replace?: boolean }) => Promise<void>;
   /** 学期设置：不传就沿用当前值（首次会自动建一条，开学日默认本周一） */
   saveTerm: (patch: Partial<Term>) => Promise<Term>;
+
+  /* ---------------- 固定日程（考试等，与任务并列） ---------------- */
+
+  /** 全部固定日程（量小，一学期十来条，refresh 里顺带全量读） */
+  events: CalEvent[];
+  /** 导入一批（导入页确认草稿之后调它）。replace = 先清掉现有考试再写 */
+  importEvents: (events: readonly CalEvent[], options?: { replace?: boolean }) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -249,6 +281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastFocus: null,
   courses: [],
   term: null,
+  events: [],
 
   init: async () => {
     if (get().ready || get().initializing) return;
@@ -257,6 +290,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       await getDatabase();
       await get().refresh();
       set({ ready: true, initializing: false });
+      // 启动时补排考试提醒：系统重启后可能丢掉已排的一次性通知，而考试远在几周后、
+      // 不像课表那样每次改动都会重排。**不请求权限**（启动就弹权限框太唐突），
+      // 已授权就排上，没授权等用户下次主动导入/记录时自然会问。
+      // 也**不 await**：它跟"App 能打开"没关系 —— 这正是把提醒从主流程里摘出去的意义。
+      void syncEventReminders(get().events, { requestPermission: false });
     } catch (err) {
       set({
         initializing: false,
@@ -284,6 +322,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       growthSeconds,
       courses,
       term,
+      events,
     ] = await Promise.all([
       taskRepository.listInbox(),
       taskRepository.listToday(),
@@ -297,6 +336,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       focusRepository.totalGrowthSeconds(),
       courseRepository.listAll(),
       termRepository.getCurrent(),
+      eventRepository.listAll(),
     ]);
     set({
       inbox,
@@ -311,6 +351,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       growthSeconds,
       courses,
       term,
+      events,
       dataVersion: get().dataVersion + 1,
     });
   },
@@ -373,6 +414,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refresh();
   },
 
+  /** 勾选圈 = 开关：已完成就放回待办，否则按各类型的规则完成 */
+  toggleTaskDone: async (id) => {
+    const task = await taskRepository.getById(id);
+    if (!task) return;
+    if (task.status === TaskStatus.Done) await get().reopenTask(id);
+    else await get().completeTask(id);
+  },
+
   /** 撤销完成：把任务放回待办。收集箱底部的"已完成"区和任务详情页都用它 */
   reopenTask: async (id) => {
     const updated = await taskRepository.setStatus(id, TaskStatus.Todo);
@@ -397,6 +446,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (const task of tasks) {
       if (task.status !== TaskStatus.Done) await scheduleTaskReminder(task);
     }
+    // 备份里的考试也要重新排上（cancelAllReminders 把它们的通知也撤了）
+    await syncEventReminders(get().events);
   },
 
   removeTask: async (id) => {
@@ -410,6 +461,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   archiveIdea: async (id) => {
     await ideaRepository.archive(id);
+    await get().refresh();
+  },
+
+  loadArchivedIdeas: async () => ideaRepository.listArchived(),
+
+  unarchiveIdea: async (id) => {
+    await ideaRepository.unarchive(id);
+    await get().refresh();
+  },
+
+  removeIdea: async (id) => {
+    await ideaRepository.softDelete(id);
     await get().refresh();
   },
 
@@ -758,37 +821,64 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   loadTerm: async () => termRepository.getCurrent(),
 
+  /**
+   * 课表这边一律在 `refresh()` 之后再调一次 `syncCourseReminders` ——
+   * **为什么不放进 refresh() 里**：refresh 每次勾选任务都会跑，跟着它重排
+   * 等于"点一下就撤销重排几十条通知"，白耗电还容易被系统限流。
+   * 也**不 await**：提醒排不上不该拖慢"导入课表"这个主流程。
+   */
   saveCourse: async (course) => {
     await courseRepository.save(course);
     await get().refresh();
+    void syncCourseReminders(get().courses, get().term);
   },
 
   removeCourse: async (id) => {
     await courseRepository.softDelete(id);
     await get().refresh();
+    // 删课要顺手把它的通知撤掉，否则那门课还会继续弹
+    void syncCourseReminders(get().courses, get().term);
   },
 
   importCourses: async (courses, options) => {
     if (options?.replace) await courseRepository.softDeleteAll();
     await courseRepository.createMany(courses);
     await get().refresh();
+    void syncCourseReminders(get().courses, get().term);
   },
 
   saveTerm: async (patch) => {
     const current = await termRepository.getCurrent();
-    // 没有学期就先建一条：开学日默认**本周一** —— 用户看到的是一个能用的
-    // 默认值，而不是一片空白让他自己填（省事原则）。
+    // 没有学期就先建一条。开学日的兜底改成"按学期名推出来的第一周周一" ——
+    // "本周一"在学期中途是错的（10 月打开就变成 10 月的周一，整张课表的
+    // 周次全偏），只当推不出来时的最后兜底。
     const base =
       current ??
       createTerm({
         label: patch.label ?? '当前学期',
-        startDayKey: patch.startDayKey ?? toDayKey(mondayOfWeek(new Date())),
+        startDayKey:
+          patch.startDayKey ??
+          guessTermStart(patch.label ?? '') ??
+          toDayKey(mondayOfWeek(new Date())),
         totalWeeks: patch.totalWeeks,
         periods: patch.periods,
       });
     const next = await termRepository.save({ ...base, ...patch, id: base.id });
     set({ term: next, dataVersion: get().dataVersion + 1 });
+    // 开学日或作息表一动，每节课的**时刻**就全变了 —— 必须重排
+    void syncCourseReminders(get().courses, next);
     return next;
+  },
+
+  /* ---------------- 固定日程（考试等） ---------------- */
+
+  importEvents: async (events, options) => {
+    if (options?.replace) await eventRepository.softDeleteAll();
+    await eventRepository.createMany(events);
+    await get().refresh();
+    // 考试提醒一贯"全撤重排"（理由见 syncEventReminders）。**不 await**：
+    // 排提醒不该拖慢"导入考试"这个主流程，失败也只是这次没排上。
+    void syncEventReminders(get().events);
   },
 
   wipeLocalData: async () => {

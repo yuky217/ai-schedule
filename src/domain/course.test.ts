@@ -10,22 +10,29 @@ import {
   describeSlotTiming,
   describeWeeks,
   guessTermLabel,
+  guessTermStart,
   isCourseActiveNow,
   isSessionActiveOnWeek,
   layoutSlots,
+  maxSessionPeriod,
+  moveSession,
   nextCourse,
+  replaceSession,
   sanitizeSessions,
+  sessionKey,
   sessionOccursOn,
   weekGrid,
   weekIndexOf,
   weeksFromRange,
+  weeksToText,
   WeekParity,
   type Course,
   type CourseSession,
   type Term,
 } from './course';
 import { SyncState } from './enums';
-import { createTerm } from './factory';
+import { createCourse, createTerm } from './factory';
+import { parseWeeks } from './course-text';
 import { DEFAULT_PERIODS } from './timetable';
 
 /** 2026-09-07 是周一 —— 学期第 1 周的周一 */
@@ -419,5 +426,193 @@ describe('guessTermLabel：导入页的默认学期名', () => {
 
   it('1 月仍属于上一个学年（寒假在第一学期尾巴上）', () => {
     expect(guessTermLabel(d(2027, 1, 10))).toBe('2026-2027-1');
+  });
+});
+
+describe('guessTermStart：导入页的默认开学日', () => {
+  /**
+   * 断言"是周一、落在几月几日附近"而不是写死某个日期 ——
+   * 这条规则本来就只是**惯例**（9 月 1 日前后开学），
+   * 写死具体某天会把"惯例"假装成"事实"，以后调惯例反而要改测试。
+   */
+  const parsed = (key: string) =>
+    new Date(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, Number(key.slice(8, 10)));
+
+  it('第 1 学期 → 8 月底 / 9 月初的那个周一', () => {
+    const date = parsed(guessTermStart('2026-2027-1')!);
+    expect(date.getDay()).toBe(1); // 周一
+    expect(date.getFullYear()).toBe(2026);
+    expect(date.getMonth()).toBe(7); // 8 月
+    expect(date.getDate()).toBeGreaterThanOrEqual(28);
+  });
+
+  it('第 2 学期 → 次年 2 月下旬的那个周一', () => {
+    const date = parsed(guessTermStart('2026-2027-2')!);
+    expect(date.getDay()).toBe(1);
+    expect(date.getFullYear()).toBe(2027);
+    expect(date.getMonth()).toBe(1); // 2 月
+    expect(date.getDate()).toBeGreaterThanOrEqual(20);
+  });
+
+  it('学期名不是那个形状就返回 null —— 不硬编一个看起来像真的日期', () => {
+    expect(guessTermStart('2026秋')).toBeNull();
+    expect(guessTermStart('')).toBeNull();
+  });
+});
+
+/**
+ * 课表网格里拖动课块换星期/节次（2026-10-08）。
+ * 钉住三条：只动被抓住的那条安排、跨度跟着走、周次与教室不能丢。
+ */
+describe('moveSession', () => {
+  const course = createCourse({
+    title: '软件工程',
+    location: '教一 101',
+    sessions: [
+      { weekday: 1, startPeriod: 3, endPeriod: 4, weeks: [1, 2, 3], location: null },
+      { weekday: 4, startPeriod: 5, endPeriod: 6, weeks: [1, 2, 3], location: '实验楼' },
+    ],
+  });
+
+  it('拖到周二：只有被拖的那条换天，另一条原样', () => {
+    const moved = moveSession(course, sessionKey(course.sessions[0]!), 2, 3)!;
+    expect(moved.sessions.map((s) => [s.weekday, s.startPeriod, s.endPeriod])).toEqual([
+      [2, 3, 4],
+      [4, 5, 6],
+    ]);
+  });
+
+  it('跨几节就还是跨几节（3-4 节拖到第 7 节 = 7-8 节）', () => {
+    const moved = moveSession(course, sessionKey(course.sessions[0]!), 2, 7)!;
+    const target = moved.sessions.find((s) => s.weekday === 2)!;
+    expect(target.startPeriod).toBe(7);
+    expect(target.endPeriod).toBe(8);
+  });
+
+  it('周次和地点跟着走 —— 拖一次不该把 1-3 周和教室清掉', () => {
+    const withRoom = {
+      ...course,
+      sessions: [{ weekday: 1, startPeriod: 3, endPeriod: 4, weeks: [1, 2, 3], location: '教二 202' }],
+    };
+    const moved = moveSession(withRoom, sessionKey(withRoom.sessions[0]!), 5, 1)!;
+    expect(moved.sessions[0]!.weeks).toEqual([1, 2, 3]);
+    expect(moved.sessions[0]!.location).toBe('教二 202');
+  });
+
+  it('认不出的安排 / 星期出界 → null（不落库）', () => {
+    expect(moveSession(course, '9-1-2', 3, 1)).toBeNull();
+    expect(moveSession(course, sessionKey(course.sessions[0]!), 7, 1)).toBeNull();
+  });
+
+  it('节次下限兜在 1 —— 拖到网格最上面不会得到"第 0 节"', () => {
+    const moved = moveSession(course, sessionKey(course.sessions[0]!), 3, 0)!;
+    expect(moved.sessions.find((s) => s.weekday === 3)!.startPeriod).toBe(1);
+  });
+});
+
+describe('maxSessionPeriod：作息表"共几节"的下界由它决定', () => {
+  it('取所有课里最大的结束节次', () => {
+    expect(
+      maxSessionPeriod([
+        course('高数', [session({ startPeriod: 1, endPeriod: 2 })]),
+        course('线代', [session({ weekday: 3, startPeriod: 9, endPeriod: 10 })]),
+      ]),
+    ).toBe(10);
+  });
+
+  it('一门课有多段时取最大的那段', () => {
+    expect(
+      maxSessionPeriod([
+        course('英语', [session({ startPeriod: 1, endPeriod: 2 }), session({ weekday: 4, startPeriod: 11, endPeriod: 12 })]),
+      ]),
+    ).toBe(12);
+  });
+
+  it('没有课 / 全是没有时间的课 → 0（节数不受约束）', () => {
+    expect(maxSessionPeriod([])).toBe(0);
+    expect(maxSessionPeriod([course('网课', [])])).toBe(0);
+  });
+
+  it('已删掉的课不算 —— 删完就能把节数降回去', () => {
+    expect(maxSessionPeriod([course('旧课', [session({ startPeriod: 13, endPeriod: 13 })], { deletedAt: '2026-10-01T00:00:00.000Z' })])).toBe(0);
+  });
+});
+
+describe('weeksToText：把周次写回"能粘进输入框"的样子', () => {
+  it('连续区间收成 a-b周，零散周次逐个写', () => {
+    expect(weeksToText(weeksFromRange(1, 16))).toBe('1-16周');
+    expect(weeksToText([3])).toBe('3周');
+    expect(weeksToText([1, 2, 5])).toBe('1-2周,5周');
+    expect(weeksToText([])).toBe('');
+  });
+
+  it('单双周收成一个词（不摊成一长串）', () => {
+    expect(weeksToText(weeksFromRange(1, 15, WeekParity.Odd))).toBe('1-15周(单)');
+    expect(weeksToText(weeksFromRange(2, 16, WeekParity.Even))).toBe('2-16周(双)');
+  });
+
+  it('**必须能被 parseWeeks 原样读回来** —— 否则"改一段"会把周次改没了', () => {
+    const cases = [
+      weeksFromRange(1, 16),
+      weeksFromRange(1, 15, WeekParity.Odd),
+      weeksFromRange(2, 16, WeekParity.Even),
+      [1, 2, 5],
+      [3, 4, 5, 9, 10],
+      [1, 5, 9],
+      [7],
+    ];
+    for (const weeks of cases) {
+      expect(parseWeeks(weeksToText(weeks))?.weeks, weeksToText(weeks)).toEqual(weeks);
+    }
+  });
+
+  it('等差但不是"整段单双周"的（1、5、9 周）不许念成 1-9周(单)', () => {
+    expect(weeksToText([1, 5, 9])).toBe('1周,5周,9周');
+  });
+});
+
+describe('replaceSession：改已有的一段', () => {
+  it('只换被点的那一段，其余不动', () => {
+    const sessions = [session({ weekday: 1 }), session({ weekday: 3, startPeriod: 5, endPeriod: 6 })];
+    const next = replaceSession(sessions, 1, session({ weekday: 4, startPeriod: 9, endPeriod: 10 }));
+    expect(next.map(sessionKey)).toEqual(['1-1-2', '4-9-10']);
+  });
+
+  it('周次跟着新的一段走（改节次不该顺手把周次冲掉）', () => {
+    const sessions = [session({ weeks: [1, 3, 5] })];
+    const next = replaceSession(sessions, 0, session({ startPeriod: 3, endPeriod: 4, weeks: [1, 3, 5] }));
+    expect(next[0]!.weeks).toEqual([1, 3, 5]);
+    expect(next[0]!.startPeriod).toBe(3);
+  });
+
+  it('改成跟另一段一模一样时合成一条（周次取并集），不摆两条一样的行', () => {
+    const sessions = [session({ weeks: [1, 2, 3] }), session({ weekday: 3, weeks: [4, 5] })];
+    const next = replaceSession(sessions, 1, session({ weekday: 1, weeks: [4, 5] }));
+    expect(next).toHaveLength(1);
+    expect(next[0]!.weeks).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('地点不同就各留一条（换教室那几周不是重复）', () => {
+    const sessions = [session({ location: '教A108' })];
+    const next = replaceSession(sessions, 0, session({ location: '在线网络教室03' }));
+    expect(next).toHaveLength(1);
+    expect(next[0]!.location).toBe('在线网络教室03');
+  });
+
+  it('索引越界（列表已经变过）→ 原样返回，不抛也不改错一条', () => {
+    const sessions = [session()];
+    expect(replaceSession(sessions, 5, session({ weekday: 4 }))).toEqual(sessions);
+    expect(replaceSession(sessions, -1, session({ weekday: 4 }))).toEqual(sessions);
+  });
+
+  it('拖课块正好落在同一门课的另一个块上 → 也合成一条（走的是同一套合并）', () => {
+    const moved = moveSession(
+      course('英语', [session({ weekday: 1, weeks: [1, 2] }), session({ weekday: 3, weeks: [3, 4] })]),
+      '1-1-2',
+      3,
+      1,
+    );
+    expect(moved?.sessions).toHaveLength(1);
+    expect(moved?.sessions[0]!.weeks).toEqual([1, 2, 3, 4]);
   });
 });

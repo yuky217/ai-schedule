@@ -31,8 +31,16 @@ export interface TimetableViewProps {
   onSelectSlot: (slot: CourseSlot) => void;
   onSelectCourse: (course: Course) => void;
   onImport: () => void;
+  /** 导入考试安排（与课表分开：查询页不同、文本格式不同） */
+  onImportExams: () => void;
   /** 手动添加一门课（导入认不出来时的兜底出口） */
   onAddCourse: () => void;
+  /** 去改学期设置（开学日 / 作息表）—— 课表的"底座"，改一次全表跟着变 */
+  onOpenTerm: () => void;
+  /** 长按拖课块换星期/节次（拖的是被抓住的那一次安排） */
+  onMoveSlot?: (slot: CourseSlot, weekday: number, startPeriod: number) => Promise<void> | void;
+  /** 拖拽开始/结束：父层用它锁住整页滚动 */
+  onDraggingChange?: (dragging: boolean) => void;
 }
 
 export function TimetableView({
@@ -42,7 +50,11 @@ export function TimetableView({
   onSelectSlot,
   onSelectCourse,
   onImport,
+  onImportExams,
   onAddCourse,
+  onOpenTerm,
+  onMoveSlot,
+  onDraggingChange,
 }: TimetableViewProps) {
   const theme = useTheme();
   const dark = useColorScheme() === 'dark';
@@ -83,12 +95,27 @@ export function TimetableView({
         <EmptyState
           icon="school-outline"
           title={hasCourses ? '还差一个开学日' : '还没有课表'}
-          hint="把教务系统的课表复制进来就能导入。开学日填第 1 周的周一 —— 有了它，每节课是第几周才算得出来。"
+          hint={
+            hasCourses
+              ? '开学日填第 1 周的周一 —— 有它才能算出每节课是第几周'
+              : '把课表复制进来就能导入'
+          }
         />
         <View style={styles.emptyActions}>
           <TextButton label="导入课表" onPress={onImport} primary />
           <TextButton label="手动添加" onPress={onAddCourse} />
         </View>
+        {/*
+          没有学期时，"导入"这条路其实是走不通的 —— 导入页能建学期，但那是附带的。
+          这里直接给一个明确的出口（开学日 + 作息表都在那一页）。
+        */}
+        {hasCourses ? (
+          <Pressable accessibilityRole="button" onPress={onOpenTerm} hitSlop={8}>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.emptyLink}>
+              已经导过课表了？那去把开学日填上
+            </ThemedText>
+          </Pressable>
+        ) : null}
       </Card>
     );
   }
@@ -115,6 +142,8 @@ export function TimetableView({
         rows={rows}
         today={new Date()}
         onSelectSlot={onSelectSlot}
+        onMoveSlot={onMoveSlot}
+        onDraggingChange={onDraggingChange}
       />
 
       <View style={styles.footer}>
@@ -126,6 +155,18 @@ export function TimetableView({
               : `${term.label} 还没开始 · 第 1 周从 ${term.startDayKey.replace(/-/g, '/')} 起`}
         </ThemedText>
         <View style={styles.footerLinks}>
+          {/*
+            学期设置挂在页脚而不是藏进设置页：作息表和开学日是课表的**必要输入**，
+            跟"这个 App 怎么用"无关 —— 它该在课表旁边，用户找的时候一眼就能看到。
+          */}
+          <Pressable accessibilityRole="button" onPress={onOpenTerm} hitSlop={10}>
+            <View style={styles.linkRow}>
+              <Ionicons name="options-outline" size={13} color={theme.textSecondary} />
+              <ThemedText type="small" themeColor="textSecondary" style={styles.link}>
+                学期
+              </ThemedText>
+            </View>
+          </Pressable>
           <Pressable accessibilityRole="button" onPress={onAddCourse} hitSlop={10}>
             <View style={styles.linkRow}>
               <Ionicons name="add" size={15} color={theme.textSecondary} />
@@ -142,6 +183,14 @@ export function TimetableView({
               </ThemedText>
             </View>
           </Pressable>
+          <Pressable accessibilityRole="button" onPress={onImportExams} hitSlop={10}>
+            <View style={styles.linkRow}>
+              <Ionicons name="document-text-outline" size={13} color={theme.textSecondary} />
+              <ThemedText type="small" themeColor="textSecondary" style={styles.link}>
+                考试
+              </ThemedText>
+            </View>
+          </Pressable>
         </View>
       </View>
 
@@ -154,7 +203,7 @@ export function TimetableView({
       {timeless.length ? (
         <Card
           title={`没有上课时间 · ${timeless.length} 门`}
-          hint="教务系统里这类课本来就没排时间（实践、网课、待定）。点一门就能补上。">
+          hint="这类课本来就没排时间（实践、网课、待定），点一门补上">
           {timeless.map((course) => {
             const color = courseColor(course.colorIndex, dark);
             return (
@@ -214,6 +263,7 @@ function TextButton({
 const styles = StyleSheet.create({
   container: { gap: Spacing.three },
   emptyActions: { flexDirection: 'row', justifyContent: 'center', gap: Spacing.two },
+  emptyLink: { textAlign: 'center', fontSize: 12, lineHeight: 17 },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',

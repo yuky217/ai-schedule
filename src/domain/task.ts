@@ -97,13 +97,8 @@ export interface Task extends BaseEntity {
 }
 
 /* ------------------------------------------------------------------ */
-/* 类型判定：让界面层不用到处写 kind === 'xxx'                          */
+/* 类型判定                                                            */
 /* ------------------------------------------------------------------ */
-
-export const isScheduleTask = (t: Pick<Task, 'kind'>) => t.kind === 'schedule';
-export const isExecutionTask = (t: Pick<Task, 'kind'>) => t.kind === 'execution';
-export const isHabitTask = (t: Pick<Task, 'kind'>) => t.kind === 'habit';
-export const isIdeaTask = (t: Pick<Task, 'kind'>) => t.kind === 'idea';
 
 /** 有明确时间（固定 或 截止），可以直接落到日历上 */
 export const hasConcreteTime = (t: Pick<Task, 'time'>) =>

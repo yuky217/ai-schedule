@@ -132,20 +132,6 @@ export function describeStreak(info: StreakInfo): string {
   return `连续 ${info.current} 天 · 今天还没打`;
 }
 
-/** 距离上次打卡多少天（用于"好久没做了"的提示） */
-export function daysSinceLastCheckin(
-  dayKeys: ReadonlyArray<string>,
-  today: Date = new Date(),
-): number | null {
-  if (!dayKeys.length) return null;
-  const sorted = Array.from(new Set(dayKeys)).sort();
-  const latest = sorted[sorted.length - 1];
-  if (!latest) return null;
-  const date = parseDayKey(latest);
-  if (!date) return null;
-  return differenceInCalendarDays(startOfDay(today), date);
-}
-
 /** 今天是否已打卡（不依赖 summarize 的排序，供按钮直接判断） */
 export function hasCheckedInOn(dayKeys: ReadonlyArray<string>, day: Date): boolean {
   return dayKeys.includes(toDayKey(startOfDay(day)));

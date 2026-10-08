@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { TaskKind, TaskStatus } from '@/domain/enums';
-import { describeRepeat, describeReminder } from '@/domain/repeat-next';
+import { describeRepeat } from '@/domain/repeat-next';
 import { taskDue, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { describeDue, formatDayTime } from '@/utils/datetime';
@@ -68,7 +68,14 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
         </ThemedText>
 
         <View style={styles.metaRow}>
-          <Meta text={KIND_LABEL[task.kind]} />
+          {/*
+            行上只留"能改变你怎么处理这条"的信息（2026-10-07 从 5 项压到 2-4 项）：
+            - 类型只留「习惯」：它意味着能打卡、算法和其他任务不同。日程/执行/想法是
+              内部枚举，摆出来只会让人问"这俩有什么区别"；
+            - 提醒不显示：定了时间就有提醒（默认提前 15 分钟），那是设定不是状态；
+            - 时间、重复、等谁：都会直接改变你此刻要不要动它，留。
+          */}
+          {task.kind === TaskKind.Habit ? <Meta text={KIND_LABEL[task.kind]} /> : null}
           {task.repeat ? <Meta text={describeRepeat(task.repeat)} /> : null}
           {task.status === TaskStatus.Waiting && task.waitingFor ? (
             <Meta text={`等 ${task.waitingFor}`} />
@@ -78,9 +85,6 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
           ) : (
             <Meta text="待规划" muted />
           )}
-          {(task.reminderMinutesBefore ?? 0) > 0 && anchor ? (
-            <Meta text={describeReminder(task.reminderMinutesBefore)} muted />
-          ) : null}
         </View>
       </View>
 

@@ -17,6 +17,7 @@ import {
   TimeAttribute,
 } from './enums';
 import type { ContainerKind } from './enums';
+import { EventKind, type CalEvent } from './event';
 import type { FocusSession } from './focus';
 import type { Idea } from './idea';
 import type { RepeatRule, Task, TaskTime } from './task';
@@ -241,6 +242,16 @@ export interface CreateCourseInput {
   colorIndex?: number;
 }
 
+/**
+ * 新课默认提前 15 分钟提醒。
+ *
+ * **为什么给非零默认值**：用户把课表导进来，图的就是"别错过课"。
+ * 默认不提醒等于把"要不要提醒"这个决定又推回给他 —— 而他得先知道
+ * 有这么一个开关存在，才可能去开。15 分钟够从宿舍走到教室，也不至于太早。
+ * 不想要的人在课程详情页关掉即可。
+ */
+export const DEFAULT_COURSE_REMINDER = 15;
+
 export function createCourse(input: CreateCourseInput): Course {
   const title = input.title.trim();
   return {
@@ -251,7 +262,7 @@ export function createCourse(input: CreateCourseInput): Course {
     note: input.note ?? null,
     colorIndex: input.colorIndex ?? colorIndexOf(title),
     sessions: sanitizeSessions(input.sessions ?? []),
-    reminderMinutesBefore: input.reminderMinutesBefore ?? null,
+    reminderMinutesBefore: input.reminderMinutesBefore ?? DEFAULT_COURSE_REMINDER,
   };
 }
 
@@ -272,5 +283,33 @@ export function createTerm(input: CreateTermInput): Term {
     startDayKey: input.startDayKey,
     totalWeeks: input.totalWeeks ?? 18,
     periods: sanitizePeriods(periods).length ? sanitizePeriods(periods) : [...DEFAULT_PERIODS],
+  };
+}
+
+export interface CreateEventInput {
+  kind?: string;
+  title: string;
+  location?: string | null;
+  note?: string | null;
+  startAt: string;
+  endAt?: string | null;
+  source?: string;
+}
+
+/**
+ * 固定日程（考试等）：没有完成态，也**没有提前量字段** ——
+ * 什么时候提醒由 `domain/event-reminder.ts` 按固定日程的规则算（前一天 20:00，
+ * 排不上退开考前 1 小时）。考试不该像任务那样让用户先挑一个提前量。
+ */
+export function createEvent(input: CreateEventInput): CalEvent {
+  return {
+    ...createBase('event'),
+    kind: input.kind ?? EventKind.Exam,
+    title: input.title.trim(),
+    location: input.location ?? null,
+    note: input.note ?? null,
+    startAt: input.startAt,
+    endAt: input.endAt ?? null,
+    source: input.source ?? CaptureSource.Manual,
   };
 }

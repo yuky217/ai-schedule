@@ -8,10 +8,10 @@ import { CheckinHeatmap } from '@/components/checkin-heatmap';
 import { EmptyState } from '@/components/empty-state';
 import { FocusBars } from '@/components/focus-bars';
 import { Screen } from '@/components/screen';
+import { KIND_LABEL } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { buildHeatmap } from '@/domain/checkins';
-import type { TaskKind } from '@/domain/enums';
 import type { FocusSession } from '@/domain/focus';
 import {
   buildReview,
@@ -40,13 +40,6 @@ import { formatMonthDay } from '@/utils/datetime';
  * 另一个约束：不引图表库。一排 flex 均分的柱子就够，
  * 而且天然适配 7 天 / 30 天两种密度，不需要两套代码。
  */
-
-const KIND_LABEL: Record<TaskKind, string> = {
-  schedule: '日程型',
-  execution: '执行型',
-  habit: '习惯型',
-  idea: '想法型',
-};
 
 const CONTAINER_LIMIT = 4;
 
@@ -137,7 +130,7 @@ export default function ReviewScreen() {
         <EmptyState
           icon="stats-chart-outline"
           title="这段时间还没有东西可回顾"
-          hint="记几条任务、专注几次、打个卡，再回来看这里 —— 回顾的值来自有数据，不是来自这个页面"
+          hint="记几条任务、专注几次，再回来看"
         />
       ) : null}
 
@@ -237,7 +230,7 @@ export default function ReviewScreen() {
           {/* 习惯：连续天数是全局的，本期只决定"这段时间打了几次" */}
           <Card
             title="习惯"
-            hint={snapshot.habits.length ? undefined : '把一条任务设成习惯型，就能在这里看到累积'}
+            hint={snapshot.habits.length ? undefined : '把一条任务的类型设成「习惯」，就能在这里看到累积'}
             right={
               snapshot.habits.length ? (
                 <Pressable onPress={() => router.push('/habits')}>
@@ -275,7 +268,7 @@ export default function ReviewScreen() {
               ))
             ) : (
               <ThemedText type="small" themeColor="textSecondary">
-                还没有习惯型任务。
+                还没有习惯。
               </ThemedText>
             )}
           </Card>

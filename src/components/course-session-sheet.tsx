@@ -8,6 +8,7 @@ import {
   describeWeeks,
   weekdayLabel,
   weeksFromRange,
+  weeksToText,
   type CourseSession,
 } from '@/domain/course';
 import { parseWeeks } from '@/domain/course-text';
@@ -16,12 +17,14 @@ import { useTheme } from '@/hooks/use-theme';
 /**
  * 一段上课时间的编辑面板（星期 / 节次 / 周次）。
  *
- * 两个地方用它：给手动添加的课选第一段时间、给"没有时间的课"补一段时间。
- * 合起来是有原因的 —— 这两件事的输入完全一样，写两份的下场是两份的
+ * 三个地方用它：给手动添加的课选第一段时间、给"没有时间的课"补一段时间、
+ * **改课程详情页里已有的某一段**（`initial` 传进去就是改）。
+ * 合起来是有原因的 —— 这三件事的输入完全一样，写三份的下场是三份的
  * 默认值、校验、手感迟早跑偏。
  *
- * 默认值刻意都是"最可能的那个"：星期取今天、节次取 1-2 节、
+ * 默认值刻意都是"最可能的那个"：新增时星期取今天、节次取 1-2 节、
  * 周次直接铺满整学期 —— 多数情况下用户只需要点一下"保存"。
+ * 改已有的一段时，默认值全部来自那一段本身（见下面 useEffect）。
  */
 export interface CourseSessionSheetProps {
   visible: boolean;
@@ -55,7 +58,12 @@ export function CourseSessionSheet({
     setWeekday(initial?.weekday ?? new Date().getDay());
     setStartPeriod(initial?.startPeriod ?? 1);
     setEndPeriod(initial?.endPeriod ?? 2);
-    setWeeksText('');
+    /**
+     * 改已有的一段时，周次栏要**预填成它原本的周次**。
+     * 空着的话默认整学期 —— 用户只想把节次从 1-2 改成 3-4，一按保存，
+     * "1-16周(单)"就悄悄变成整学期了，而界面上两个数字都对，看不出来。
+     */
+    setWeeksText(initial ? weeksToText(initial.weeks) : '');
   }, [visible, initial]);
 
   /**

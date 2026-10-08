@@ -46,7 +46,7 @@ export default function ContainerDetailScreen() {
   const containers = useAppStore((state) => state.containers);
   const tasks = useAppStore((state) => state.tasks);
   const updateTask = useAppStore((state) => state.updateTask);
-  const completeTask = useAppStore((state) => state.completeTask);
+  const toggleTaskDone = useAppStore((state) => state.toggleTaskDone);
   const shiftTaskByDays = useAppStore((state) => state.shiftTaskByDays);
   const addTaskToContainer = useAppStore((state) => state.addTaskToContainer);
 
@@ -278,7 +278,7 @@ export default function ContainerDetailScreen() {
       </Card>
 
       {/* 起止时间 */}
-      <Card title="时间" hint="定了起止，它就会出现在甘特图上">
+      <Card title="时间">
         <Pressable
           accessibilityRole="button"
           onPress={() => setEditingDate(editingDate === 'startAt' ? null : 'startAt')}
@@ -424,13 +424,13 @@ export default function ContainerDetailScreen() {
               key={task.id}
               task={task}
               onPress={(t) => router.push(`/task/${t.id}`)}
-              onComplete={(t) => void completeTask(t.id)}
+              onComplete={(t) => void toggleTaskDone(t.id)}
               onDelete={(t) => void updateTask(t.id, { containerId: null })}
             />
           ))
         ) : (
           <ThemedText type="small" themeColor="textSecondary">
-            还没有任务。点右上角「＋ 新建」直接加一条，或者用「加入已有」把别处建好的挂进来。
+            还没有任务。用右上角「＋ 新建」加一条。
           </ThemedText>
         )}
 

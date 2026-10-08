@@ -5,6 +5,7 @@ export * from './db/client';
 export * from './db/schema';
 export * from './repositories/checkin-repository';
 export * from './repositories/container-repository';
+export * from './repositories/event-repository';
 export * from './repositories/focus-repository';
 export * from './repositories/idea-repository';
 export * from './repositories/mark-repository';

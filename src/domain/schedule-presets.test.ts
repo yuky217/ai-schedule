@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildScheduleTime, SCHEDULE_PRESETS } from './schedule-presets';
 import { TimeAttribute } from './enums';
+import { createTask } from './factory';
+import {
+  buildPlacedTime,
+  buildRescheduledTime,
+  buildRetimedSpanTime,
+  buildScheduleTime,
+  buildSemanticTime,
+  buildTimeOnDay,
+  SCHEDULE_PRESETS,
+  SEMANTIC_TARGETS,
+} from './schedule-presets';
 
 /**
  * 安排预设的换算。
@@ -48,5 +58,229 @@ describe('buildScheduleTime', () => {
     expect(at.getDate()).toBe(8);
     expect(at.getHours()).toBe(1);
     expect(at.getMinutes()).toBe(30);
+  });
+});
+
+/**
+ * 语义词片：用「哪天」说话。
+ *
+ * 2026-10-07 是周三，所以 10-10 是周六、10-11 是周日、10-12 是下周一。
+ * 边界都取"未来的那一天"，**任何一天点「周末」都不能落回过去**。
+ */
+describe('buildSemanticTime', () => {
+  const wed = new Date(2026, 9, 7, 14, 30);
+
+  const noTime = () => createTask({ title: '某件事' });
+  const withFixed = (day: number, hour: number, minute = 0) => ({
+    ...createTask({ title: '有时间的' }),
+    time: {
+      attribute: TimeAttribute.Fixed,
+      startAt: new Date(2026, 9, day, hour, minute).toISOString(),
+      endAt: null,
+      dueAt: null,
+    },
+  });
+  const withDeadline = (day: number, hour: number) => ({
+    ...createTask({ title: '有截止的' }),
+    time: {
+      attribute: TimeAttribute.Deadline,
+      startAt: null,
+      endAt: null,
+      dueAt: new Date(2026, 9, day, hour, 0).toISOString(),
+    },
+  });
+  const dueDate = (time: ReturnType<typeof buildSemanticTime>) =>
+    new Date(time!.dueAt ?? time!.startAt!);
+
+  it('没时间的任务：落到当天 23:59 截止，而不是上午 9 点', () => {
+    const time = buildSemanticTime(noTime(), 'today', wed)!;
+    expect(time.attribute).toBe(TimeAttribute.Deadline);
+    const due = new Date(time.dueAt!);
+    expect(due.getDate()).toBe(7);
+    expect(due.getHours()).toBe(23);
+    expect(due.getMinutes()).toBe(59);
+  });
+
+  it('明天 = 次日', () => {
+    expect(dueDate(buildSemanticTime(noTime(), 'tomorrow', wed)).getDate()).toBe(8);
+  });
+
+  it('周末 = 本周六', () => {
+    expect(dueDate(buildSemanticTime(noTime(), 'weekend', wed)).getDate()).toBe(10);
+  });
+
+  it('周末：周六当天就是今天', () => {
+    const sat = new Date(2026, 9, 10, 8, 0);
+    expect(dueDate(buildSemanticTime(noTime(), 'weekend', sat)).getDate()).toBe(10);
+  });
+
+  it('周末：周日给下一个周六，不给刚过去的昨天', () => {
+    const sun = new Date(2026, 9, 11, 8, 0);
+    expect(dueDate(buildSemanticTime(noTime(), 'weekend', sun)).getDate()).toBe(17);
+  });
+
+  it('下周 = 下周一', () => {
+    expect(dueDate(buildSemanticTime(noTime(), 'nextWeek', wed)).getDate()).toBe(12);
+  });
+
+  it('下周：周一当天给下周一，不给今天', () => {
+    const mon = new Date(2026, 9, 12, 9, 0);
+    expect(dueDate(buildSemanticTime(noTime(), 'nextWeek', mon)).getDate()).toBe(19);
+  });
+
+  it('下周：周日给明天（就是下周一）', () => {
+    const sun = new Date(2026, 9, 11, 9, 0);
+    expect(dueDate(buildSemanticTime(noTime(), 'nextWeek', sun)).getDate()).toBe(12);
+  });
+
+  it('已有时间的任务：只换日期，时刻与属性都不动', () => {
+    const time = buildSemanticTime(withFixed(8, 9, 15), 'weekend', wed)!;
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+    const at = new Date(time.startAt!);
+    expect(at.getDate()).toBe(10);
+    expect(at.getHours()).toBe(9);
+    expect(at.getMinutes()).toBe(15);
+  });
+
+  it('已有截止的任务：挪日期但仍然是截止', () => {
+    const time = buildSemanticTime(withDeadline(8, 18), 'tomorrow', wed)!;
+    expect(time.attribute).toBe(TimeAttribute.Deadline);
+    const due = new Date(time.dueAt!);
+    expect(due.getDate()).toBe(8);
+    expect(due.getHours()).toBe(18);
+  });
+
+  it('稍后 = 现在 + 2 小时，不落回整点', () => {
+    const base = new Date(2026, 9, 7, 13, 7);
+    const time = buildSemanticTime(noTime(), 'later', base)!;
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+    const at = new Date(time.startAt!);
+    expect(at.getHours()).toBe(15);
+    expect(at.getMinutes()).toBe(7);
+  });
+
+  it('词片的标签就是界面文案', () => {
+    expect(SEMANTIC_TARGETS.map((t) => t.label)).toEqual(['今天', '明天', '周末', '下周', '稍后']);
+  });
+});
+
+/**
+ * 拖边改时段 + 拖块保时长（2026-10-08）。
+ *
+ * 之前日历拖拽一律把 endAt 写回 null —— 有时长的块拖一次就"缩"回半小时，
+ * 时长根本没有入口。现在：拽上下边 = 写始末两个刻度；拖整块 = 位置变、长度不变。
+ */
+describe('buildRetimedSpanTime / 时长保留', () => {
+  const withSpan = (day: number, startHour: number, endHour: number) => ({
+    ...createTask({ title: '有时长的' }),
+    time: {
+      attribute: TimeAttribute.Fixed,
+      startAt: new Date(2026, 9, day, startHour, 0).toISOString(),
+      endAt: new Date(2026, 9, day, endHour, 0).toISOString(),
+      dueAt: null,
+    },
+  });
+
+  it('拽边：始末两个刻度都写回，endAt 从此有了', () => {
+    const task = withSpan(8, 9, 10);
+    const time = buildRetimedSpanTime(task, 8 * 60 + 30, 10 * 60 + 30)!;
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+    expect(new Date(time.startAt!).getHours()).toBe(8);
+    expect(new Date(time.startAt!).getMinutes()).toBe(30);
+    expect(new Date(time.endAt!).getHours()).toBe(10);
+    expect(new Date(time.endAt!).getMinutes()).toBe(30);
+  });
+
+  it('没 endAt 的块拽边后也有了 endAt', () => {
+    const task = withSpan(8, 9, 10);
+    const bare = { ...task, time: { ...task.time, endAt: null } };
+    const time = buildRetimedSpanTime(bare, 9 * 60, 9 * 60 + 45)!;
+    expect(time.endAt).not.toBeNull();
+    expect(new Date(time.endAt!).getMinutes()).toBe(45);
+  });
+
+  it('结束不晚于开始（倒挂）返回 null，不该落库', () => {
+    const task = withSpan(8, 9, 10);
+    expect(buildRetimedSpanTime(task, 10 * 60, 9 * 60)).toBeNull();
+  });
+
+  it('截止型任务没有"始末"，返回 null', () => {
+    const task = {
+      ...createTask({ title: '截止', dueAt: new Date(2026, 9, 8, 23, 59).toISOString() }),
+    };
+    expect(buildRetimedSpanTime(task, 9 * 60, 10 * 60)).toBeNull();
+  });
+
+  it('拖整块：位置变、时长不变（两小时的会拖到下午还是两小时）', () => {
+    const task = withSpan(8, 9, 11);
+    const time = buildPlacedTime(task, new Date(2026, 9, 8), 14 * 60)!;
+    expect(new Date(time.startAt!).getDate()).toBe(8);
+    expect(new Date(time.startAt!).getHours()).toBe(14);
+    expect(new Date(time.endAt!).getHours()).toBe(16);
+  });
+
+  it('拖整块改期（月视图）：时长同样跟着走', () => {
+    const task = withSpan(8, 9, 11);
+    const time = buildRescheduledTime(task, new Date(2026, 9, 20))!;
+    expect(new Date(time.startAt!).getDate()).toBe(20);
+    expect(new Date(time.startAt!).getHours()).toBe(9);
+    expect(new Date(time.endAt!).getDate()).toBe(20);
+    expect(new Date(time.endAt!).getHours()).toBe(11);
+  });
+
+  it('没定过时长的块拖整块：仍然没有 endAt（不替用户编一个）', () => {
+    const task = withSpan(8, 9, 11);
+    const bare = { ...task, time: { ...task.time, endAt: null } };
+    const time = buildPlacedTime(bare, new Date(2026, 9, 8), 14 * 60)!;
+    expect(time.endAt).toBeNull();
+  });
+});
+
+/**
+ * 落到某一天（2026-10-08）：收集箱拖到日期条走的就是它。
+ *
+ * 与语义词片共用同一份口径，所以这条测试守的其实是"同义词不许给出两种结果"
+ * —— 点「明天」和把这条拖到明天那一格，必须落在完全相同的时刻上。
+ */
+describe('buildTimeOnDay', () => {
+  const noTime = () => createTask({ title: '某件事' });
+  const wed = new Date(2026, 9, 7, 14, 30);
+  const tomorrow = new Date(2026, 9, 8);
+
+  it('没时间的任务：落到那天 23:59 截止，而不是上午 9 点', () => {
+    const time = buildTimeOnDay(noTime(), tomorrow)!;
+    expect(time.attribute).toBe(TimeAttribute.Deadline);
+    const due = new Date(time.dueAt!);
+    expect(due.getDate()).toBe(8);
+    expect(due.getHours()).toBe(23);
+    expect(due.getMinutes()).toBe(59);
+  });
+
+  it('已经有时间的任务：只换日期，时刻与属性都不动', () => {
+    const task = {
+      ...createTask({ title: '有时间的' }),
+      time: {
+        attribute: TimeAttribute.Fixed,
+        startAt: new Date(2026, 9, 7, 9, 15).toISOString(),
+        endAt: null,
+        dueAt: null,
+      },
+    };
+    const time = buildTimeOnDay(task, new Date(2026, 9, 20))!;
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+    const at = new Date(time.startAt!);
+    expect(at.getDate()).toBe(20);
+    expect(at.getHours()).toBe(9);
+    expect(at.getMinutes()).toBe(15);
+  });
+
+  it('⭐ 与词片同一口径：点「明天」与拖到明天那一格，结果必须一模一样', () => {
+    expect(buildTimeOnDay(noTime(), tomorrow)).toEqual(
+      buildSemanticTime(noTime(), 'tomorrow', wed),
+    );
+  });
+
+  it('非法日期不落库', () => {
+    expect(buildTimeOnDay(noTime(), new Date('nope'))).toBeNull();
   });
 });

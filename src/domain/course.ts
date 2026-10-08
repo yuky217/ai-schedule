@@ -14,6 +14,7 @@
 import { parseDayKey, toDayKey } from '@/utils/datetime';
 
 import type { BaseEntity } from './base';
+import { layoutLanes } from './lane-layout';
 import { periodSpan, type ClassPeriod } from './timetable';
 
 /** 单双周：一门课可能只上前半段周、或者隔周上 */
@@ -220,42 +221,16 @@ export interface SlotLayout {
  * 后画的那门会整个盖住前一门 —— 用户看到的是"这节课凭空没了"，
  * 而不是"这两门撞了"。真实课表里撞课并不罕见（重修、实验课排进理论课时段）。
  *
- * 规则：按开始时刻扫一遍，**互相重叠的算一簇**（一簇内共享同一个道数，
- * 这样上午撞一次的课不会把晚上的课也压成半宽）；一簇里每节课放进
- * "最早空出来的那条道"。判据是纯几何的，与颜色、课程名无关。
+ * 算法本体在 `lane-layout`（日历的日/周视图共用同一份，别在这儿另写一个）。
  */
 export function layoutSlots(slots: readonly CourseSlot[]): SlotLayout[] {
-  const ordered = [...slots].sort(
+  return layoutLanes(
+    slots,
     (a, b) =>
       a.start - b.start ||
       a.end - b.end ||
       a.course.title.localeCompare(b.course.title, 'zh'),
-  );
-  const out: SlotLayout[] = [];
-  let cluster: SlotLayout[] = [];
-  let laneEnds: number[] = [];
-  let clusterEnd = -1;
-
-  const flush = () => {
-    const lanes = Math.max(1, laneEnds.length);
-    for (const item of cluster) item.lanes = lanes;
-    out.push(...cluster);
-    cluster = [];
-    laneEnds = [];
-    clusterEnd = -1;
-  };
-
-  for (const slot of ordered) {
-    // 与当前这一簇完全断开（开始时刻不早于簇内最晚的结束）→ 收口，另起一簇
-    if (cluster.length && slot.start >= clusterEnd) flush();
-    let lane = laneEnds.findIndex((end) => end <= slot.start);
-    if (lane === -1) lane = laneEnds.length;
-    laneEnds[lane] = slot.end;
-    clusterEnd = Math.max(clusterEnd, slot.end);
-    cluster.push({ slot, lane, lanes: 1 });
-  }
-  flush();
-  return out;
+  ).map(({ item, lane, lanes }) => ({ slot: item, lane, lanes }));
 }
 
 /**
@@ -271,6 +246,31 @@ export function guessTermLabel(date: Date = new Date()): string {
   if (month >= 8) return `${year}-${year + 1}-1`;
   if (month >= 2) return `${year - 1}-${year}-2`;
   return `${year - 1}-${year}-1`;
+}
+
+/**
+ * 学期第一周的周一（返回 DayKey）。
+ *
+ * **为什么不能用"本周一"当默认值**：用户在学期中途打开 App（比如 10 月），
+ * "本周一"就成了 10 月的某个周一，导入之后整张课表的周次整体偏移 ——
+ * 而且是**看起来正常**的那种错：每门课都在、节次也对，只是"第几周"
+ * 全错了，用户很难发现（比认不出来危险得多）。
+ *
+ * 按学年惯例推：第 1 学期 9 月 1 日前后开学，第 2 学期 2 月下旬。
+ * 取那一周里的周一 —— 多数学校的第 1 周就是那一周。
+ *
+ * 推不出来（学期名不是"2026-2027-1"这个形状）就返回 `null`，
+ * 让调用方退回自己的兜底：**不硬编一个看起来像真的的值**。
+ */
+export function guessTermStart(label: string): string | null {
+  const matched = /^(\d{4})\s*-\s*(\d{4})\s*-\s*([12])$/.exec(label.trim());
+  if (!matched) return null;
+  const startYear = Number(matched[1]);
+  const endYear = Number(matched[2]);
+  // 第 1 学期：9 月 1 日；第 2 学期：2 月 24 日（都在寒假/暑假之后）
+  const anchor = matched[3] === '1' ? new Date(startYear, 8, 1) : new Date(endYear, 1, 24);
+  if (Number.isNaN(anchor.getTime())) return null;
+  return toDayKey(mondayOfWeek(anchor));
 }
 
 /**
@@ -335,6 +335,35 @@ export function describeWeeks(weeks: readonly number[], totalWeeks?: number): st
   return `第 ${text} 周`;
 }
 
+/**
+ * `describeWeeks` 的逆运算 —— 把周次写回**能粘进输入框**的样子。
+ *
+ * 用途只有一个：打开"改这一段"的面板时，周次那一栏要预填成**这一段原本的周次**。
+ * 空着的话用户一按保存，1-16 周（单）就悄悄变成整学期 —— 改个节次把周次改没了，
+ * 是最难被发现的那种错（界面上两个数字都对，只有细则变了）。
+ *
+ * 与 `describeWeeks` 分开写，是因为读者不同：那个是给人念的（"第 1、3、5 周"），
+ * 这个是给 `parseWeeks` 读的（"1-5周(单)"）—— 合用一个的结果是两边都得迁就对方。
+ * 所以这里的输出**必须**能原样解析回来（course-text 的测试守着这条）。
+ */
+export function weeksToText(weeks: readonly number[]): string {
+  const ranges = compactWeeks(weeks);
+  if (!ranges.length) return '';
+  // 单双周收成一个词：8 个"3周,5周,7周…"比"3-15周(单)"难读，也难核对
+  if (ranges.length >= 2 && ranges.every((range) => range.start === range.end)) {
+    const stepTwo = ranges.every(
+      (range, index) => index === 0 || range.start - ranges[index - 1]!.start === 2,
+    );
+    if (stepTwo) {
+      const parity = ranges[0]!.start % 2 === 1 ? '单' : '双';
+      return `${ranges[0]!.start}-${ranges[ranges.length - 1]!.start}周(${parity})`;
+    }
+  }
+  return ranges
+    .map((range) => (range.start === range.end ? `${range.start}周` : `${range.start}-${range.end}周`))
+    .join(',');
+}
+
 /** '第 3-4 节' / '第 5 节' */
 export function describePeriods(session: CourseSession): string {
   return session.startPeriod === session.endPeriod
@@ -389,6 +418,116 @@ export function sanitizeSessions(input: readonly CourseSession[]): CourseSession
         a.weeks[0]! - b.weeks[0]! ||
         (a.location ?? '').localeCompare(b.location ?? '', 'zh'),
     );
+}
+
+/**
+ * 一次安排在界面上/手势里的身份：周几 + 起止节。
+ * 一门课可能有好几条安排（周一 1-2 节、周四 5-6 节），拖拽只该动被抓住的那条，
+ * 所以需要一个"认得出是哪一条"的键。周次不进键 —— 界面上一条安排就是一个块，
+ * 拖它 = 整条安排换时间（跟超级课程表/ WakeUp 一致）。
+ */
+export function sessionKey(session: CourseSession): string {
+  return `${session.weekday}-${session.startPeriod}-${session.endPeriod}`;
+}
+
+/**
+ * 把某一次安排挪到别的星期/节次（课表网格里长按拖动课块）。
+ *
+ * **长度跟着走、周次与地点照旧**：拖拽表达的是"这节课换时间了"，
+ * 不是"重排这门课" —— 拖一次就把 1-16 周和教室清掉，那不叫改时间，叫丢失。
+ *
+ * 目标不合法（找不到那条安排、星期出界）返回 null，让调用方别落库。
+ */
+export function moveSession(
+  course: Course,
+  key: string,
+  weekday: number,
+  startPeriod: number,
+): Course | null {
+  const current = course.sessions.find((session) => sessionKey(session) === key);
+  if (!current) return null;
+  if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return null;
+  const span = current.endPeriod - current.startPeriod;
+  const start = Math.max(1, Math.round(startPeriod));
+  return {
+    ...course,
+    sessions: mergeSameSlots(
+      sanitizeSessions(
+        course.sessions.map((session) =>
+          sessionKey(session) === key
+            ? { ...session, weekday, startPeriod: start, endPeriod: start + span }
+            : session,
+        ),
+      ),
+    ),
+  };
+}
+
+/**
+ * 把第 `index` 条安排换成新的一条（课程详情页点某一段 → 改它）。
+ *
+ * **按位置换，不按 `sessionKey` 找**：用户改的恰恰可能是星期/节次本身 ——
+ * 键在改之前就变了，用它去找是找不到的（会静默什么都不做）。
+ * 索引来自界面上那一行，点的是哪行就换哪行。
+ *
+ * 索引越界（列表在别处已经变过）就原样返回，不抛 —— 详情页读到的是
+ * store 里的快照，理论上不会错位，但真错位时"没改动"比"改错一条"好。
+ */
+export function replaceSession(
+  sessions: readonly CourseSession[],
+  index: number,
+  next: CourseSession,
+): CourseSession[] {
+  if (index < 0 || index >= sessions.length) return sanitizeSessions(sessions);
+  const list = sessions.slice();
+  list[index] = next;
+  return mergeSameSlots(sanitizeSessions(list));
+}
+
+/**
+ * 同一个"格子"（周几 + 起止节 + 地点）出现两次 → 合成一条，周次取并集。
+ *
+ * `sanitizeSessions` 只做排序与去重（同一条里的周次），**不合并两条**；
+ * 而"拖课块"和"改这一段"都可能把一条改成跟另一条一模一样（本来就该是一段）。
+ * 两条一模一样的行摆在详情页上没法解释 —— 用户会以为界面出错了。
+ * 地点不同则各留一条（真课表里换教室那几周就是两段，见 course-text）。
+ */
+function mergeSameSlots(sessions: readonly CourseSession[]): CourseSession[] {
+  const out: CourseSession[] = [];
+  for (const session of sessions) {
+    const same = out.find(
+      (item) =>
+        item.weekday === session.weekday &&
+        item.startPeriod === session.startPeriod &&
+        item.endPeriod === session.endPeriod &&
+        (item.location ?? '') === (session.location ?? ''),
+    );
+    if (same) {
+      same.weeks = [...new Set([...same.weeks, ...session.weeks])].sort((a, b) => a - b);
+      continue;
+    }
+    out.push({ ...session, weeks: [...session.weeks] });
+  }
+  return out;
+}
+
+/**
+ * 现有课程里用到的最大节次（没有课返回 0）。
+ *
+ * 用途：作息表的"共几节"不能减到比这个数还小 —— 课表画在第 N 节的内容
+ * 一旦超出作息表，`periodSpan` 就取不到时刻，那门课会**从网格里消失**
+ * （它不是"没时间"，是"算不出时间"）。所以这个数是节数的下界，由数据推出来，
+ * 不用问用户。
+ */
+export function maxSessionPeriod(courses: readonly Course[]): number {
+  let max = 0;
+  for (const course of courses) {
+    if (course.deletedAt) continue;
+    for (const session of course.sessions) {
+      if (session.endPeriod > max) max = session.endPeriod;
+    }
+  }
+  return max;
 }
 
 /**

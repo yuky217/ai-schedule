@@ -1,9 +1,9 @@
 /**
  * 手动排序（纯逻辑）。
  *
- * 只有两个动作：把某一项挪到某个位置、以及把整份列表换算成写库用的权重。
- * 界面上"拖到哪儿"那个判断也放在这里，是为了能用用例把边界（拖到最前/最后/原地不动）
- * 钉死 —— 拖拽的坐标换算最容易出现"差一格"的 off-by-one。
+ * 两个动作：把某一项挪到某个位置、把整份列表换算成写库用的权重。
+ * 手指位移到落点的换算**不在这里** —— 它跟行高、是否拖出、有没有投递区
+ * 都有关，已经收在 `components/reorderable-list` 里（那里才知道自己长什么样）。
  */
 
 /** 把 from 位置的元素移到 to 位置（to 是移动后的目标下标），返回新数组 */
@@ -16,23 +16,6 @@ export function moveItem<T>(items: readonly T[], from: number, to: number): T[] 
   if (moved === undefined) return next;
   next.splice(clamped, 0, moved);
   return next;
-}
-
-/**
- * 手指位移 → 落点下标。
- *
- * 向上/向下都是"跨过多少个行高"，用四舍五入而不是取整：
- * 拖到相邻行的中线上就该换位，取整会让手感迟半格。
- */
-export function dropIndex(
-  originIndex: number,
-  deltaY: number,
-  rowHeight: number,
-  count: number,
-): number {
-  if (rowHeight <= 0) return originIndex;
-  const shifted = originIndex + Math.round(deltaY / rowHeight);
-  return Math.max(0, Math.min(count - 1, shifted));
 }
 
 /**

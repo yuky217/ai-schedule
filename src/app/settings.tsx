@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useEffect, useState, type ReactNode } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Alert, AppState, Platform, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
 import { AI_CAPABILITIES } from '@/capabilities/types';
 import { Card } from '@/components/card';
@@ -12,6 +12,7 @@ import { exportBackup } from '@/data/backup/export';
 import { restoreFromPicker } from '@/data/backup/import';
 import { SCHEMA_VERSION } from '@/data/db/schema';
 import { getReminderSupport, sendTestReminder, type ReminderSupport } from '@/entry/notifications';
+import { disableOverlay, enableOverlay, getOverlaySupport, type OverlaySupport } from '@/entry/overlay';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
@@ -49,6 +50,49 @@ export default function SettingsScreen() {
       alive = false;
     };
   }, []);
+
+  // 悬浮窗同理，而且它的状态还可能被"系统设置"从外面改掉 ——
+  // 所以从授权页回来（AppState 变 active）必须重新探一次，不能只信本地记的开关。
+  const [overlay, setOverlay] = useState<OverlaySupport | null>(null);
+  /** 刚才是去授权页了：回来就接着把气泡开起来，不让用户再点一次 */
+  const resumeOverlayRef = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    void getOverlaySupport().then((support) => {
+      if (alive) setOverlay(support);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      if (resumeOverlayRef.current) {
+        resumeOverlayRef.current = false;
+        void enableOverlay().then(setOverlay);
+        return;
+      }
+      void getOverlaySupport().then(setOverlay);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  const handleToggleOverlay = async (value: boolean) => {
+    // 先记下意愿：这样即使这次没开成（比如授权页退出来了），下次启动也还会再试
+    settings.setOverlayEnabled(value);
+    if (!value) {
+      setOverlay(await disableOverlay());
+      return;
+    }
+    const support = overlay ?? (await getOverlaySupport());
+    if (support.status === 'unavailable') return;
+    if (support.status === 'need-permission') resumeOverlayRef.current = true;
+    setOverlay(await enableOverlay());
+  };
 
   const handleTestReminder = async () => {
     setTestResult(null);
@@ -183,12 +227,28 @@ export default function SettingsScreen() {
             />
           }
         />
+
+        {/*
+          课表的开关放在"基础"里而不是"高级功能"后面：它不高级，只是
+          "你有没有课"这个事实的开关。关掉之后日历里既没有「课」那一栏，
+          日/周视图也不再画"这段时间有课"。
+        */}
+        <Row
+          title="课表"
+          hint="关掉后日历不再显示「课」，日/周视图也不再标出上课时段"
+          right={
+            <Switch
+              value={settings.timetableEnabled}
+              onValueChange={settings.setTimetableEnabled}
+            />
+          }
+        />
       </Card>
 
       {/* ---------------- 提醒 ---------------- */}
       <Card
         title="提醒"
-        hint="有明确时间的任务才会提醒，没时间的任务永远不打扰你">
+        hint="定了时间的任务、上课和考试都会提醒">
         <Row
           title="提醒状态"
           hint={reminder ? reminder.message : '正在检测…'}
@@ -217,16 +277,32 @@ export default function SettingsScreen() {
 
         {reminder?.inExpoGo ? (
           <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-            当前跑在 Expo Go 里。官方从 SDK 53 起只禁止了「远程推送」，本地提醒仍然可用；
-            这里试发能弹出来就说明提醒是好的。
+            当前跑在 Expo Go 里；试发能弹出来就说明提醒是好的。
           </ThemedText>
         ) : null}
       </Card>
 
+      {/* ---------------- 悬浮窗（只有 Android 独立版有） ---------------- */}
+      {Platform.OS === 'android' ? (
+        <Card title="悬浮窗" hint="一颗小球浮在所有应用之上，点一下直接进记录">
+          <Row
+            title="悬浮球"
+            hint={overlay ? overlay.message : '正在检测…'}
+            right={
+              <Switch
+                value={overlay?.showing ?? false}
+                disabled={overlay?.status === 'unavailable'}
+                onValueChange={handleToggleOverlay}
+              />
+            }
+          />
+        </Card>
+      ) : null}
+
       {/* ---------------- 高级功能（默认关闭） ---------------- */}
       <Card
         title="高级功能"
-        hint="默认关闭。不开也不会影响日历和清单，它们本来就能独立用">
+        hint="默认关闭，不影响日历和清单">
         <Row
           title="启用高级功能"
           hint="开启后才会看到 AI 能力等进阶选项"
@@ -242,7 +318,6 @@ export default function SettingsScreen() {
           <>
             <Row
               title="AI 能力"
-              hint="AI 是能力和入口，不是界面本身"
               right={<Switch value={settings.aiEnabled} onValueChange={settings.setAiEnabled} />}
             />
 
@@ -351,7 +426,7 @@ export default function SettingsScreen() {
           本地库版本 v{SCHEMA_VERSION} · {Platform.OS}
         </ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-          架构分三层：入口层（首页 / 悬浮 / 语音 / 截图 / 转发）、本体层（收集箱 · 清单 · 日历 ·
+          架构分三层：入口层（记录 / 悬浮球）、本体层（收集箱 · 清单 · 日历 ·
           想法库 · 项目目标）、能力层（AI，可开关）。
         </ThemedText>
       </Card>

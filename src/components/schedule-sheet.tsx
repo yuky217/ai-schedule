@@ -2,7 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { DateTimePickerBody, describeDraft, draftFromTask, draftToTime, type DateTimeDraft } from '@/components/date-time-picker';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
@@ -22,14 +21,14 @@ import { useTheme } from '@/hooks/use-theme';
  * 不强制填表。选中的预设由领域层 `buildScheduleTime` 换算成 TaskTime。
  * 安排成功的任务会自动离开收集箱、落到日历。
  *
- * 预设覆盖不到的情形走「自定义时间…」：自己选哪天 + 时/分双滚轮（精确到 1 分钟），
- * 并可选"日程（几点开始）"还是"截止（几点前）"。这块 UI 与首页输入框的
- * 快捷设置按钮共用 `components/date-time-picker.tsx`，避免两处走样。
+ * 这里**没有**"自定义时间"这一层：需要自己挑哪天几点的场景，任务详情页的
+ * 时间卡里那张调整栏是常驻的（见 `components/date-time-picker.tsx`），
+ * 多一层入口只会让人多按一下。本面板的职责只剩"预设 + 提醒 / 重复"。
  *
  * 提醒提前量与重复规则是面板里的两个设置行：点开换一层 chips，选择后
  * 立即写回任务（不动时间），安排过时间的任务改完会自动重排通知。
  */
-export type SheetView = 'main' | 'custom' | 'reminder' | 'repeat';
+export type SheetView = 'main' | 'reminder' | 'repeat';
 
 export interface ScheduleSheetProps {
   /** 正在安排的任务；null = 关闭 */
@@ -54,36 +53,17 @@ export function ScheduleSheet({
 }: ScheduleSheetProps) {
   const theme = useTheme();
   const [view, setView] = useState<SheetView>(initialView);
-  const [draft, setDraft] = useState<DateTimeDraft>(() => draftFromTask({ time: { attribute: 'none' } }));
-  /** 滚轮按住时关掉本面板的滚动（见 TimeWheel 文件头第 1 条） */
-  const [wheelLocked, setWheelLocked] = useState(false);
 
   // 任务切换 / 关闭 / 换入口时回到指定层，避免下次打开还停在上次的位置
   useEffect(() => {
     setView(initialView);
   }, [task?.id, task !== null, initialView]);
 
-  // 进自定义层时把草稿初始化成"这条任务现在的时间"，没有时间则给个友好默认值（今天 09:00）
-  useEffect(() => {
-    if (view !== 'custom' || !task) return;
-    setDraft(draftFromTask(task));
-    // 只在"进入自定义层"这一刻初始化，之后的编辑不能被覆盖
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, task?.id]);
-
   const handlePick = (presetId: string) => {
     if (!task) return;
     const preset = SCHEDULE_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     onSchedule(task, buildScheduleTime(preset));
-    onClose();
-  };
-
-  const handleCustomConfirm = () => {
-    if (!task) return;
-    const time = draftToTime(draft);
-    if (!time) return;
-    onSchedule(task, time);
     onClose();
   };
 
@@ -104,11 +84,9 @@ export function ScheduleSheet({
       ? '提醒时间'
       : view === 'repeat'
         ? '重复'
-        : view === 'custom'
-          ? '自定义时间'
-          : task
-            ? task.title
-            : '';
+        : task
+          ? task.title
+          : '';
 
   return (
     <Modal visible={task !== null} transparent animationType="slide" onRequestClose={onClose}>
@@ -131,7 +109,6 @@ export function ScheduleSheet({
 
           <ScrollView
             style={styles.body}
-            scrollEnabled={!wheelLocked}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled">
             {view === 'main' ? (
@@ -167,24 +144,6 @@ export function ScheduleSheet({
                   ))}
                 </View>
 
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setView('custom')}
-                  style={({ pressed }) => [
-                    styles.chip,
-                    styles.chipWide,
-                    {
-                      backgroundColor: pressed
-                        ? theme.backgroundSelected
-                        : theme.backgroundElement,
-                    },
-                  ]}>
-                  <Ionicons name="options-outline" size={16} color={theme.textSecondary} />
-                  <ThemedText type="small" style={styles.chipText}>
-                    自定义时间…
-                  </ThemedText>
-                </Pressable>
-
                 <View style={styles.settingRows}>
                   {onSetReminder ? (
                     <SettingRow
@@ -206,14 +165,6 @@ export function ScheduleSheet({
                   ) : null}
                 </View>
               </>
-            ) : null}
-
-            {view === 'custom' ? (
-              <DateTimePickerBody
-                value={draft}
-                onChange={setDraft}
-                onScrollLockChange={setWheelLocked}
-              />
             ) : null}
 
             {view === 'reminder'
@@ -249,17 +200,6 @@ export function ScheduleSheet({
                 })
               : null}
           </ScrollView>
-
-          {view === 'custom' ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleCustomConfirm}
-              style={[styles.primary, { backgroundColor: theme.text }]}>
-              <ThemedText type="smallBold" style={{ color: theme.background }}>
-                设为 {describeDraft(draft)}
-              </ThemedText>
-            </Pressable>
-          ) : null}
 
           <Pressable
             accessibilityRole="button"
@@ -366,7 +306,6 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.three,
     flexGrow: 1,
   },
-  chipWide: { flexGrow: 0, marginTop: Spacing.two, justifyContent: 'center' },
   chipText: { flexShrink: 1 },
   settingRows: { gap: Spacing.two, marginTop: Spacing.two },
   settingRow: {
@@ -391,12 +330,6 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     borderRadius: Spacing.three,
     marginBottom: Spacing.two,
-  },
-  primary: {
-    alignItems: 'center',
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.three,
-    marginTop: Spacing.two,
   },
   cancel: {
     alignItems: 'center',

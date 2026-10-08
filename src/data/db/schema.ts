@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -23,6 +23,7 @@ export const TABLES = {
   checkins: 'task_checkins',
   courses: 'courses',
   terms: 'terms',
+  events: 'events',
   meta: 'app_meta',
 } as const;
 
@@ -166,6 +167,23 @@ CREATE TABLE IF NOT EXISTS ${TABLES.courses} (
   ${COMMON_COLUMNS}
 );
 
+-- 固定日程（考试、纪念日这类"到点发生"的事）：与任务并列的独立实体。
+-- 为什么不塞进任务表：考试没有"完成态"（考完不需要勾，勾了反而要处理
+-- "完成的考试还算不算日程"这种怪问题），也没有专注时长；硬塞进去会污染
+-- 收集箱/回顾的口径。纪念日目前仍在 marks 表（它是"倒数几天的标记"，
+-- 不带时刻、不进日历时间轴），将来若要统一再迁，不急着动老数据。
+CREATE TABLE IF NOT EXISTS ${TABLES.events} (
+  id        TEXT PRIMARY KEY NOT NULL,
+  kind      TEXT NOT NULL,
+  title     TEXT NOT NULL,
+  location  TEXT,
+  note      TEXT,
+  start_at  TEXT NOT NULL,
+  end_at    TEXT,
+  source    TEXT NOT NULL DEFAULT 'manual',
+  ${COMMON_COLUMNS}
+);
+
 -- 学期：把"第几周"落到具体日期的唯一依据，也存作息表（第几节 = 几点）。
 -- 做成表而不是塞进 app_meta：**它是用户数据，必须跟着备份走** ——
 -- 藏在 meta 里的话，恢复备份之后学期起始日没了，整张课表算不出一周是第几周，
@@ -203,6 +221,7 @@ export const INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_focus_started     ON ${TABLES.focusSessions}(started_at, deleted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_checkins_task     ON ${TABLES.checkins}(task_id, day_key, deleted_at)`,
   `CREATE INDEX IF NOT EXISTS idx_courses_title     ON ${TABLES.courses}(title, deleted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_events_start      ON ${TABLES.events}(start_at, deleted_at)`,
 ];
 
 /**
@@ -233,4 +252,9 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
    * 老库升级不需要任何 ALTER —— 这里留空数组是为了让版本号照常推进。
    */
   4: [],
+  /**
+   * v5 = events 表（固定日程，第一批数据是考试）。
+   * 新表由 DDL 的 `CREATE TABLE IF NOT EXISTS` 建出来，老库升级无需 ALTER。
+   */
+  5: [],
 };

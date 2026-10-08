@@ -1,60 +1,56 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Pressable } from 'react-native';
 
+import { CaptureSuccess } from '@/components/capture-success';
 import { Card } from '@/components/card';
 import { CaptureInput } from '@/components/capture-input';
+import { type DateTimePreset } from '@/components/date-time-picker';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
-import { Spacing } from '@/constants/theme';
-import { TimeAttribute } from '@/domain/enums';
 import type { CaptureRoute } from '@/domain/routing';
-import type { TaskTime } from '@/domain/task';
 import type { QuickCaptureResult } from '@/entry/quick-capture';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
-import { atTimeOn } from '@/utils/datetime';
+import { closeScreen } from '@/utils/navigation';
 
 /**
  * 快速记录（模态）。
  *
- * 这是"入口层"里信息量最大的一个入口：多加了一排时间快捷选项。
- * 但注意它仍然不问"这件事属于哪个项目"——那是收集箱和后面的流程该干的事。
+ * 界面上只有输入框 + 一排 chip —— 以前"什么时候"预设单占一张卡，说的事和
+ * "时间"chip 是同一件（2026-10-07 并入）：预设挪进了时间面板顶部，点一下
+ * 即定即收；不点就是不定时间（或者交给文本自动识别）。
+ * 它仍然不问"这件事属于哪个项目"——那是收集箱和后面的流程该干的事。
+ *
+ * 记完**不换页**：大勾动效 1.6 秒自动关页（2026-10-08 用户点名撤掉结果卡 ——
+ * 那页只为说一声"成了"，还要用户再按一次关是纯负担）。× 用 closeScreen：
+ * 直接开网址 / 深链冷启动时没有历史栈，back() 是空操作。
  */
 
-interface TimePreset {
-  key: string;
-  label: string;
-  build: () => TaskTime | null;
-}
-
-const TIME_PRESETS: readonly TimePreset[] = [
-  { key: 'none', label: '不定时间', build: () => null },
+const CAPTURE_TIME_PRESETS: readonly DateTimePreset[] = [
   {
     key: 'today-evening',
     label: '今天 18:00',
-    build: () => ({
-      attribute: TimeAttribute.Fixed,
-      startAt: atTimeOn(0, 18),
-      endAt: atTimeOn(0, 19),
-    }),
+    build: () => draftAt(0, 18 * 60, 'fixed'),
   },
   {
     key: 'tomorrow-morning',
     label: '明天 09:00',
-    build: () => ({
-      attribute: TimeAttribute.Fixed,
-      startAt: atTimeOn(1, 9),
-      endAt: atTimeOn(1, 10),
-    }),
+    build: () => draftAt(1, 9 * 60, 'fixed'),
   },
   {
     key: 'tomorrow-due',
     label: '明天 18:00 截止',
-    build: () => ({ attribute: TimeAttribute.Deadline, dueAt: atTimeOn(1, 18) }),
+    build: () => draftAt(1, 18 * 60, 'deadline'),
   },
 ];
+
+function draftAt(dayOffset: number, minutesOfDay: number, attribute: 'fixed' | 'deadline') {
+  const date = new Date();
+  date.setDate(date.getDate() + dayOffset);
+  return { date, minutesOfDay, attribute };
+}
 
 const ROUTE_LABEL: Record<CaptureRoute, string> = {
   idea: '想法库',
@@ -67,11 +63,11 @@ export default function CaptureScreen() {
   const theme = useTheme();
   const capture = useAppStore((state) => state.capture);
 
-  const [presetKey, setPresetKey] = useState<string>('none');
   const [result, setResult] = useState<QuickCaptureResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const activePreset = TIME_PRESETS.find((p) => p.key === presetKey) ?? TIME_PRESETS[0];
+  /** 动效播完 / 点了一下 → 关页。closeScreen 兜底无历史栈的情况 */
+  const finish = useCallback(() => closeScreen(router), [router]);
 
   return (
     <Screen
@@ -79,36 +75,22 @@ export default function CaptureScreen() {
       subtitle="时间可以先空着，之后再安排"
       scroll
       right={
-        <Pressable hitSlop={8} onPress={() => router.back()}>
+        <Pressable hitSlop={8} onPress={() => closeScreen(router)}>
           <Ionicons name="close" size={24} color={theme.textSecondary} />
         </Pressable>
       }>
       {result ? (
-        <Card title={`已归入${ROUTE_LABEL[result.route]}`} hint={result.reason}>
-          <ThemedText>{result.title}</ThemedText>
-          {result.reminderScheduled ? (
-            <View style={styles.tipRow}>
-              <Ionicons name="notifications-outline" size={14} color={theme.textSecondary} />
-              <ThemedText type="small" themeColor="textSecondary">
-                到点会提醒你
-              </ThemedText>
-            </View>
-          ) : null}
-          <Pressable
-            onPress={() => router.back()}
-            style={({ pressed }) => [
-              styles.primaryButton,
-              { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
-            ]}>
-            <ThemedText type="smallBold" style={{ color: theme.background }}>
-              好
-            </ThemedText>
-          </Pressable>
-        </Card>
+        <CaptureSuccess
+          label={`已归入${ROUTE_LABEL[result.route]}`}
+          title={result.title}
+          hint={result.reminderScheduled ? '到点会提醒你' : undefined}
+          onDone={finish}
+        />
       ) : (
         <>
           <CaptureInput
             autoFocus
+            timePresets={CAPTURE_TIME_PRESETS}
             submitLabel="记下"
             placeholder="比如：周五下午三点开会 / 想做一个只记灵感的 App"
             onSubmit={async (text, options) => {
@@ -117,7 +99,8 @@ export default function CaptureScreen() {
                 const captured = await capture({
                   text,
                   markedAsInspiration: options.asIdea,
-                  time: options.asIdea ? null : activePreset.build(),
+                  // 用户在时间面板设过就按他的；没设（undefined）就交给文本自动识别
+                  time: options.asIdea ? null : options.time,
                 });
                 setResult(captured);
               } catch (err) {
@@ -133,52 +116,8 @@ export default function CaptureScreen() {
               </ThemedText>
             </Card>
           ) : null}
-
-          <Card title="什么时候" hint="选了时间就会自动落到日历并提醒">
-            <View style={styles.chips}>
-              {TIME_PRESETS.map((preset) => {
-                const active = preset.key === presetKey;
-                return (
-                  <Pressable
-                    key={preset.key}
-                    onPress={() => setPresetKey(preset.key)}
-                    style={[
-                      styles.chip,
-                      {
-                        backgroundColor: active ? theme.text : theme.background,
-                        borderColor: active ? theme.text : theme.backgroundSelected,
-                      },
-                    ]}>
-                    <ThemedText
-                      type="small"
-                      style={{ color: active ? theme.background : theme.text }}>
-                      {preset.label}
-                    </ThemedText>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </Card>
         </>
       )}
     </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  chip: {
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  tipRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  primaryButton: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
-    marginTop: Spacing.one,
-  },
-});

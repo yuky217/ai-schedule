@@ -22,14 +22,23 @@ import { ThemedText } from '@/components/themed-text';
 import { TimetableView } from '@/components/timetable-view';
 import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
-import { weekIndexOf, type Course, type CourseSlot } from '@/domain/course';
+import {
+  coursesOnDate,
+  moveSession,
+  sessionKey,
+  weekIndexOf,
+  type Course,
+  type CourseSlot,
+} from '@/domain/course';
+import { describeEvent, type CalEvent } from '@/domain/event';
 import { TaskStatus } from '@/domain/enums';
-import { buildPlacedTime, buildRescheduledTime, buildRetimedTime } from '@/domain/schedule-presets';
+import { buildPlacedTime, buildRetimedSpanTime, buildRetimedTime, buildTimeOnDay } from '@/domain/schedule-presets';
 import { taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { useCrossDayDrag } from '@/hooks/use-cross-day-drag';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
+import { useSettings } from '@/state/settings-store';
 import { toDate } from '@/utils/datetime';
 
 /**
@@ -40,7 +49,13 @@ import { toDate } from '@/utils/datetime';
  * - 周：7 天列 × 小时轴的时间网格，**长按任务块横拖换天、纵拖换时刻**；
  *   跨天落下后自动切到那天的日视图，接着微调；点表头也能直接进某天
  * - 日：看当天时间轴，**长按任务块上下拖**即改时刻（吸 15 分钟刻度）
- * - 课：一周的课表（周几 × 第几节），课块点一下进课程详情
+ * - 课：一周的课表（周几 × 第几节），课块点一下进课程详情，
+ *   **长按拖动课块**换星期/节次
+ *
+ * **课是背景，不是日程**：日/周视图里会把当天的课画成虚线带子（点不动、
+ * 不参与分道），只回答"这段时间有课"；它是用户可以在设置里整个关掉的一层
+ * （`settings.timetableEnabled`）。任务排在课上也丝毫不冲突 —— 同刻多件事
+ * 本来就允许，分道算法在 `domain/lane-layout`。
  *
  * 前三视图手势全部交给 react-native-gesture-handler，动画全部交给 react-native-reanimated：
  * - 手势在原生层识别（长按拾起 / 拖拽 / 翻页互不抢），单击仍然照常触发按钮；
@@ -60,6 +75,11 @@ const PAN_THRESHOLD = 56;
 const VELOCITY_THRESHOLD = 350;
 /** 翻页时新旧内容错位的距离 */
 const PAGE_OFFSET = 44;
+/**
+ * 月视图里"收集箱抽屉"最多列出几行。
+ * 再多一行，源头和日期格就凑不到同一屏里了 —— 而拖拽只能落到看得见的格子上。
+ */
+const INBOX_DRAG_LIMIT = 5;
 
 const dayKey = (d: Date): string => format(d, 'yyyy-MM-dd');
 const keyToDate = (key: string): Date => {
@@ -72,11 +92,29 @@ export default function CalendarScreen() {
   const router = useRouter();
   const loadScheduledBetween = useAppStore((state) => state.loadScheduledBetween);
   const dataVersion = useAppStore((state) => state.dataVersion);
-  const completeTask = useAppStore((state) => state.completeTask);
   const scheduleTask = useAppStore((state) => state.scheduleTask);
   // 课表的数据不走"按可见范围查"，它整学期就那十几门课，直接拿 store 里的
   const courses = useAppStore((state) => state.courses);
   const term = useAppStore((state) => state.term);
+  /**
+   * 收集箱（顶层、未完成、完全没时间的那些）也放这一页当一个**拖拽源头**。
+   *
+   * 为什么要放在日历里：想"排到具体哪天"时，用户脑子里对照的是**日历本身**
+   * ——这天有没有课、那天是不是周末。在收集箱里拖只能看到一条两周的日期带，
+   * 看不到这张月历。而跨 Tab 拖拽在手机上不成立（切页那一下手势就被系统掐断了），
+   * 所以只能把源头搬进日历，不能让手指把条目拖过去。
+   */
+  const inbox = useAppStore((state) => state.inbox);
+  // 考试同理：一学期十来场，全量放 store，页面按日期分桶
+  const events = useAppStore((state) => state.events);
+  const saveCourse = useAppStore((state) => state.saveCourse);
+  /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
+  const timetableOn = useSettings((state) => state.timetableEnabled);
+
+  const segments = useMemo(
+    () => SEGMENTS.filter((segment) => segment.key !== 'timetable' || timetableOn),
+    [timetableOn],
+  );
 
   const [mode, setMode] = useState<CalendarMode>('month');
   /** 月视图 = 正在看的月份；周视图 = 正在看的周（任取周内一天） */
@@ -87,6 +125,15 @@ export default function CalendarScreen() {
   const [timelineDragging, setTimelineDragging] = useState(false);
 
   const containerRef = useRef<View>(null);
+
+  /*
+    课表被关掉时，用户如果正站在「课」那一栏上，得把他接住 ——
+    否则分段控件里没有「课」，页面却还停在课表上，看着像卡死了。
+    退回周视图（离课表最近的"看时间"的视图），而不是月视图。
+  */
+  useEffect(() => {
+    if (!timetableOn && mode === 'timetable') setMode('week');
+  }, [mode, timetableOn]);
 
   /* ---------------- 数据：只读"当前看得见的那一段" ---------------- */
 
@@ -118,11 +165,34 @@ export default function CalendarScreen() {
   }, [loadScheduledBetween, rangeKey, dataVersion]);
 
   const openTask = useCallback((task: Task) => router.push(`/task/${task.id}`), [router]);
-  const completeById = useCallback(
+  const toggleTaskDone = useAppStore((state) => state.toggleTaskDone);
+  const toggleById = useCallback(
     (task: Task) => {
-      void completeTask(task.id);
+      void toggleTaskDone(task.id);
     },
-    [completeTask],
+    [toggleTaskDone],
+  );
+
+  /**
+   * 长按拖拽结束后紧跟着的那次 click 必须吞掉（和收集箱同一个坑）：
+   * web 上 RNGH 的 Pan 拖完松手，浏览器会在原坐标补发一次 click ——
+   * 实测"长按一行拖去别的日期"会顺手跳进详情页、拖完落在勾选圈上还会误勾。
+   * 用时间戳：拖拽一结束就记时刻，500ms 内的点击一律忽略。
+   */
+  const longPressAt = useRef(0);
+  const guarded = useCallback(
+    (action: (task: Task) => void) =>
+      (task: Task) => {
+        if (Date.now() - longPressAt.current < 500) return;
+        action(task);
+      },
+    [],
+  );
+
+  const guardedOpen = useCallback((task: Task) => guarded(openTask)(task), [guarded, openTask]);
+  const guardedToggle = useCallback(
+    (task: Task) => guarded(toggleById)(task),
+    [guarded, toggleById],
   );
 
   /* ---------------- 视图切换动画 ---------------- */
@@ -174,7 +244,11 @@ export default function CalendarScreen() {
 
   /** 点课程块 → 进课程详情（跟"点行/点块 = 进详情"同一条规矩） */
   const openCourseSlot = useCallback(
-    (slot: CourseSlot) => router.push(`/course/${slot.course.id}`),
+    (slot: CourseSlot) => {
+      // 拖完课块松手时 web 会补发一次 click —— 跟任务共用同一个 500ms 窗口
+      if (Date.now() - longPressAt.current < 500) return;
+      router.push(`/course/${slot.course.id}`);
+    },
     [router],
   );
   /** 点"没有上课时间"清单里的一门 → 也进课程详情（在那儿补时间） */
@@ -183,7 +257,10 @@ export default function CalendarScreen() {
     [router],
   );
   const openImport = useCallback(() => router.push('/import-courses'), [router]);
+  const openImportExams = useCallback(() => router.push('/import-exams'), [router]);
   const openAddCourse = useCallback(() => router.push('/add-course'), [router]);
+  /** 课表的"底座"：开学日与作息表。放在课表页脚，不藏进设置页（见 timetable-view 注释） */
+  const openTermSettings = useCallback(() => router.push('/term-settings'), [router]);
 
   /* ---------------- 跨天拖拽改期（月视图） ---------------- */
 
@@ -210,12 +287,45 @@ export default function CalendarScreen() {
     return { countsByDay: counts, tasksByDay: tasks };
   }, [scheduled]);
 
+  /**
+   * 考试按本地日分桶。月视图的圆点把它们也算进去（"这天有安排"就该点出来），
+   * 日视图在时间轴上方单列一张卡 —— 考试不带完成态，混进任务行会被当成
+   * "一条不能勾的怪任务"。
+   */
+  const examsByDay = useMemo(() => {
+    const map = new Map<string, CalEvent[]>();
+    for (const event of events) {
+      if (event.deletedAt) continue;
+      const d = new Date(event.startAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = dayKey(d);
+      const bucket = map.get(key) ?? [];
+      bucket.push(event);
+      map.set(key, bucket);
+    }
+    return map;
+  }, [events]);
+
+  const monthCounts = useMemo(() => {
+    const merged = new Map(countsByDay);
+    for (const key of examsByDay.keys()) merged.set(key, (merged.get(key) ?? 0) + 1);
+    return merged;
+  }, [countsByDay, examsByDay]);
+
+  const selectedExams = examsByDay.get(dayKey(selected)) ?? [];
+
   const handleDrop = useCallback(
     (task: Task, key: string) => {
       const targetDate = keyToDate(key);
       const anchor = taskAnchor(task);
       if (anchor && isSameDay(targetDate, new Date(anchor))) return; // 拖回原格 = 取消
-      const time = buildRescheduledTime(task, targetDate);
+      /**
+       * 口径只有一份：`buildTimeOnDay` —— 已经有时间的换日期（时刻不动），
+       * 还没有时间的（收集箱里那些）落到那天的 23:59 作为截止。
+       * 以前这里直接调 `buildRescheduledTime`，它对没时间的任务返回 null，
+       * 所以"从收集箱拖过来"会**静默无反应** —— 看起来像拖了没生效。
+       */
+      const time = buildTimeOnDay(task, targetDate);
       if (time) void scheduleTask(task.id, time);
     },
     [scheduleTask],
@@ -223,6 +333,17 @@ export default function CalendarScreen() {
 
   const { draggingTask, dropTargetKey, registerCell, gestureFor, ghostStyle, ghostVisible } =
     useCrossDayDrag({ containerRef, onDrop: handleDrop });
+
+  /**
+   * 拖拽起止都记时刻：拖得再久，松手后那次 click 也落在 500ms 窗口内。
+   * 周视图 / 日视图的拖块走 timelineDragging，同一条时间线。
+   */
+  const prevDragging = useRef(false);
+  useEffect(() => {
+    const dragging = draggingTask !== null || timelineDragging;
+    if (prevDragging.current !== dragging) longPressAt.current = Date.now();
+    prevDragging.current = dragging;
+  }, [draggingTask, timelineDragging]);
 
   /**
    * 周视图拖任务时置 1：翻页手势（横划换周）看到它就不接管。
@@ -320,10 +441,50 @@ export default function CalendarScreen() {
 
   const selectedTasks = tasksByDay.get(dayKey(selected)) ?? [];
 
+  /**
+   * 日/周视图里的"这段时间有课"背景带。
+   *
+   * 换算是 `coursesOnDate`（学期周次 + 作息表都在里面），日历不自己算时刻 ——
+   * 否则同一节课在课表里是 10:00-11:40、在日历里变成别的，用户第一反应是
+   * "数据串了"。课表关掉时**连背景带一起不算**，省掉一圈无意义的计算。
+   */
+  const courseSlotsForDay = useMemo(
+    () => (timetableOn && term ? coursesOnDate(courses, selected, term) : []),
+    [courses, selected, term, timetableOn],
+  );
+
+  const courseSlotsByDay = useMemo(() => {
+    const map = new Map<string, CourseSlot[]>();
+    if (!timetableOn || !term) return map;
+    for (const day of weekDays) {
+      const slots = coursesOnDate(courses, day, term);
+      if (slots.length) map.set(dayKey(day), slots);
+    }
+    return map;
+  }, [courses, term, timetableOn, weekDays]);
+
+  /** 课表里长按拖课块：改的是被抓住的那一次安排（换星期/节次，跨度与周次不动） */
+  const handleMoveSlot = useCallback(
+    async (slot: CourseSlot, weekday: number, startPeriod: number) => {
+      const next = moveSession(slot.course, sessionKey(slot.session), weekday, startPeriod);
+      if (next) await saveCourse(next);
+    },
+    [saveCourse],
+  );
+
   /** 日视图拖块改时刻：把分钟数写回实体（保持任务原本的时间属性） */
   const handleRetime = useCallback(
     async (task: Task, minutesOfDay: number) => {
       const time = buildRetimedTime(task, minutesOfDay);
+      if (time) await scheduleTask(task.id, time);
+    },
+    [scheduleTask],
+  );
+
+  /** 日视图拽上下边改时段：始末一起写回（从此有了 endAt，块的高度就真实了） */
+  const handleResize = useCallback(
+    async (task: Task, startMinutes: number, endMinutes: number) => {
+      const time = buildRetimedSpanTime(task, startMinutes, endMinutes);
       if (time) await scheduleTask(task.id, time);
     },
     [scheduleTask],
@@ -349,14 +510,19 @@ export default function CalendarScreen() {
               isSameDay(selected, now) ? ' · 今天' : ''
             }`;
 
+  /*
+    图例只留"看不出来的手势"。翻页、切视图、点课程块进详情都有可见的按钮或箭头
+    —— 那些不用教（2026-10-07 从三句长说明压到一句十来字）。
+    参考滴答清单：它的列表拖拽同样不做文字说明，靠手势本身和肌肉记忆。
+  */
   const legend =
     mode === 'month'
-      ? '长按任意一行拖到日期格上可改期；左右滑切换月份'
+      ? '长按一行拖到日期格：改期或安排到那天'
       : mode === 'week'
-        ? '长按任务块左右拖换天、上下拖换时刻；松手跨天会自动进那天的日视图；点表头也能进某天'
+        ? '长按块横拖换天、纵拖换时刻'
         : mode === 'timetable'
-          ? '左右滑看整周的表格；点课程块看详情；用 ‹ › 切换周次'
-          : '长按任务块上下拖可改时刻；点块进详情；左右滑切换日期';
+          ? '长按拖课块换星期/节次 · 点一下看详情'
+          : '长按块拖动改时刻 · 拽上下边改时长';
 
   /**
    * 灰掉的是"已经结束"的两类：做完的、以及已经过去的时间段（上周的会）。
@@ -381,7 +547,7 @@ export default function CalendarScreen() {
             </Pressable>
             <NavButton label="›" onPress={() => pageBy(1)} />
           </View>
-          <Segmented value={mode} onChange={changeMode} />
+          <Segmented value={mode} onChange={changeMode} segments={segments} />
         </View>
 
         <GestureDetector gesture={pagerGesture}>
@@ -393,29 +559,76 @@ export default function CalendarScreen() {
                     month={cursor}
                     selected={selected}
                     onSelectDay={setSelected}
-                    countsByDay={countsByDay}
+                    countsByDay={monthCounts}
                     registerCell={registerCell}
                     dropTargetKey={dropTargetKey}
                   />
                   <Card
-                    title={`${isSameDay(selected, now) ? '今天' : format(selected, 'M月d日')} · ${selectedTasks.length} 件`}
+                    title={`${isSameDay(selected, now) ? '今天' : format(selected, 'M月d日')} · ${selectedTasks.length + selectedExams.length} 件`}
                     hint={selectedTasks.length ? '长按任一行，拖到上面的日期格即可改期' : undefined}>
+                    {selectedExams.map((event) => (
+                      <View key={event.id} style={styles.examRow}>
+                        <ThemedText type="smallBold" numberOfLines={1} style={styles.examTitle}>
+                          {event.title}
+                        </ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {describeEvent(event)}
+                        </ThemedText>
+                      </View>
+                    ))}
                     {selectedTasks.length ? (
                       selectedTasks.map((task) => (
                         <DraggableTaskRow
                           key={task.id}
                           task={task}
                           gestureFor={gestureFor}
-                          onOpen={openTask}
-                          onComplete={completeById}
+                          onOpen={guardedOpen}
+                          onComplete={guardedToggle}
                         />
                       ))
-                    ) : (
+                    ) : selectedExams.length ? null : (
                       <ThemedText type="small" themeColor="textSecondary">
                         这一天没有安排
                       </ThemedText>
                     )}
                   </Card>
+                  {/*
+                    收集箱抽屉：这一页的第二个拖拽源头，落点就是上面那些日期格。
+                    为什么放在这一页：想"排到具体哪天"时，用户眼睛对照的是**月历本身**
+                    —— 哪天有课、哪天快到周末。在收集箱里拖只有一条两周的日期带，看不到这张月历。
+                    而跨 Tab 拖拽在手机上不成立（切页那一下手势就被系统掐断了），
+                    所以只能把源头搬进日历，不能让手指把条目拖过去。
+
+                    为什么放在最下面、而不是紧贴日期格：紧贴着会把"点一天看那天的事"
+                    整块挤下屏幕，而收集箱非空是常态。拖拽只要求源头和格子同屏 ——
+                    排期时目标那天通常本来就空，这时整页够短，两者都在屏幕上。
+                    显示上限 INBOX_DRAG_LIMIT 行也是同一个原因。
+                  */}
+                  {inbox.length ? (
+                    <Card
+                      title={`收集箱 · ${inbox.length} 件`}
+                      hint="长按一行，拖到上面的日期格就安排到那天">
+                      {inbox.slice(0, INBOX_DRAG_LIMIT).map((task) => (
+                        <DraggableTaskRow
+                          key={task.id}
+                          task={task}
+                          gestureFor={gestureFor}
+                          onOpen={guardedOpen}
+                          onComplete={guardedToggle}
+                        />
+                      ))}
+                      {inbox.length > INBOX_DRAG_LIMIT ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => router.push('/inbox')}
+                          style={({ pressed }) => [styles.moreRow, { opacity: pressed ? 0.6 : 1 }]}>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            还有 {inbox.length - INBOX_DRAG_LIMIT} 件 · 去收集箱
+                          </ThemedText>
+                        </Pressable>
+                      ) : null}
+                    </Card>
+                  ) : null}
                 </>
               ) : null}
 
@@ -423,7 +636,8 @@ export default function CalendarScreen() {
                 <CalendarWeek
                   days={weekDays}
                   tasksByDay={tasksByDay}
-                  onSelectTask={openTask}
+                  courseSlotsByDay={courseSlotsByDay}
+                  onSelectTask={guardedOpen}
                   onPlace={handlePlace}
                   onOpenDay={focusDay}
                   onDraggingChange={setTimelineDragging}
@@ -432,14 +646,32 @@ export default function CalendarScreen() {
               ) : null}
 
               {mode === 'day' ? (
-                <CalendarDay
-                  date={selected}
-                  tasks={selectedTasks}
-                  onSelectTask={openTask}
-                  onCompleteTask={completeById}
-                  onRetime={handleRetime}
-                  onDraggingChange={setTimelineDragging}
-                />
+                <>
+                  {selectedExams.length ? (
+                    <Card title={`考试 · ${selectedExams.length} 场`} hint="考试不带完成态，到点就是它">
+                      {selectedExams.map((event) => (
+                        <View key={event.id} style={styles.examRow}>
+                          <ThemedText type="smallBold" numberOfLines={1} style={styles.examTitle}>
+                            {event.title}
+                          </ThemedText>
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {describeEvent(event)}
+                          </ThemedText>
+                        </View>
+                      ))}
+                    </Card>
+                  ) : null}
+                  <CalendarDay
+                    date={selected}
+                    tasks={selectedTasks}
+                    courseSlots={courseSlotsForDay}
+                    onSelectTask={guardedOpen}
+                    onCompleteTask={guardedToggle}
+                    onRetime={handleRetime}
+                    onResize={handleResize}
+                    onDraggingChange={setTimelineDragging}
+                  />
+                </>
               ) : null}
 
               {mode === 'timetable' ? (
@@ -450,7 +682,11 @@ export default function CalendarScreen() {
                   onSelectSlot={openCourseSlot}
                   onSelectCourse={openCourse}
                   onImport={openImport}
+                  onImportExams={openImportExams}
                   onAddCourse={openAddCourse}
+                  onOpenTerm={openTermSettings}
+                  onMoveSlot={handleMoveSlot}
+                  onDraggingChange={setTimelineDragging}
                 />
               ) : null}
             </Animated.View>
@@ -547,17 +783,20 @@ const SEGMENTS: Array<{ key: CalendarMode; label: string }> = [
 function Segmented({
   value,
   onChange,
+  segments = SEGMENTS,
   style,
 }: {
   value: CalendarMode;
   onChange: (mode: CalendarMode) => void;
+  /** 可选项；课表被关掉时调用方会少传一项（高亮块宽度跟着重算） */
+  segments?: ReadonlyArray<{ key: CalendarMode; label: string }>;
   style?: StyleProp<ViewStyle>;
 }) {
   const theme = useTheme();
   const [trackWidth, setTrackWidth] = useState(0);
   const slide = useSharedValue(0);
-  const index = Math.max(0, SEGMENTS.findIndex((s) => s.key === value));
-  const segWidth = trackWidth ? (trackWidth - 4) / SEGMENTS.length : 0;
+  const index = Math.max(0, segments.findIndex((s) => s.key === value));
+  const segWidth = trackWidth ? (trackWidth - 4) / segments.length : 0;
 
   useEffect(() => {
     slide.value = withSpring(index * segWidth, { damping: 20, stiffness: 240 });
@@ -579,7 +818,7 @@ function Segmented({
           ]}
         />
       ) : null}
-      {SEGMENTS.map((opt) => {
+      {segments.map((opt) => {
         const active = opt.key === value;
         return (
           <Pressable
@@ -638,6 +877,15 @@ const styles = StyleSheet.create({
   legend: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.two },
   legendText: { fontSize: 12, lineHeight: 18, opacity: 0.75 },
   dragRow: { width: '100%' },
+  /** 「还有 N 件 · 去收集箱」—— 居中的一行轻提示，不是主操作 */
+  moreRow: { paddingTop: Spacing.two, alignItems: 'center' },
+  examRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingVertical: Spacing.one,
+  },
+  examTitle: { flex: 1 },
   ghost: {
     position: 'absolute',
     left: 0,

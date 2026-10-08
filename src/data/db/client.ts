@@ -69,6 +69,7 @@ export async function clearAllTables(): Promise<void> {
       TABLES.marks,
       TABLES.courses,
       TABLES.terms,
+      TABLES.events,
       TABLES.tasks,
       TABLES.ideas,
       TABLES.containers,

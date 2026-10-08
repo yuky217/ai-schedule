@@ -4,6 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import {
+  DateTimePickerBody,
+  defaultDraft,
+  describeDraft,
+  draftFromTask,
+  draftToTime,
+  type DateTimeDraft,
+} from '@/components/date-time-picker';
 import { ScheduleSheet, type SheetView } from '@/components/schedule-sheet';
 import { Screen } from '@/components/screen';
 import { KIND_LABEL } from '@/components/task-row';
@@ -85,6 +93,7 @@ export default function TaskDetailScreen() {
   const loadTask = useAppStore((state) => state.loadTask);
   const updateTask = useAppStore((state) => state.updateTask);
   const completeTask = useAppStore((state) => state.completeTask);
+  const reopenTask = useAppStore((state) => state.reopenTask);
   const removeTask = useAppStore((state) => state.removeTask);
   const scheduleTask = useAppStore((state) => state.scheduleTask);
   const containers = useAppStore((state) => state.containers);
@@ -129,7 +138,16 @@ export default function TaskDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetView, setSheetView] = useState<SheetView>('main');
+  /**
+   * 时间调整栏的草稿。栏是常驻的（不再藏进"自定义"），所以页面一进来就得有一份：
+   * 先落在任务现有时间上，没有时间就给"今天 09:00"这个能直接确认的默认值。
+   */
+  const [draft, setDraft] = useState<DateTimeDraft>(() => defaultDraft());
+  /** 滚轮按住时关掉整页滚动（见 date-time-picker 文件头：外层会吃掉滚轮手势） */
+  const [wheelLocked, setWheelLocked] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  /** 低频设置（状态/类型/目标/归属/转打卡）收在这个开关后面，默认收起 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /** 输入框内容单独放，避免每次写库都重渲染整页 */
   const [title, setTitle] = useState('');
@@ -154,6 +172,7 @@ export default function TaskDetailScreen() {
       if (!alive) return;
       setTask(found);
       if (found) {
+        setDraft(draftFromTask(found));
         setTitle(found.title);
         setNote(found.note ?? '');
         setWaitingFor(found.waitingFor ?? '');
@@ -319,6 +338,15 @@ export default function TaskDetailScreen() {
     router.back();
   };
 
+  /** 撤销完成：放回待办、提醒排回去，人留在这页看得到回声 */
+  const handleReopen = async () => {
+    if (!task) return;
+    await reopenTask(task.id);
+    const fresh = await loadTask(task.id);
+    if (fresh) setTask(fresh);
+    setFlash({ icon: 'arrow-undo', message: '已放回待办，到点会照常提醒你。' });
+  };
+
   const handleDelete = async () => {
     if (!task) return;
     if (!confirmingDelete) {
@@ -338,6 +366,18 @@ export default function TaskDetailScreen() {
   /** 点预设 = 一步安排到位，不用再进面板 */
   const handlePreset = (time: TaskTime) => {
     if (!task) return;
+    setTask((current) => (current ? { ...current, time } : current));
+    // 栏里的滚轮要跟着走：否则预设刚把时间改到"明天 14:00"，
+    // 下面的调整栏还停在旧时刻，接着按一下确认就把刚定的时间顶掉了。
+    setDraft(draftFromTask({ time }));
+    void scheduleTask(task.id, time);
+  };
+
+  /** 调整栏的确认键：滚轮上选到哪就是哪 */
+  const handleApplyDraft = () => {
+    if (!task) return;
+    const time = draftToTime(draft);
+    if (!time) return;
     setTask((current) => (current ? { ...current, time } : current));
     void scheduleTask(task.id, time);
   };
@@ -364,6 +404,7 @@ export default function TaskDetailScreen() {
     const plan = planEventShift(task);
     if (!plan) return;
     setTask((current) => (current ? { ...current, time: plan.time } : current));
+    setDraft(draftFromTask({ time: plan.time }));
     void scheduleTask(task.id, plan.time);
     setFlash({
       icon: 'time-outline',
@@ -438,15 +479,85 @@ export default function TaskDetailScreen() {
   const timeText = anchor
     ? `${describeDue(anchor)} · ${formatDayTime(anchor)}`
     : '还没定时间';
+  /**
+   * 没有时间时不写第二行：卡片标题旁边那句提示已经把这件事说完了，
+   * 这里再说一遍就成了同一句话说两遍（而且"点一下"已经不成立 —— 调整栏就在下面）。
+   */
   const timeHint = anchor
     ? `${isDeadline ? '截止' : '开始'} · 提醒 ${describeReminder(task.reminderMinutesBefore)}${
         task.repeat ? ` · ${describeRepeat(task.repeat)}` : ''
       }`
-    : '点一下给它定个时间，就会落到日历';
+    : '';
+
+  /**
+   * 低频设置收起时的那一行摘要 —— 收起不等于看不见：
+   * 得让人知道里面现在是什么状态，否则每次都要点开确认一遍。
+   */
+  const statusLabel =
+    task.status === TaskStatus.Done
+      ? '已完成'
+      : task.status === TaskStatus.Doing
+        ? '进行中'
+        : task.status === TaskStatus.Waiting
+          ? '等待中'
+          : '待办';
+  const containerLabel = task.containerId
+    ? (containers.find((item) => item.id === task.containerId)?.title ?? '已归属')
+    : '不归属';
+  const settingsSummary = `${statusLabel} · ${KIND_LABEL[task.kind]} · ${containerLabel}`;
+
+  /**
+   * 常驻底栏。这两个动作都会改写这条任务，原来却要滚到页面最底部才够得到 ——
+   * 典型的"高频动作被低频设置挤到下面"。
+   */
+  const bottomBar = (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="进入专注"
+        onPress={() => router.push({ pathname: '/focus', params: { taskId: task.id } })}
+        style={({ pressed }) => [
+          styles.barGhost,
+          { borderColor: theme.backgroundSelected, opacity: pressed ? 0.6 : 1 },
+        ]}>
+        <Ionicons name="timer-outline" size={17} color={theme.text} />
+        <ThemedText type="small">专注</ThemedText>
+      </Pressable>
+
+      <Pressable
+        accessibilityRole="button"
+        onPress={() =>
+          void (isFrequency ? toggleTodayCheckin() : done ? handleReopen() : handleComplete())
+        }
+        style={({ pressed }) => [
+          styles.barPrimary,
+          { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
+        ]}>
+        <Ionicons
+          name={isFrequency ? (doneToday ? 'arrow-undo' : 'add') : done ? 'arrow-undo' : 'checkmark'}
+          size={17}
+          color={theme.background}
+        />
+        <ThemedText type="smallBold" style={{ color: theme.background }}>
+          {isFrequency
+            ? doneToday
+              ? '撤销今天'
+              : '今天打卡'
+            : done
+              ? '撤销完成'
+              : task.repeat
+                ? '完成这一次'
+                : '完成'}
+        </ThemedText>
+      </Pressable>
+    </>
+  );
 
   return (
     <Screen
       title="任务"
+      bottomBar={bottomBar}
+      scrollEnabled={!wheelLocked}
       subtitle={`${KIND_LABEL[task.kind]}${
         isFrequency
           ? ` · ${describePeriodProgress(task.repeat, task.targetOccurrences, periodCount)}`
@@ -562,6 +673,131 @@ export default function TaskDetailScreen() {
             },
           ]}
         />
+
+        {/* 专注累计：原来挂在最底部的「开始做」卡上，那里现在只剩一个底栏按钮 */}
+        {describeProgress(task) ? (
+          <ThemedText type="small" themeColor="textSecondary">
+            {describeProgress(task)}
+          </ThemedText>
+        ) : null}
+      </Card>
+
+      {/* 时间 / 提醒 / 重复 */}
+      <Card title="时间" hint={anchor ? undefined : '定个时间，它就会落到日历按时提醒你'}>
+        <View style={styles.row}>
+          <Ionicons
+            name={anchor ? (isDeadline ? 'alarm-outline' : 'time-outline') : 'calendar-outline'}
+            size={18}
+            color={theme.textSecondary}
+          />
+          <View style={styles.rowBody}>
+            <ThemedText type="smallBold">{timeText}</ThemedText>
+            {timeHint ? (
+              <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
+                {timeHint}
+              </ThemedText>
+            ) : null}
+          </View>
+        </View>
+
+        {/* 高频预设直接铺开：从收集箱点进来只要再点一下就定好了 */}
+        <View style={styles.chips}>
+          {SCHEDULE_PRESETS.map((preset) => (
+            <Pressable
+              key={preset.id}
+              accessibilityRole="button"
+              accessibilityLabel={`安排为${preset.label}`}
+              onPress={() => handlePreset(buildScheduleTime(preset))}
+              style={({ pressed }) => [
+                styles.chip,
+                {
+                  backgroundColor: pressed ? theme.backgroundSelected : theme.background,
+                  borderColor: theme.backgroundSelected,
+                },
+              ]}>
+              <Ionicons
+                name={preset.attribute === 'fixed' ? 'time-outline' : 'alarm-outline'}
+                size={13}
+                color={theme.textSecondary}
+              />
+              <ThemedText type="small">{preset.label}</ThemedText>
+            </Pressable>
+          ))}
+
+          {/* 预设兜不住的走这里：自己选哪天 + 时/分双滚轮，精确到 1 分钟。
+              常驻展开，不再有一个"自定义…"的入口 —— 要精确调时刻本来就该直接看到滚轮。 */}
+          <View style={styles.pickerBlock}>
+            <DateTimePickerBody
+              value={draft}
+              onChange={setDraft}
+              onScrollLockChange={setWheelLocked}
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`设为${describeDraft(draft)}`}
+              onPress={handleApplyDraft}
+              style={({ pressed }) => [
+                styles.applyButton,
+                { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
+              ]}>
+              <ThemedText type="smallBold" style={{ color: theme.background }}>
+                设为 {describeDraft(draft)}
+              </ThemedText>
+            </Pressable>
+          </View>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            setSheetView('reminder');
+            setSheetOpen(true);
+          }}
+          style={({ pressed }) => [
+            styles.settingRow,
+            { backgroundColor: pressed ? theme.backgroundSelected : theme.backgroundElement },
+          ]}>
+          <Ionicons name="notifications-outline" size={16} color={theme.textSecondary} />
+          <ThemedText type="small">提醒</ThemedText>
+          <View style={styles.settingValue}>
+            <ThemedText type="small" themeColor="textSecondary">
+              {describeReminder(task.reminderMinutesBefore)}
+            </ThemedText>
+            <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
+          </View>
+        </Pressable>
+        {/* 提醒是静默调度的（权限被拒、时间已过都不出声），把"排没排上"说在明处 */}
+        <ThemedText type="small" themeColor="textSecondary" style={styles.reminderNote}>
+          {describeNextFire(task)}
+        </ThemedText>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            setSheetView('repeat');
+            setSheetOpen(true);
+          }}
+          style={({ pressed }) => [
+            styles.settingRow,
+            { backgroundColor: pressed ? theme.backgroundSelected : theme.backgroundElement },
+          ]}>
+          <Ionicons name="repeat-outline" size={16} color={theme.textSecondary} />
+          <ThemedText type="small">重复</ThemedText>
+          <View style={styles.settingValue}>
+            <ThemedText type="small" themeColor="textSecondary">
+              {task.repeat ? describeRepeat(task.repeat) : '不重复'}
+            </ThemedText>
+            <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
+          </View>
+        </Pressable>
+
+        {anchor ? (
+          <Pressable accessibilityRole="button" onPress={handleClearTime} style={styles.linkRow}>
+            <ThemedText type="small" themeColor="textSecondary">
+              取消时间安排，退回收集箱
+            </ThemedText>
+          </Pressable>
+        ) : null}
       </Card>
 
       {/* 子任务：把一件事拆开，父任务进度跟着走 */}
@@ -629,121 +865,37 @@ export default function TaskDetailScreen() {
         </View>
       </Card>
 
-      {/* 时间 / 提醒 / 重复 */}
-      <Card title="时间" hint={anchor ? undefined : '定个时间，它就会落到日历按时提醒你'}>
-        <View style={styles.row}>
+      {/*
+        低频设置收在开关后面。
+        这一页以前是 9 个分区平铺，最常改的「时间」被挤到第 3 屏才看得见 ——
+        现在把"一辈子改不了几次"的收起来，收起时只剩一行摘要。
+      */}
+      <Card>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: settingsOpen }}
+          accessibilityLabel={settingsOpen ? '收起更多设置' : '展开更多设置'}
+          onPress={() => setSettingsOpen((open) => !open)}
+          style={({ pressed }) => [styles.settingsToggle, { opacity: pressed ? 0.7 : 1 }]}>
+          <Ionicons name="options-outline" size={16} color={theme.textSecondary} />
+          <View style={styles.settingsToggleBody}>
+            <ThemedText type="small">更多设置</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
+              {settingsSummary}
+            </ThemedText>
+          </View>
           <Ionicons
-            name={anchor ? (isDeadline ? 'alarm-outline' : 'time-outline') : 'calendar-outline'}
-            size={18}
+            name={settingsOpen ? 'chevron-up' : 'chevron-down'}
+            size={16}
             color={theme.textSecondary}
           />
-          <View style={styles.rowBody}>
-            <ThemedText type="smallBold">{timeText}</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
-              {timeHint}
-            </ThemedText>
-          </View>
-        </View>
-
-        {/* 高频预设直接铺开：从收集箱点进来只要再点一下就定好了 */}
-        <View style={styles.chips}>
-          {SCHEDULE_PRESETS.map((preset) => (
-            <Pressable
-              key={preset.id}
-              accessibilityRole="button"
-              accessibilityLabel={`安排为${preset.label}`}
-              onPress={() => handlePreset(buildScheduleTime(preset))}
-              style={({ pressed }) => [
-                styles.chip,
-                {
-                  backgroundColor: pressed ? theme.backgroundSelected : theme.background,
-                  borderColor: theme.backgroundSelected,
-                },
-              ]}>
-              <Ionicons
-                name={preset.attribute === 'fixed' ? 'time-outline' : 'alarm-outline'}
-                size={13}
-                color={theme.textSecondary}
-              />
-              <ThemedText type="small">{preset.label}</ThemedText>
-            </Pressable>
-          ))}
-
-          {/* 预设兜不住的走这里：自己选哪天 + 时/分双滚轮，精确到 1 分钟 */}
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="自定义时间"
-            onPress={() => {
-              setSheetView('custom');
-              setSheetOpen(true);
-            }}
-            style={({ pressed }) => [
-              styles.chip,
-              {
-                backgroundColor: pressed ? theme.backgroundSelected : theme.background,
-                borderColor: theme.backgroundSelected,
-              },
-            ]}>
-            <Ionicons name="options-outline" size={13} color={theme.textSecondary} />
-            <ThemedText type="small">自定义…</ThemedText>
-          </Pressable>
-        </View>
-
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            setSheetView('reminder');
-            setSheetOpen(true);
-          }}
-          style={({ pressed }) => [
-            styles.settingRow,
-            { backgroundColor: pressed ? theme.backgroundSelected : theme.backgroundElement },
-          ]}>
-          <Ionicons name="notifications-outline" size={16} color={theme.textSecondary} />
-          <ThemedText type="small">提醒</ThemedText>
-          <View style={styles.settingValue}>
-            <ThemedText type="small" themeColor="textSecondary">
-              {describeReminder(task.reminderMinutesBefore)}
-            </ThemedText>
-            <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
-          </View>
         </Pressable>
-        {/* 提醒是静默调度的（权限被拒、时间已过都不出声），把"排没排上"说在明处 */}
-        <ThemedText type="small" themeColor="textSecondary" style={styles.reminderNote}>
-          {describeNextFire(task)}
-        </ThemedText>
-
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            setSheetView('repeat');
-            setSheetOpen(true);
-          }}
-          style={({ pressed }) => [
-            styles.settingRow,
-            { backgroundColor: pressed ? theme.backgroundSelected : theme.backgroundElement },
-          ]}>
-          <Ionicons name="repeat-outline" size={16} color={theme.textSecondary} />
-          <ThemedText type="small">重复</ThemedText>
-          <View style={styles.settingValue}>
-            <ThemedText type="small" themeColor="textSecondary">
-              {task.repeat ? describeRepeat(task.repeat) : '不重复'}
-            </ThemedText>
-            <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
-          </View>
-        </Pressable>
-
-        {anchor ? (
-          <Pressable accessibilityRole="button" onPress={handleClearTime} style={styles.linkRow}>
-            <ThemedText type="small" themeColor="textSecondary">
-              取消时间安排，退回收集箱
-            </ThemedText>
-          </Pressable>
-        ) : null}
       </Card>
 
-      {/* 状态 */}
-      <Card title="状态">
+      {settingsOpen ? (
+        <>
+          {/* 状态 */}
+          <Card title="状态">
         <View style={styles.chips}>
           {STATUS_OPTIONS.map((option) => {
             const active = task.status === option;
@@ -785,21 +937,10 @@ export default function TaskDetailScreen() {
             ]}
           />
         ) : null}
-
-        {done ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => void patch({ status: TaskStatus.Todo, completedAt: null })}
-            style={styles.linkRow}>
-            <ThemedText type="small" themeColor="textSecondary">
-              已完成 · 点这里重新打开
-            </ThemedText>
-          </Pressable>
-        ) : null}
       </Card>
 
       {/* 类型：决定它怎么被对待 —— 习惯型才进「习惯」页、才能打卡 */}
-      <Card title="类型" hint="习惯型会出现在「习惯」页，可以打卡攒连续天数">
+      <Card title="类型" hint="能打卡、攒连续天数">
         <View style={styles.chips}>
           {KIND_OPTIONS.map((option) => (
             <Chip
@@ -815,7 +956,7 @@ export default function TaskDetailScreen() {
 
       {/* 目标：习惯 / 执行型的达标线。定了它就"够数自动完成"，没定就纯靠手动勾选 */}
       {task.kind === TaskKind.Habit ? (
-        <Card title="目标" hint="定了目标，打卡到数就自动达成；不定就只是记录次数">
+        <Card title="目标" hint="够数自动达成；不定就只记次数">
           <View style={styles.goalRow}>
             <ThemedText type="small" style={styles.goalLabel}>
               本期做够
@@ -904,7 +1045,7 @@ export default function TaskDetailScreen() {
       {canConvertToHabit(task) ? (
         <Card
           title="转成打卡习惯"
-          hint="不用每次勾完成，打一次卡算一次；有次数目标时够数自动达成">
+          hint="打一次算一次；够目标自动达成">
           <View style={styles.chips}>
             {CONVERT_PRESETS.map((preset) => (
               <Chip
@@ -953,71 +1094,20 @@ export default function TaskDetailScreen() {
         </View>
       </Card>
 
-      {/* 行：真正的"开始做"入口。时长会记回这条任务 */}
-      <Card
-        title="开始做"
-        hint="专注结束后，这段时间会累加到这条任务的进度里；够目标就自动完成">
-        {describeProgress(task) ? (
-          <ThemedText type="small" themeColor="textSecondary">
-            {describeProgress(task)}
-          </ThemedText>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.push({ pathname: '/focus', params: { taskId: task.id } })}
-          style={({ pressed }) => [
-            styles.focusEntry,
-            { backgroundColor: theme.backgroundSelected, opacity: pressed ? 0.85 : 1 },
-          ]}>
-          <Ionicons name="timer-outline" size={18} color={theme.text} />
-          <ThemedText type="smallBold">进入专注</ThemedText>
-          <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
-        </Pressable>
-      </Card>
-
-      {/* 主操作。
-          频率型在这里换成打卡：它的"完成"由本期次数推导，勾一次"完成"会被
-          对账立刻纠正回来（见 habit-period.desiredFrequencyStatus），
-          所以那个按钮对它没有意义 —— 与其留个按了没反应的按钮，不如给对的动作用。 */}
-      <View style={styles.actions}>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => void (isFrequency ? toggleTodayCheckin() : handleComplete())}
-          style={({ pressed }) => [
-            styles.primaryAction,
-            { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
-          ]}>
-          <Ionicons
-            name={isFrequency ? (doneToday ? 'arrow-undo' : 'add') : 'checkmark'}
-            size={18}
-            color={theme.background}
-          />
-          <ThemedText type="smallBold" style={{ color: theme.background }}>
-            {isFrequency
-              ? doneToday
-                ? '撤销今天的打卡'
-                : '今天打卡'
-              : task.repeat
-                ? '完成这一次'
-                : '完成'}
-          </ThemedText>
-        </Pressable>
-
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => void handleDelete()}
-          style={({ pressed }) => [
-            styles.secondaryAction,
-            {
-              borderColor: theme.backgroundSelected,
-              opacity: pressed ? 0.6 : 1,
-            },
-          ]}>
-          <ThemedText type="small" themeColor="textSecondary">
-            {confirmingDelete ? '再点一次确认删除' : task.repeat ? '删除这个重复任务' : '删除'}
-          </ThemedText>
-        </Pressable>
-      </View>
+          {/*
+            删除放在这里而不是底栏：它必须存在（能创建就要能删掉），
+            但不该天天杵在拇指最容易碰到的位置 —— 尤其是它按一下就没了。
+          */}
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void handleDelete()}
+            style={({ pressed }) => [styles.dangerRow, { opacity: pressed ? 0.6 : 1 }]}>
+            <ThemedText type="small" themeColor="textSecondary">
+              {confirmingDelete ? '再点一次确认删除' : task.repeat ? '删除这个重复任务' : '删除这条'}
+            </ThemedText>
+          </Pressable>
+        </>
+      ) : null}
 
       <ScheduleSheet
         task={sheetOpen ? task : null}
@@ -1100,6 +1190,13 @@ const styles = StyleSheet.create({
   pastHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
   pastHeaderBody: { flex: 1, gap: Spacing.half },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
+  /** 常驻的时间调整栏：紧跟预设，间隔略大一点，看起来是"另一件事"（精确调） */
+  pickerBlock: { gap: Spacing.two, marginTop: Spacing.two },
+  applyButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.two,
+  },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1180,27 +1277,34 @@ const styles = StyleSheet.create({
   },
   focusFeedback: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   focusFeedbackText: { flex: 1, lineHeight: 18 },
-  focusEntry: {
+  /** 「更多设置」开关：一行摘要 + 展开箭头，收起时就是它一行 */
+  settingsToggle: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,
-    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+  },
+  settingsToggleBody: { flex: 1, gap: Spacing.half },
+  /** 删除：贴在折叠区最下面。靠文字说清后果，不靠红颜色喊 */
+  dangerRow: { alignItems: 'center', paddingVertical: Spacing.two },
+  /** 底栏两个键：次要的描边、主要的实心并吃掉剩余宽度 */
+  barGhost: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.three,
     borderRadius: Spacing.two,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  actions: { gap: Spacing.two },
-  primaryAction: {
+  barPrimary: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.two,
     paddingVertical: Spacing.three,
     borderRadius: Spacing.two,
-  },
-  secondaryAction: {
-    alignItems: 'center',
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.two,
-    borderWidth: StyleSheet.hairlineWidth,
   },
 });

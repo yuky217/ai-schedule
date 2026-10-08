@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -25,6 +25,17 @@ import { useTheme } from '@/hooks/use-theme';
  * 2. 手指上跟着一块浮层，显示这行的标题；
  * 3. 目标位置画一条插入线。
  * 拖拽期间由父层锁住滚动（onDraggingChange），否则手指竖直移动会被滚动抢走。
+ *
+ * **长按有三种去向**：
+ * - 长按后**动**了 → 排序（最初只有这一种）；
+ * - 长按后**原地松手** → 走 `onLongPressIdle`（收集箱用它弹"今天/明天/周末…"菜单，
+ *   2026-10-07 加）。判据是位移量：手指按住时的自然抖动在几像素内，所以阈值取 8px；
+ * - 长按后**拖进外部投递区** → 走 `onDropOutside`（收集箱用它把任务扔到底部的
+ *   日期条上，2026-10-08 加）。
+ *
+ * 第三种去向与排序共用一个手势，靠**落点**分工：手指进了投递区就不再算插入位置、
+ * 插入线收起、跟手浮层淡下去，松手交给调用方；没进就还是老老实实排序。
+ * 不传 `dropZone` 的列表保持原样。
  */
 export interface ReorderableListProps<T> {
   items: T[];
@@ -34,17 +45,65 @@ export interface ReorderableListProps<T> {
   labelOf: (item: T) => string;
   renderItem: (item: T, index: number, dragging: boolean) => ReactNode;
   onReorder: (ids: string[]) => void;
+  /**
+   * 长按后**原地松手**（没拖动）时回调 —— 用来弹一层菜单。
+   * 传了它，长按就有了两种去向；不传则只有排序。
+   */
+  onLongPressIdle?: (item: T) => void;
   onDraggingChange?: (dragging: boolean) => void;
+  /**
+   * 外部投递区（**窗口坐标**的 y 范围）：手指拖进来就不再是排序，而是
+   * "把这一条交出去"。
+   *
+   * 进没进落区在 worklet 里直接比数字、不回 JS —— 手指每动一下都问一次 JS，
+   * "进没进"就会慢半拍，表现出来就是格子高亮追不上手指。所以范围走 shared
+   * value 而不是闭包捕获：闭包捕获会逼着手势对象在范围变化时重建，
+   * 而**拖到一半重建手势会被系统直接打断**。
+   */
+  dropZone?: DropZoneRect | null;
+  /** 松手时手指在投递区内 → 交出这一条与手指位置（由调用方算落在哪一格） */
+  onDropOutside?: (item: T, point: DropPoint) => void;
+  /** 手指在投递区内的位置变化（null = 离开了），用来让对应的那一格亮起来 */
+  onZoneHover?: (point: DropPoint | null) => void;
   /** 行间距（用 marginBottom 实现，落点计算仍然准 —— onLayout 量的是含间距的位置） */
   gap?: number;
   /** 关掉拖拽（比如列表为空时） */
   enabled?: boolean;
 }
 
+/** 投递区在窗口里的纵向范围 */
+export interface DropZoneRect {
+  top: number;
+  bottom: number;
+}
+
+/** 手指在窗口里的位置 */
+export interface DropPoint {
+  x: number;
+  y: number;
+}
+
 interface RowBox {
   y: number;
   h: number;
 }
+
+/**
+ * 长按后位移小于它，就算"原地松手"。
+ * 手指按住时的自然抖动通常只有一两像素，8px 既容得下抖动、
+ * 又不至于把"想挪一格"的小拖拽误判成原地（一格至少有几十像素）。
+ */
+const IDLE_THRESHOLD = 8;
+
+/** 手指在投递区内每移动这么多像素，回一次 JS 更新高亮 */
+const ZONE_HOVER_STEP = 10;
+
+/**
+ * 拖到投递区里时，跟手浮层淡下去。
+ * 不淡的话它是一整条横幅、正好盖在日期格上 —— 用户看不见自己要扔的那一格，
+ * 只能凭感觉松手。
+ */
+const ZONE_GHOST_OPACITY = 0.3;
 
 /** 手指中心落在第几行 */
 function indexAtY(rows: RowBox[], y: number): number {
@@ -62,7 +121,11 @@ export function ReorderableList<T>({
   labelOf,
   renderItem,
   onReorder,
+  onLongPressIdle,
   onDraggingChange,
+  dropZone,
+  onDropOutside,
+  onZoneHover,
   gap = 0,
   enabled = true,
 }: ReorderableListProps<T>) {
@@ -81,13 +144,34 @@ export function ReorderableList<T>({
   keyOfRef.current = keyOf;
   const onReorderRef = useRef(onReorder);
   onReorderRef.current = onReorder;
+  const onLongPressIdleRef = useRef(onLongPressIdle);
+  onLongPressIdleRef.current = onLongPressIdle;
   const onDraggingChangeRef = useRef(onDraggingChange);
   onDraggingChangeRef.current = onDraggingChange;
+  const onDropOutsideRef = useRef(onDropOutside);
+  onDropOutsideRef.current = onDropOutside;
+  const onZoneHoverRef = useRef(onZoneHover);
+  onZoneHoverRef.current = onZoneHover;
+  /** JS 侧的"此刻在不在落区里"，用来决定插入线还画不画、悬停回调要不要送 */
+  const inZoneRef = useRef(false);
 
   const dragY = useSharedValue(0);
   const ghostOpacity = useSharedValue(0);
   /** 节流：手指每移动这么多像素才算一次落点 */
   const lastMove = useSharedValue(0);
+
+  /* ---- 投递区（UI 线程读，不回 JS 判定） ---- */
+  const zoneTop = useSharedValue(-1);
+  const zoneBottom = useSharedValue(-1);
+  const inZone = useSharedValue(0);
+  const zoneGhost = useSharedValue(1);
+  const lastZoneY = useSharedValue(0);
+
+  // 范围变化只改 shared value，不动手势对象 —— 拖到一半重建会被系统打断
+  useEffect(() => {
+    zoneTop.value = dropZone?.top ?? -1;
+    zoneBottom.value = dropZone?.bottom ?? -1;
+  }, [dropZone?.bottom, dropZone?.top, zoneBottom, zoneTop]);
 
   const recordRow = useCallback((index: number, y: number, h: number) => {
     setRows((current) => {
@@ -101,9 +185,10 @@ export function ReorderableList<T>({
     (index: number) => {
       setActiveIndex(index);
       setTargetIndex(index);
+      zoneGhost.value = 1;
       onDraggingChangeRef.current?.(true);
     },
-    [],
+    [zoneGhost],
   );
 
   const move = useCallback((index: number, dy: number) => {
@@ -113,9 +198,24 @@ export function ReorderableList<T>({
     setTargetIndex(indexAtY(rects, row.y + dy + row.h / 2));
   }, []);
 
+  /** 进/出落区：进了就收起插入线；出去时把格子高亮一起收掉 */
+  const setZone = useCallback((next: boolean) => {
+    inZoneRef.current = next;
+    if (next) setTargetIndex(null);
+    else onZoneHoverRef.current?.(null);
+  }, []);
+
+  /** 落区内的位置变化：只负责转给父层，落在哪一格由父层算（它才知道格子的坐标） */
+  const hoverZone = useCallback((point: DropPoint) => {
+    if (!inZoneRef.current) return;
+    onZoneHoverRef.current?.(point);
+  }, []);
+
   const finish = useCallback(() => {
     setActiveIndex(null);
     setTargetIndex(null);
+    inZoneRef.current = false;
+    onZoneHoverRef.current?.(null);
     onDraggingChangeRef.current?.(false);
   }, []);
 
@@ -134,6 +234,29 @@ export function ReorderableList<T>({
     [finish],
   );
 
+  /**
+   * 长按后原地松手：先把拖拽视觉复位，再把这一行交出去。
+   * 没传 onLongPressIdle 的列表就什么都不发生（保持"长按只有排序"的老行为）。
+   */
+  const idle = useCallback(
+    (index: number) => {
+      const item = itemsRef.current[index];
+      finish();
+      if (item !== undefined) onLongPressIdleRef.current?.(item);
+    },
+    [finish],
+  );
+
+  /** 扔进投递区：复位拖拽视觉，把这一条连同手指位置交出去 */
+  const dropOutside = useCallback(
+    (index: number, point: DropPoint) => {
+      const item = itemsRef.current[index];
+      finish();
+      if (item !== undefined) onDropOutsideRef.current?.(item, point);
+    },
+    [finish],
+  );
+
   const gestureFor = useCallback(
     (index: number) =>
       Gesture.Pan()
@@ -144,12 +267,35 @@ export function ReorderableList<T>({
           'worklet';
           dragY.value = 0;
           lastMove.value = 0;
+          lastZoneY.value = 0;
           ghostOpacity.value = 1;
+          zoneGhost.value = 1;
+          inZone.value = 0;
           runOnJS(begin)(index);
         })
         .onUpdate((event) => {
           'worklet';
           dragY.value = event.translationY;
+
+          const nowInZone =
+            zoneBottom.value > 0 &&
+            event.absoluteY >= zoneTop.value &&
+            event.absoluteY <= zoneBottom.value;
+          if (nowInZone !== (inZone.value === 1)) {
+            inZone.value = nowInZone ? 1 : 0;
+            zoneGhost.value = nowInZone ? ZONE_GHOST_OPACITY : 1;
+            runOnJS(setZone)(nowInZone);
+          }
+
+          if (nowInZone) {
+            // 已进落区：不再算排序落点，只把手指位置转出去点亮对应的格子
+            if (Math.abs(event.absoluteY - lastZoneY.value) >= ZONE_HOVER_STEP) {
+              lastZoneY.value = event.absoluteY;
+              runOnJS(hoverZone)({ x: event.absoluteX, y: event.absoluteY });
+            }
+            return;
+          }
+
           if (Math.abs(event.translationY - lastMove.value) > 10) {
             lastMove.value = event.translationY;
             runOnJS(move)(index, event.translationY);
@@ -157,17 +303,52 @@ export function ReorderableList<T>({
         })
         .onEnd((event) => {
           'worklet';
+          const nowInZone =
+            zoneBottom.value > 0 &&
+            event.absoluteY >= zoneTop.value &&
+            event.absoluteY <= zoneBottom.value;
+          const wanted = nowInZone;
+          inZone.value = 0;
+          zoneGhost.value = 1;
+
+          if (wanted) {
+            runOnJS(dropOutside)(index, { x: event.absoluteX, y: event.absoluteY });
+            return;
+          }
+          // 长按之后没怎么动就松手 = 想弹菜单，不是想排序
+          if (Math.abs(event.translationY) < IDLE_THRESHOLD) {
+            runOnJS(idle)(index);
+            return;
+          }
           runOnJS(commit)(index, event.translationY);
         })
         .onFinalize(() => {
           'worklet';
           ghostOpacity.value = 0;
+          inZone.value = 0;
+          zoneGhost.value = 1;
         }),
-    [begin, commit, dragY, ghostOpacity, lastMove, move],
+    [
+      begin,
+      commit,
+      dragY,
+      dropOutside,
+      ghostOpacity,
+      hoverZone,
+      idle,
+      inZone,
+      lastMove,
+      lastZoneY,
+      move,
+      setZone,
+      zoneBottom,
+      zoneGhost,
+      zoneTop,
+    ],
   );
 
   const ghostStyle = useAnimatedStyle(() => ({
-    opacity: ghostOpacity.value,
+    opacity: ghostOpacity.value * zoneGhost.value,
     transform: [{ translateY: dragY.value }],
   }));
 
@@ -210,7 +391,7 @@ export function ReorderableList<T>({
         );
       })}
 
-      {/* 插入位指示线 */}
+      {/* 插入位指示线（拖进落区后 targetIndex 被清空，这条自然消失） */}
       {lineTop !== null ? (
         <View
           pointerEvents="none"

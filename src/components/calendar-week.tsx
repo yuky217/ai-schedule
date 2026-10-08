@@ -11,6 +11,8 @@ import Animated, {
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import type { CourseSlot } from '@/domain/course';
+import { layoutLanes, type LanePlacement } from '@/domain/lane-layout';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { taskAnchor, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
@@ -23,6 +25,10 @@ import { useTheme } from '@/hooks/use-theme';
  * 这正是成熟日历（Google Calendar / Fantastical / Notion Calendar）都用
  * 时间网格做周视图的原因。列窄是真的，但周视图的职责本来就是"看节奏"，
  * 想看清某天的事，点一下表头就进日视图。
+ *
+ * **同一时刻的多件事并排**（分道算法在 `domain/lane-layout`）：
+ * 列里直接铺满会互相盖住，看起来像"另一件凭空没了"；
+ * **课是背景带**（虚线、压在最底下、不可点），只说"这段有课"，不占日程。
  *
  * 手势（全部交给 react-native-gesture-handler，浮块跑 UI 线程）：
  * - **长按 220ms 拾起**：单击仍然是"打开详情"，不会误触发拖拽；
@@ -69,10 +75,35 @@ const dayKey = (d: Date): string => format(d, 'yyyy-MM-dd');
 /** 没有结束时长的任务块按半小时画 */
 const DEFAULT_BLOCK_MINUTES = 30;
 
+/** 一天的任务换算成"当天第几分钟"的区间（没有开始时刻的不上时间轴） */
+interface PlacedTask {
+  task: Task;
+  start: number;
+  end: number;
+}
+
+/**
+ * 把一列里的任务分道。
+ * 纯计算，直接调 —— 它跑在 `days.map` 里面，用不了 hook（循环里不能有 hook）。
+ */
+function placedOf(tasks: readonly Task[]): Array<LanePlacement<PlacedTask>> {
+  const spans: PlacedTask[] = [];
+  for (const task of tasks) {
+    const anchor = taskAnchor(task);
+    if (!anchor) continue;
+    const start = minutesOfDay(anchor);
+    const end = task.time.endAt ? minutesOfDay(task.time.endAt) : start + DEFAULT_BLOCK_MINUTES;
+    spans.push({ task, start, end: Math.max(start + DEFAULT_BLOCK_MINUTES, end) });
+  }
+  return layoutLanes(spans, (a, b) => a.start - b.start || a.end - b.end);
+}
+
 export interface CalendarWeekProps {
   /** 一周 7 天，周一起 */
   days: Date[];
   tasksByDay: Map<string, Task[]>;
+  /** 每天要上的课（背景带）：只说"这段有课"，不占日程、不可点 */
+  courseSlotsByDay?: Map<string, CourseSlot[]>;
   onSelectTask: (task: Task) => void;
   /** 拖动落库：目标日期 + 当天第几分钟 */
   onPlace?: (task: Task, date: Date, minutesOfDay: number) => Promise<void> | void;
@@ -87,6 +118,7 @@ export interface CalendarWeekProps {
 export function CalendarWeek({
   days,
   tasksByDay,
+  courseSlotsByDay,
   onSelectTask,
   onPlace,
   onOpenDay,
@@ -209,16 +241,26 @@ export function CalendarWeek({
                         ]}
                       />
                     ))}
-                    {tasks.map((task) => {
-                      const anchor = taskAnchor(task);
-                      if (!anchor) return null;
-                      const start = minutesOfDay(anchor);
-                      const end = task.time.endAt
-                        ? minutesOfDay(task.time.endAt)
-                        : start + DEFAULT_BLOCK_MINUTES;
-                      const duration = Math.max(DEFAULT_BLOCK_MINUTES, end - start);
+                    {/* 课：背景带压在任务下面，只说明"这段有课" */}
+                    {(courseSlotsByDay?.get(key) ?? []).map((slot, index) => (
+                      <View
+                        key={`course-${slot.course.id}-${index}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.courseBand,
+                          {
+                            top: Math.max(0, topForMinutes(slot.start)),
+                            height: Math.max(20, ((slot.end - slot.start) / 60) * HOUR_HEIGHT),
+                            borderColor: theme.textSecondary,
+                          },
+                        ]}
+                      />
+                    ))}
+
+                    {placedOf(tasks).map(({ item, lane, lanes }) => {
+                      const { task, start, end } = item;
                       const top = Math.max(0, topForMinutes(start));
-                      const height = (duration / 60) * HOUR_HEIGHT;
+                      const height = (Math.max(DEFAULT_BLOCK_MINUTES, end - start) / 60) * HOUR_HEIGHT;
 
                       return (
                         <WeekBlock
@@ -227,10 +269,12 @@ export function CalendarWeek({
                           top={top}
                           height={height}
                           column={column}
+                          lane={lane}
+                          lanes={lanes}
                           colWidth={colWidth}
                           colWidthSV={colWidthSV}
                           startMinutes={start}
-                          width={colWidth}
+                          width={colWidth / lanes}
                           onSelect={onSelectTask}
                           onPlace={onPlace}
                           days={days}
@@ -292,6 +336,9 @@ interface WeekBlockProps {
   top: number;
   height: number;
   column: number;
+  /** 同刻并发时排第几条道（0 起）/ 共几条道 */
+  lane: number;
+  lanes: number;
   colWidth: number;
   colWidthSV: SharedValue<number>;
   startMinutes: number;
@@ -315,6 +362,8 @@ function WeekBlock({
   top,
   height,
   column,
+  lane,
+  lanes,
   colWidth,
   colWidthSV,
   startMinutes,
@@ -462,8 +511,8 @@ function WeekBlock({
           {
             top,
             height,
-            left: 1,
-            right: 1,
+            left: `${(lane / lanes) * 100}%`,
+            width: `${100 / lanes}%`,
             zIndex: pickedUp ? 12 : 1,
             opacity: muted ? (done ? 0.5 : 0.72) : 1,
           },
@@ -532,7 +581,18 @@ const styles = StyleSheet.create({
   hourLine: { position: 'absolute', left: 0, right: 0, height: StyleSheet.hairlineWidth },
   nowLine: { position: 'absolute', left: 0, right: 0 },
   nowBar: { height: 1.5 },
-  block: { position: 'absolute' },
+  /** 左右各让出一点，同刻并排的两块才不糊成一片 */
+  block: { position: 'absolute', paddingLeft: 1, paddingRight: 2 },
+  /** 课的背景带：虚线、不可点 —— 和"实心块 = 任务"区分开 */
+  courseBand: {
+    position: 'absolute',
+    left: 1,
+    right: 1,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderRadius: 4,
+    opacity: 0.5,
+  },
   blockInner: {
     flex: 1,
     borderRadius: 4,

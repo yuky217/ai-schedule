@@ -113,7 +113,6 @@ export default function ProjectsScreen() {
   return (
     <Screen
       title="项目"
-      subtitle="目标看方向，项目看进度，文件夹只管分类"
       scrollEnabled={!ganttDragging}
       right={
         <View style={styles.headerActions}>
@@ -176,7 +175,7 @@ export default function ProjectsScreen() {
                 </Pressable>
               </View>
               <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-                建好之后进去可以设起止时间、挂子项、看甘特图。
+                目标看方向、项目看进度、文件夹只管分类
               </ThemedText>
             </>
           ) : (

@@ -31,6 +31,21 @@ export interface SettingsState {
   defaultFocusMinutes: number;
   /** 触感反馈（勾选完成时的轻微震动） */
   hapticsEnabled: boolean;
+  /**
+   * 用户想不想要桌面悬浮球（Android 独立版才有）。
+   * 放这里只为一件事：用户开过一次之后，下次启动能自己回来，不用再点一遍。
+   * 它记的是**用户意愿**，不是"现在有没有浮着" —— 后者永远以原生侧为准。
+   */
+  overlayEnabled: boolean;
+  /**
+   * 日历里要不要课表这一栏。
+   *
+   * 默认**开**：课表是这个 App 的一块正功能（不是"高级功能"），
+   * 而"要不要"多数人自己知道 —— 上班族把它关掉，日历就只剩自己的安排，
+   * 学生的日历里则会多出"这段时间有课"这层背景。
+   * 关掉不只是藏起「课」那一栏：日/周视图里的课程背景带也一起不画。
+   */
+  timetableEnabled: boolean;
 
   setAdvancedEnabled: (value: boolean) => void;
   setAiEnabled: (value: boolean) => void;
@@ -38,6 +53,8 @@ export interface SettingsState {
   setAiConfig: (patch: Partial<AiConfig>) => void;
   setDefaultFocusMinutes: (minutes: number) => void;
   setHapticsEnabled: (value: boolean) => void;
+  setOverlayEnabled: (value: boolean) => void;
+  setTimetableEnabled: (value: boolean) => void;
   reset: () => void;
 }
 
@@ -48,6 +65,8 @@ const initial = {
   aiConfig: emptyAiConfig,
   defaultFocusMinutes: 25,
   hapticsEnabled: true,
+  overlayEnabled: false,
+  timetableEnabled: true,
 };
 
 export const useSettings = create<SettingsState>()(
@@ -75,6 +94,10 @@ export const useSettings = create<SettingsState>()(
         set({ defaultFocusMinutes: Math.max(1, Math.round(minutes)) }),
 
       setHapticsEnabled: (value) => set({ hapticsEnabled: value }),
+
+      setOverlayEnabled: (value) => set({ overlayEnabled: value }),
+
+      setTimetableEnabled: (value) => set({ timetableEnabled: value }),
 
       reset: () => set({ ...initial, capabilities: defaultCapabilityFlags() }),
     }),

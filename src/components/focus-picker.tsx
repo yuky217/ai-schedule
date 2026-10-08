@@ -23,7 +23,8 @@ import { useTheme } from '@/hooks/use-theme';
  * 停在哪一格，哪一格就是答案。这比"一排按钮里点一个"更省事，也更好边滚边看。
  *
  * 三格承担三种意图，顺序就是从左到右的"新 → 已有 → 更多"：
- *   ① 「写一件新的事」—— 没有名字就先干、结束再命名也可以，所以它排第一个
+ *   ① 「新建」—— 没有名字就先干、结束再命名也可以，所以它排第一个。
+ *      它被选中后**再点一下**，这一格就地变成输入框（输入框不单独占一行）。
  *   ② 今天的几件事（最多 5 条）—— 绝大多数情况下要做的就是这几件里的一件
  *   ③ 「＋」—— 想做的在收集箱深处时，从这里翻全部
  *
@@ -41,14 +42,19 @@ export interface FocusPickerProps {
   /** 指针当前停在第几格（受控） */
   index: number;
   onIndexChange: (index: number) => void;
-  /** 选中的那一格是不是「写一件新的事」 */
+  /** 选中的那一格是不是「新建」 */
   newTitle?: string;
   onNewTitleChange?: (text: string) => void;
 }
 
-/** 一格的宽度（也是吸附距离） */
-const ITEM_WIDTH = 138;
-const ITEM_HEIGHT = 62;
+/**
+ * 一格的宽度（也是吸附距离）与高度。
+ *
+ * 刻意压得比一开始小一圈：首页的主角是"开始"，不是"挑"。
+ * 挑这一下只要看得清标题就够了，把省下来的高度让给那颗开始键。
+ */
+const ITEM_WIDTH = 128;
+const ITEM_HEIGHT = 56;
 
 const clampIndex = (index: number, total: number): number =>
   Math.max(0, Math.min(Math.max(0, total - 1), index));
@@ -155,8 +161,6 @@ export function FocusPicker({
     [],
   );
 
-  const option = options[safeIndex];
-
   return (
     <View style={styles.wrap}>
       <View style={styles.viewport} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
@@ -183,6 +187,8 @@ export function FocusPicker({
                 onIndexChange(position);
                 scrollToIndex(position, true);
               }}
+              newTitle={newTitle}
+              onNewTitleChange={onNewTitleChange}
             />
           ))}
         </ScrollView>
@@ -200,14 +206,6 @@ export function FocusPicker({
           ]}
         />
       </View>
-
-      {/* 选到「写一件新的事」时，输入框出现在下面 —— 不用滑到一半去戳输入框 */}
-      {option?.kind === 'new' && onNewTitleChange ? (
-        <View style={styles.newRow}>
-          <Ionicons name="create-outline" size={15} color={theme.textSecondary} />
-          <NewTitleInput value={newTitle} onChangeText={onNewTitleChange} />
-        </View>
-      ) : null}
 
       <View style={styles.dots}>
         {options.map((item, position) => (
@@ -230,28 +228,59 @@ function FocusPickerCell({
   option,
   active,
   onPress,
+  newTitle,
+  onNewTitleChange,
 }: {
   option: FocusPickerOption;
   active: boolean;
   onPress: () => void;
+  newTitle: string;
+  onNewTitleChange?: (text: string) => void;
 }) {
   const theme = useTheme();
   const color = active ? theme.text : theme.textSecondary;
+  /**
+   * 「新建」这一格的就地输入：只有它**已经**停在指针下、又被**再点一下**时，
+   * 才变成输入框 —— 滑过它不算要写，点它才是"就写这件"。
+   * 指针滑走即还原成「新建」，输入的草稿还留在 newTitle 里。
+   */
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (!active) setEditing(false);
+  }, [active]);
+
+  const handlePress = () => {
+    onPress();
+    if (option.kind === 'new' && active && onNewTitleChange) setEditing(true);
+  };
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
-      onPress={onPress}
+      onPress={handlePress}
       style={[styles.cell, { width: ITEM_WIDTH, height: ITEM_HEIGHT }]}>
       <View style={styles.cellInner}>
         {option.kind === 'new' ? (
-          <>
-            <Ionicons name="create-outline" size={18} color={color} />
-            <ThemedText type="small" themeColor={active ? 'text' : 'textSecondary'} numberOfLines={1}>
-              写一件新的事
-            </ThemedText>
-          </>
+          editing ? (
+            <TextInput
+              autoFocus
+              value={newTitle}
+              onChangeText={onNewTitleChange}
+              placeholder="这件事叫什么？"
+              placeholderTextColor={theme.textSecondary}
+              returnKeyType="done"
+              onSubmitEditing={() => setEditing(false)}
+              style={[styles.cellInput, { color: theme.text }]}
+            />
+          ) : (
+            <>
+              <Ionicons name="create-outline" size={18} color={color} />
+              <ThemedText type="small" themeColor={active ? 'text' : 'textSecondary'} numberOfLines={1}>
+                新建
+              </ThemedText>
+            </>
+          )
         ) : option.kind === 'more' ? (
           <>
             <Ionicons name="add-circle-outline" size={20} color={color} />
@@ -284,27 +313,6 @@ function FocusPickerCell({
   );
 }
 
-/** 只在这里用得到的单行输入：没有框，只有一条底线，像在句子上接着写 */
-function NewTitleInput({
-  value,
-  onChangeText,
-}: {
-  value: string;
-  onChangeText: (text: string) => void;
-}) {
-  const theme = useTheme();
-  return (
-    <TextInput
-      value={value}
-      onChangeText={onChangeText}
-      placeholder="这件事叫什么？"
-      placeholderTextColor={theme.textSecondary}
-      returnKeyType="done"
-      style={[styles.newInput, { color: theme.text, borderColor: theme.backgroundSelected }]}
-    />
-  );
-}
-
 const styles = StyleSheet.create({
   wrap: { gap: Spacing.two },
   viewport: { height: ITEM_HEIGHT, justifyContent: 'center' },
@@ -313,7 +321,7 @@ const styles = StyleSheet.create({
     top: 0,
     height: ITEM_HEIGHT,
     borderRadius: Spacing.three,
-    borderWidth: 1.5,
+    borderWidth: 1,
   },
   cell: { alignItems: 'center', justifyContent: 'center' },
   cellInner: {
@@ -328,17 +336,12 @@ const styles = StyleSheet.create({
   },
   cellTitle: { textAlign: 'center' },
   cellReason: { fontSize: 10, lineHeight: 13, textAlign: 'center' },
-  newRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-    paddingHorizontal: Spacing.two,
-  },
-  newInput: {
+  cellInput: {
     flex: 1,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    textAlign: 'center',
     paddingVertical: Spacing.one,
-    fontSize: 15,
+    fontSize: 14,
   },
   dots: { flexDirection: 'row', justifyContent: 'center', gap: Spacing.one },
   dot: { width: 5, height: 5, borderRadius: 2.5 },

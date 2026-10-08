@@ -285,7 +285,7 @@ export default function MarksScreen() {
         <EmptyState
           icon="heart-outline"
           title="还没有纪念日"
-          hint="点右上角的加号，记一个还剩几天的日子，或者已经坚持了多少天"
+          hint="记一个还剩几天的日子，或者已经坚持了多少天"
         />
       )}
 

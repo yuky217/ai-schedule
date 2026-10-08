@@ -59,6 +59,12 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   const parsed = input.time == null ? parseSchedule(text) : null;
   const time: TaskTime | null = input.time ?? parsed?.time ?? null;
   const displayText = parsed && parsed.title.trim() ? parsed.title : text;
+  /*
+   * 重复同样要接上。"每天 8 点吃药"识别出了 repeat，但如果只把它算出来不写进任务，
+   * 用户得到的就是一条**只有今天**的任务 —— 明天不会再出现，而且看不出哪里不对。
+   * 用户当场在快捷按钮里设过就以他的为准（手写的永远压过猜的）。
+   */
+  const repeat = input.repeat ?? parsed?.repeat ?? null;
 
   const decision = decideRoute({
     text: displayText,
@@ -87,7 +93,7 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
     time: time ?? undefined,
     source,
     containerId: input.containerId ?? null,
-    repeat: input.repeat ?? null,
+    repeat,
     reminderMinutesBefore: input.reminderMinutesBefore ?? null,
   });
   await taskRepository.create(task);

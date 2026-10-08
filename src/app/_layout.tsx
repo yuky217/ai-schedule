@@ -6,7 +6,9 @@ import { StyleSheet, useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { restoreOverlayIfEnabled } from '@/entry/overlay';
 import { useAppStore } from '@/state/app-store';
+import { useSettings } from '@/state/settings-store';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -20,10 +22,19 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const init = useAppStore((state) => state.init);
+  const overlayEnabled = useSettings((state) => state.overlayEnabled);
 
   useEffect(() => {
     void init();
   }, [init]);
+
+  // 用户开过悬浮球就让它自己回来，不用每次启动再去设置页点一遍 ——
+  // "开一次就一直在"才是简单。没开过（false）时这里什么都不做。
+  // 依赖写成 overlayEnabled 而不是空数组：偏好是异步 hydrate 的，
+  // 挂空数组会在读到默认值 false 时就跑完，永远等不到真正的值。
+  useEffect(() => {
+    if (overlayEnabled) void restoreOverlayIfEnabled(true);
+  }, [overlayEnabled]);
 
   return (
     // 日历的拖拽 / 翻页都走 react-native-gesture-handler，必须有一个根容器
@@ -42,7 +53,9 @@ export default function RootLayout() {
           <Stack.Screen name="focus" options={{ presentation: 'modal' }} />
           <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
           <Stack.Screen name="import-courses" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="import-exams" options={{ presentation: 'modal' }} />
           <Stack.Screen name="add-course" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="term-settings" options={{ presentation: 'modal' }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

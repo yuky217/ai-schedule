@@ -1,4 +1,4 @@
-import { endOfDay, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
+import { endOfDay, format, isSameDay, startOfDay } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
 /** 统一时间口径：实体里一律存 ISO 字符串，展示时才格式化 */
@@ -14,20 +14,10 @@ export const startOfDayIso = (d: Date = new Date()): string => startOfDay(d).toI
 
 export const endOfDayIso = (d: Date = new Date()): string => endOfDay(d).toISOString();
 
-export const startOfWeekIso = (d: Date = new Date()): string =>
-  startOfWeek(d, { weekStartsOn: 1 }).toISOString();
-
 /** 是否落在同一天 */
 export const isSameDayIso = (a: string | null | undefined, b: Date = new Date()): boolean => {
   const d = toDate(a);
   return d ? isSameDay(d, b) : false;
-};
-
-/** 今天 09:00 这类"当天整点" */
-export const atTimeToday = (hours: number, minutes = 0, base: Date = new Date()): string => {
-  const d = startOfDay(base);
-  d.setHours(hours, minutes, 0, 0);
-  return d.toISOString();
 };
 
 /** 偏移若干天的某个整点：atTimeOn(1, 9) = 明天 09:00 */
@@ -47,9 +37,6 @@ export const formatMonthDay = (d: Date = new Date()): string => format(d, 'M月d
 
 export const formatTime = (iso: string | null | undefined): string =>
   iso ? format(new Date(iso), 'HH:mm') : '';
-
-export const formatDay = (iso: string | null | undefined): string =>
-  iso ? format(new Date(iso), 'M月d日') : '';
 
 export const formatDayTime = (iso: string | null | undefined): string =>
   iso ? format(new Date(iso), 'M月d日 HH:mm') : '';

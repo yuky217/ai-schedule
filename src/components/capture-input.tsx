@@ -10,6 +10,7 @@ import {
   draftToTime,
   defaultDraft,
   type DateTimeDraft,
+  type DateTimePreset,
 } from '@/components/date-time-picker';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -22,10 +23,14 @@ import { useTheme } from '@/hooks/use-theme';
 /**
  * 快速记录输入条 —— 入口层里最常用的那个。
  *
- * 主交互仍然只有"一个输入框 + 一个灵感开关"：分类、拆解、排期都不在这里问用户。
- * 但借鉴滴答清单补了一排**快捷设置按钮**（时间 / 清单 / 重复 / 提醒）：
- * 记的时候顺手定掉，省得之后再点进详情页补 —— 按钮默认是灰的、不占视觉重量，
- * 设过之后才亮起来显示当前值，所以"极简"和"顺手"不用二选一。
+ * 主交互仍然只有"一个输入框 + 一排 chip"：分类、拆解、排期都不在这里问用户。
+ * 四个 chip（时间 / 清单 / 重复 / 提醒）借鉴滴答清单的快捷设置：记的时候顺手定掉，
+ * 省得之后再点进详情页补 —— 默认是灰的、不占视觉重量，设过之后才亮起来显示当前值。
+ *
+ * **时间 chip 是三合一的**（2026-10-07 减负）：以前"自动识别到的时间"单占一行文字，
+ * 下方"时间"按钮又说同一件事；现在合成一个 chip —— 有手动值显示手动值，没手动值
+ * 显示自动识别的结果，都没有才是占位的「时间」。点它就是把那一刻改成自己想要的，
+ * 界面因此少一行，识别结果也从"只读的提示"变成了"能点能改的东西"。
  */
 export interface CaptureOptions {
   asIdea: boolean;
@@ -43,6 +48,8 @@ export interface CaptureInputProps {
   showIdeaToggle?: boolean;
   /** 可选的归属清单（来自 store 的容器） */
   containers?: Container[];
+  /** 时间面板顶部的快捷预设（如"今天 18:00"）。不传就只有手选 */
+  timePresets?: readonly DateTimePreset[];
   onSubmit: (text: string, options: CaptureOptions) => void | Promise<void>;
 }
 
@@ -54,6 +61,7 @@ export function CaptureInput({
   submitLabel = '记下',
   showIdeaToggle = true,
   containers,
+  timePresets,
   onSubmit,
 }: CaptureInputProps) {
   const theme = useTheme();
@@ -69,12 +77,22 @@ export function CaptureInput({
   const [repeat, setRepeat] = useState<RepeatRule | null>(null);
   const [reminder, setReminder] = useState<number | null>(null);
 
-  /** 打字时实时预览时间识别结果，让"自动识别"是看得见的 */
-  const parsedHint = useMemo(() => {
+  /**
+   * 打字时实时解析一遍，把结果直接喂给"时间 chip"（不再另起一行提示）。
+   * 用户自己设过时间就不解析了 —— 手动的意思比识别到的更明确。
+   */
+  const parsed = useMemo(() => {
     if (asIdea || text.trim().length < 2 || time) return null;
-    const parsed = parseSchedule(text);
-    return parsed.time && parsed.label ? parsed : null;
+    const result = parseSchedule(text);
+    return result.time && result.label ? result : null;
   }, [text, asIdea, time]);
+
+  /**
+   * 时间 chip 显示什么：手动设的 > 自动识别的 > 占位「时间」。
+   * 识别到的也让它亮起来 —— 用户能看见"系统认出了什么"，而且点一下就能改。
+   */
+  const timeChipTime = time ?? parsed?.time ?? null;
+  const timeChipLabel = timeChipTime ? formatTimeOfTime(timeChipTime) : '时间';
 
   const canSubmit = text.trim().length > 0 && !busy;
 
@@ -127,9 +145,6 @@ export function CaptureInput({
     label: p.label,
   }));
 
-  /** 时间按钮显示什么：设过就显示具体值，没设就显示"时间" */
-  const timeLabel = time ? formatTimeOfTime(time) : '时间';
-
   return (
     <View
       style={[
@@ -166,25 +181,16 @@ export function CaptureInput({
         </Pressable>
       </View>
 
-      {parsedHint ? (
-        <View style={[styles.hintRow, { backgroundColor: theme.backgroundSelected }]}>
-          <Ionicons name="time-outline" size={13} color={theme.textSecondary} />
-          <ThemedText type="small" themeColor="textSecondary" style={styles.hintText}>
-            识别到 {parsedHint.label}
-            {parsedHint.title ? ` ·「${parsedHint.title}」` : ''}
-            ，将自动落到日历
-          </ThemedText>
-        </View>
-      ) : null}
-
-      {/* 快捷设置：默认是灰的，设过之后亮起来并显示当前值 */}
+      {/* 快捷设置：默认是灰的，设过之后亮起来并显示当前值。
+          时间那一格同时承担"自动识别的结果"—— 所以它亮不代表用户设过，
+          只代表"这条有时间了"。想改就点它，想清掉长按（只有手动值可清）。 */}
       <View style={styles.quickRow}>
         <QuickButton
           icon="time-outline"
-          label={time ? timeLabel : '时间'}
-          active={Boolean(time)}
+          label={timeChipLabel}
+          active={Boolean(timeChipTime)}
           onPress={() => {
-            setDraft(time ? draftFromTask({ time }) : defaultDraft());
+            setDraft(timeChipTime ? draftFromTask({ time: timeChipTime }) : defaultDraft());
             setSheet('time');
           }}
           onClear={time ? () => setTime(null) : undefined}
@@ -236,8 +242,9 @@ export function CaptureInput({
         onChange={setDraft}
         onCancel={() => setSheet(null)}
         title="什么时候做"
-        onConfirm={() => {
-          const next = draftToTime(draft);
+        presets={timePresets}
+        onConfirm={(value) => {
+          const next = draftToTime(value);
           if (next) setTime(next);
           setSheet(null);
         }}
@@ -382,15 +389,6 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     paddingTop: Spacing.one,
   },
-  hintRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.one,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.one,
-    borderRadius: Spacing.one,
-  },
-  hintText: { flex: 1, fontSize: 12, lineHeight: 16 },
   miniCheckbox: {
     width: 16,
     height: 16,

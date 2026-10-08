@@ -1,4 +1,4 @@
-import { ContainerKind, ContainerStatus, TaskStatus } from './enums';
+import { ContainerKind, TaskStatus } from './enums';
 import type { Task } from './task';
 
 /**
@@ -31,12 +31,6 @@ export const CONTAINER_KIND_LABEL: Record<ContainerKind, string> = {
 
 /** 新建时的默认类型：绝大多数人建的是项目，另外两个要显式选 */
 export const DEFAULT_CONTAINER_KIND: ContainerKind = ContainerKind.Project;
-
-export const CONTAINER_STATUS_LABEL: Record<ContainerStatus, string> = {
-  [ContainerStatus.Active]: '进行中',
-  [ContainerStatus.Done]: '已完成',
-  [ContainerStatus.Archived]: '已归档',
-};
 
 /** 容器的时间跨度文案，甘特图旁边那行小字用 */
 export function describeContainerSpan(

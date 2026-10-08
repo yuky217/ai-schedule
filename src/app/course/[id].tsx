@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { ChoiceSheet } from '@/components/choice-sheet';
 import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
@@ -12,6 +13,7 @@ import { Spacing } from '@/constants/theme';
 import {
   describePeriods,
   describeWeeks,
+  replaceSession,
   sanitizeSessions,
   weekdayLabel,
   type Course,
@@ -30,12 +32,14 @@ import { useAppStore } from '@/state/app-store';
  * 课表的格子太小，放不下任何编辑动作，点一下就进这里。
  *
  * 课名、教师、地点是"改一个字就保存"（没有保存按钮）—— 这些字段不值得
- * 让用户多点一次；已有的时段只给删不给改（改时间意味着"这课换时间了"，
- * 重新导入一次课表比在手机上逐格调更快也更准）。
+ * 让用户多点一次。
  *
- * **例外**：这门课一段时段都没有的时候，"加一段"是唯一的出路 ——
- * 教务系统里那些没排时间的课（实践/网课/待定）就靠它补上，
- * 不给这个入口的话它们永远是"没有时间的课"。
+ * 上课时间（下面那张卡）：**点某一段 = 改它**（星期/节次/周次都能改），
+ * 右侧那个 ⊖ 才是删。改和删都不带二次确认 —— 它们都看得见结果，
+ * 而"再问一遍"会把一次点击变成两次（第一原则）。
+ * 课表网格里长按拖课块改的是星期/节次，这里多给的是**周次**（拖拽改不了它）。
+ * 一段都没有的课（实践/网课/时间待定）靠右上角「加一段」补上 ——
+ * 没这个入口它们永远是"没有时间的课"。
  */
 export default function CourseDetailScreen() {
   const params = useLocalSearchParams<{ id?: string | string[] }>();
@@ -54,6 +58,17 @@ export default function CourseDetailScreen() {
   const course = courses.find((item) => item.id === id) ?? null;
   const [removing, setRemoving] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  /**
+   * 面板正在改第几段（null = 新增一段）。
+   * 一个状态同时装"开没开"和"改哪段"会再多一层判断，拆成两个变量反而清楚。
+   */
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [reminderOpen, setReminderOpen] = useState(false);
+
+  const openSheet = (index: number | null) => {
+    setEditingIndex(index);
+    setSheetOpen(true);
+  };
 
   const patch = useCallback(
     async (changes: Partial<Course>) => {
@@ -129,14 +144,46 @@ export default function CourseDetailScreen() {
       </Card>
 
       <Card
+        title="上课提醒"
+        hint={
+          term
+            ? '只排未来 7 天的课；课表一改，提醒会自动重排'
+            : '还没设开学日 —— 算不出上课时刻，先在课表页脚进「学期」把它填上'
+        }>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setReminderOpen(true)}
+          style={({ pressed }) => [styles.reminderRow, { opacity: pressed ? 0.6 : 1 }]}>
+          <ThemedText type="small">{describeCourseReminder(course.reminderMinutesBefore)}</ThemedText>
+          <View style={styles.spacer} />
+          <ThemedText type="small" themeColor="textSecondary">
+            点一下改
+          </ThemedText>
+          <Ionicons name="chevron-forward" size={14} color={theme.textSecondary} />
+        </Pressable>
+      </Card>
+
+      <ChoiceSheet
+        visible={reminderOpen}
+        title="上课前多久提醒"
+        selectedKey={course.reminderMinutesBefore == null ? 'off' : String(course.reminderMinutesBefore)}
+        options={REMINDER_OPTIONS}
+        onSelect={(key) => {
+          void patch({ reminderMinutesBefore: key === 'off' ? null : Number(key) });
+          setReminderOpen(false);
+        }}
+        onClose={() => setReminderOpen(false)}
+      />
+
+      <Card
         title={course.sessions.length ? `上课时间 · ${course.sessions.length} 段` : '上课时间'}
         hint={
           course.sessions.length
-            ? '换时间了就重新导入一次课表，比在这里一格一格改快'
+            ? '点某一段可以改它'
             : '这类课（实践、网课、时间待定）教务系统里本来就不排时间 —— 知道的时候补上就行'
         }
         right={
-          <Pressable hitSlop={8} onPress={() => setSheetOpen(true)}>
+          <Pressable hitSlop={8} onPress={() => openSheet(null)}>
             <View style={styles.addRow}>
               <Ionicons name="add" size={14} color={theme.text} />
               <ThemedText type="small">加一段</ThemedText>
@@ -151,7 +198,11 @@ export default function CourseDetailScreen() {
               <View
                 key={`${session.weekday}-${session.startPeriod}-${session.endPeriod}-${index}`}
                 style={styles.sessionRow}>
-                <View style={styles.sessionText}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`改这一段：${weekdayLabel(session.weekday)} ${describePeriods(session)}`}
+                  onPress={() => openSheet(index)}
+                  style={({ pressed }) => [styles.sessionText, { opacity: pressed ? 0.55 : 1 }]}>
                   <ThemedText type="smallBold">
                     {weekdayLabel(session.weekday)} {describePeriods(session)}
                     {clock ? ` · ${clock}` : ''}
@@ -160,7 +211,7 @@ export default function CourseDetailScreen() {
                     {describeWeeks(session.weeks, term?.totalWeeks)}
                     {session.location ? ` · 换到 ${session.location}` : place ? ` · ${place}` : ''}
                   </ThemedText>
-                </View>
+                </Pressable>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="删掉这一段"
@@ -172,7 +223,7 @@ export default function CourseDetailScreen() {
             );
           })
         ) : (
-          <Pressable accessibilityRole="button" onPress={() => setSheetOpen(true)}>
+          <Pressable accessibilityRole="button" onPress={() => openSheet(null)}>
             <ThemedText type="small">还没有上课时间 —— 点这里补上一段</ThemedText>
           </Pressable>
         )}
@@ -182,9 +233,15 @@ export default function CourseDetailScreen() {
         visible={sheetOpen}
         totalWeeks={term?.totalWeeks ?? 18}
         periodCount={term?.periods.length}
+        initial={editingIndex == null ? null : course.sessions[editingIndex] ?? null}
         onClose={() => setSheetOpen(false)}
         onSubmit={(session) => {
-          void patch({ sessions: sanitizeSessions([...course.sessions, session]) });
+          void patch({
+            sessions:
+              editingIndex == null
+                ? sanitizeSessions([...course.sessions, session])
+                : replaceSession(course.sessions, editingIndex, session),
+          });
           setSheetOpen(false);
         }}
       />
@@ -203,6 +260,30 @@ export default function CourseDetailScreen() {
       </Pressable>
     </Screen>
   );
+}
+
+/**
+ * 提前量的可选项。
+ *
+ * 为什么默认是 15 分钟而不是"不提醒"：用户导课表图的就是"别错过课"。
+ * 默认关掉等于把"要不要提醒"这个决定又推回给他，而他得先知道有这个开关
+ * 才可能去开 —— 15 分钟够从宿舍走到教室，不想要的人在这里点一下关掉。
+ */
+const REMINDER_OPTIONS = [
+  { key: 'off', label: '不提醒' },
+  { key: '0', label: '上课时提醒', hint: '准点' },
+  { key: '5', label: '提前 5 分钟' },
+  { key: '10', label: '提前 10 分钟' },
+  { key: '15', label: '提前 15 分钟', hint: '默认' },
+  { key: '30', label: '提前半小时' },
+  { key: '60', label: '提前 1 小时' },
+];
+
+function describeCourseReminder(minutes: number | null | undefined): string {
+  if (minutes == null) return '不提醒';
+  if (minutes <= 0) return '上课时提醒';
+  if (minutes % 60 === 0) return `提前 ${minutes / 60} 小时提醒`;
+  return `提前 ${minutes} 分钟提醒`;
 }
 
 /** 一行"标签 + 输入框"，失焦即保存（没有保存按钮） */
@@ -257,5 +338,7 @@ const styles = StyleSheet.create({
   addRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.half },
   sessionText: { flex: 1, gap: 1 },
   sessionMeta: { fontSize: 12, lineHeight: 17 },
+  reminderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one, paddingVertical: Spacing.one },
+  spacer: { flex: 1 },
   danger: { alignSelf: 'center', paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },
 });

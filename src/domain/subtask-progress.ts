@@ -51,14 +51,3 @@ export function desiredParentStatus(
   // 全部完成的父任务被"取消一个子任务"打回待办
   return parent.status === TaskStatus.Done ? TaskStatus.Todo : null;
 }
-
-/** "3/5" 这种文案，没子任务时返回 null（界面上不显示） */
-export function describeSubtaskProgress(progress: SubtaskProgress): string | null {
-  if (progress.total === 0) return null;
-  return `${progress.done}/${progress.total}`;
-}
-
-/** 父任务是否应该显示子任务进度（有子任务才显示） */
-export function hasSubtasks(children: ReadonlyArray<unknown>): boolean {
-  return children.length > 0;
-}

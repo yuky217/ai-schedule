@@ -33,13 +33,16 @@ export type SchedulePreset =
       relativeMinutes: number;
     };
 
+/** 「稍后」的口径只有一份（预设与语义词片共用）：现在 + 2 小时 */
+const LATER_MINUTES = 120;
+
 export const SCHEDULE_PRESETS: readonly SchedulePreset[] = [
   { id: 'today-am', label: '今天 上午', attribute: 'fixed', dayOffset: 0, hour: 9, minute: 0 },
   { id: 'today-pm', label: '今天 下午', attribute: 'fixed', dayOffset: 0, hour: 14, minute: 0 },
   { id: 'tonight', label: '今晚', attribute: 'fixed', dayOffset: 0, hour: 20, minute: 0 },
   { id: 'tomorrow-am', label: '明天 上午', attribute: 'fixed', dayOffset: 1, hour: 9, minute: 0 },
   { id: 'tomorrow-pm', label: '明天 下午', attribute: 'fixed', dayOffset: 1, hour: 14, minute: 0 },
-  { id: 'later', label: '稍后', attribute: 'fixed', relativeMinutes: 120 },
+  { id: 'later', label: '稍后', attribute: 'fixed', relativeMinutes: LATER_MINUTES },
   { id: 'today-due', label: '今晚前', attribute: 'deadline', dayOffset: 0, hour: 23, minute: 59 },
   { id: 'tomorrow-due', label: '明天前', attribute: 'deadline', dayOffset: 1, hour: 23, minute: 59 },
 ];
@@ -79,11 +82,47 @@ export function buildRetimedTime(task: Task, minutesOfDay: number): TaskTime | n
 }
 
 /**
+ * 拖边界改时段（日视图）：开始/结束两个刻度一起写回。
+ *
+ * 与 buildRetimedTime 的分工：拖"整块"只挪开始时刻（时长跟着走没意义），
+ * 拽**上下边**才是调整时长 —— 那一刻用户表达的是"这件事从几点到几点"。
+ * 结束时刻为空的块从此有了 endAt；已有 endAt 的被边拖拽重写。
+ * 两个刻度由界面层各自吸附 15 分钟并保证 start < end，这里只做校验与换算。
+ */
+export function buildRetimedSpanTime(
+  task: Task,
+  startMinutes: number,
+  endMinutes: number,
+): TaskTime | null {
+  const anchor = taskAnchor(task);
+  if (!anchor) return null;
+  const day = new Date(anchor);
+  if (Number.isNaN(day.getTime())) return null;
+
+  const clamp = (m: number) => Math.max(0, Math.min(24 * 60 - 1, Math.round(m)));
+  const start = clamp(startMinutes);
+  const end = clamp(endMinutes);
+  if (end <= start) return null;
+
+  const at = (minutes: number) => {
+    const d = new Date(day);
+    d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return d.toISOString();
+  };
+
+  if (task.time.attribute === TimeAttribute.Deadline) return null;
+  return { attribute: TimeAttribute.Fixed, startAt: at(start), endAt: at(end), dueAt: null };
+}
+
+/**
  * 周视图拖拽：一次手势里同时改「哪一天」和「几点几分」。
  *
  * 与 buildRescheduledTime 的区别就是它还接管时刻 —— 在"7 天列 × 小时轴"
  * 的网格上，横拖换天、纵拖换时刻本来就是同一件事的两半，分开写只会
  * 让视图层做两次落库。
+ *
+ * 有 endAt 的块拖拽时**时长跟着走**（挪的是位置不是长度）——
+ * 用户把一个两小时的会拖到下午，不会期望它变成半小时。
  */
 export function buildPlacedTime(
   task: Task,
@@ -102,7 +141,16 @@ export function buildPlacedTime(
   if (task.time.attribute === TimeAttribute.Deadline) {
     return { attribute: TimeAttribute.Deadline, startAt: null, endAt: null, dueAt: iso };
   }
-  return { attribute: TimeAttribute.Fixed, startAt: iso, endAt: null, dueAt: null };
+  return { attribute: TimeAttribute.Fixed, startAt: iso, endAt: shiftEndAt(task, anchor, iso), dueAt: null };
+}
+
+/** 有 endAt 时按原时长平移到新开始时刻；没有就保持 null（时长本来就没定） */
+function shiftEndAt(task: Task, oldStartIso: string, newStartIso: string): string | null {
+  if (!task.time.endAt) return null;
+  const oldEnd = new Date(task.time.endAt);
+  const oldStart = new Date(oldStartIso);
+  if (Number.isNaN(oldEnd.getTime()) || Number.isNaN(oldStart.getTime())) return null;
+  return new Date(new Date(newStartIso).getTime() + (oldEnd.getTime() - oldStart.getTime())).toISOString();
 }
 
 /**
@@ -135,6 +183,7 @@ export function buildCustomTime(
 /**
  * 拖拽改期：把任务挪到某个日期，保留原来的时刻。
  * 日程型挪 startAt，截止型挪 dueAt；无时间任务返回 null（不该出现在日历上）。
+ * 有 endAt 的同样按时长平移（同 buildPlacedTime：挪位置不挪长度）。
  */
 export function buildRescheduledTime(task: Task, date: Date): TaskTime | null {
   const anchor = taskAnchor(task);
@@ -149,5 +198,117 @@ export function buildRescheduledTime(task: Task, date: Date): TaskTime | null {
   if (task.time.attribute === TimeAttribute.Deadline) {
     return { attribute: TimeAttribute.Deadline, startAt: null, endAt: null, dueAt: iso };
   }
-  return { attribute: TimeAttribute.Fixed, startAt: iso, endAt: null, dueAt: null };
+  return { attribute: TimeAttribute.Fixed, startAt: iso, endAt: shiftEndAt(task, anchor, iso), dueAt: null };
+}
+
+/* ------------------------------------------------------------------ *
+ * 语义词片：用「哪天」说话，而不是「几点几分」
+ * ------------------------------------------------------------------ */
+
+/**
+ * 「今天 / 明天 / 周末 / 下周 / 稍后」—— 按"哪一天"改期。
+ *
+ * 与上面预设的分工说清楚，两者容易混：
+ * - **预设**指定钟点（今天上午 = 09:00），回答"几点开始"；
+ * - **词片**只指定哪一天，回答"哪天做"。收集箱里的任务本来就没有时间，
+ *   用户消化它们的第一念是"今天做 / 周末做"，不是"14:00 开始"。
+ *
+ * 落点是收集箱的长按菜单：长按一行 → 选一个词 → 这条就安排好了，
+ * 不用进详情页、也不用在滚轮上对齐钟点。
+ */
+export type SemanticTarget = 'today' | 'tomorrow' | 'weekend' | 'nextWeek' | 'later';
+
+export const SEMANTIC_TARGETS: readonly { id: SemanticTarget; label: string }[] = [
+  { id: 'today', label: '今天' },
+  { id: 'tomorrow', label: '明天' },
+  { id: 'weekend', label: '周末' },
+  { id: 'nextWeek', label: '下周' },
+  { id: 'later', label: '稍后' },
+];
+
+/** 距最近的那个周六还有几天：周六 → 0，周日 → 6（下周六），周一 → 5 … 周五 → 1 */
+function daysUntilWeekend(base: Date): number {
+  return 6 - base.getDay();
+}
+
+/** 距下一个周一还有几天：周一 → 7（下周一），周日 → 1，周六 → 2 … */
+function daysUntilNextMonday(base: Date): number {
+  // `|| 7` 不是装饰：周一那天 (8-1)%7 = 0，不加会把「下周」落到今天
+  return (8 - base.getDay()) % 7 || 7;
+}
+
+/**
+ * 该目标落在哪一天（本地零点）。
+ *
+ * 边界都取"未来的那一天"，**不产生过去的日期** —— 周日的"周末"给下周六
+ * 而不是刚过去的昨天，否则改完就落在过去，等于把任务弄丢在日历背面。
+ * 「稍后」不落在某一天（它只描述时刻）→ null。
+ */
+export function semanticTargetDate(
+  target: SemanticTarget,
+  base: Date = new Date(),
+): Date | null {
+  if (target === 'later') return null;
+  const d = new Date(base);
+  d.setHours(0, 0, 0, 0);
+  if (target === 'today') return d;
+  if (target === 'tomorrow') {
+    d.setDate(d.getDate() + 1);
+    return d;
+  }
+  if (target === 'weekend') {
+    d.setDate(d.getDate() + daysUntilWeekend(base));
+    return d;
+  }
+  d.setDate(d.getDate() + daysUntilNextMonday(base));
+  return d;
+}
+
+/**
+ * 落到**某一天**。
+ *
+ * 这是"给它定个哪天的日子"的**唯一出口** —— 语义词片（今天/明天/周末…）与
+ * 收集箱拖到日期条，最后都走这里。两处各写一遍"无时间的该给几点"，
+ * 迟早会出现"点菜单落 23:59、拖过去落 09:00"这种同义词给出不同结果的事。
+ *
+ * 两种情形分开处理，因为"放到那天"在两种任务上意思不同：
+ * - **已经有时间**的：只换日期，**时刻和属性都不动**（"明天 09:00 的会"
+ *   挪到后天还是 09:00）；
+ * - **还没时间**的（收集箱里全是这种）：落到那天的 23:59 作为**截止** ——
+ *   用户说的是"这天做"，不是"这天 9 点开始"。用 9 点这个数，下午把一条
+ *   拖到今天就立刻变成"已经过点"，看着像出错；"这天前做完"到今晚之前都成立。
+ *
+ * 23:59 的截止仍然算"那天有安排"：`timeAnchor` 是 startAt ?? dueAt，
+ * 所以这条照样出现在日历那一天，不会凭空消失。
+ */
+export function buildTimeOnDay(task: Task, date: Date): TaskTime | null {
+  if (Number.isNaN(date.getTime())) return null;
+
+  // 已经有时间 → 保留时刻与属性，只换日期
+  if (taskAnchor(task)) return buildRescheduledTime(task, date);
+
+  const d = new Date(date);
+  d.setHours(23, 59, 0, 0);
+  return { attribute: TimeAttribute.Deadline, startAt: null, endAt: null, dueAt: d.toISOString() };
+}
+
+/**
+ * 把任务改到某个语义目标（长按菜单里的"今天/明天/周末/下周"）。
+ *
+ * 「稍后」是唯一例外：它本来就只描述时刻（现在 + 两小时），与哪天无关，
+ * 所以不走 buildTimeOnDay。其余一律交给它 —— 口径只有一份。
+ */
+export function buildSemanticTime(
+  task: Task,
+  target: SemanticTarget,
+  base: Date = new Date(),
+): TaskTime | null {
+  if (target === 'later') {
+    const at = new Date(base.getTime() + LATER_MINUTES * 60_000);
+    return { attribute: TimeAttribute.Fixed, startAt: at.toISOString(), endAt: null, dueAt: null };
+  }
+
+  const date = semanticTargetDate(target, base);
+  if (!date) return null;
+  return buildTimeOnDay(task, date);
 }

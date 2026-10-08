@@ -17,14 +17,14 @@ import { parseDayKey, toDayKey } from '@/utils/datetime';
 /**
  * 自定义时间的选择器。
  *
- * 抽成独立组件是因为有三个地方要"自己指定哪天几点"：
- * 任务详情页、安排面板、以及首页输入框的快捷设置按钮 ——
- * 后两者在任务还不存在的时候就要选时间，所以这里必须能脱离 Task 工作。
+ * 抽成独立组件是因为有几处要"自己指定哪天几点"：
+ * 任务详情页（时间卡里常驻展开）、以及首页输入框的快捷设置按钮 ——
+ * 后者在任务还不存在的时候就要选时间，所以这里必须能脱离 Task 工作。
  *
  * 组件分两层：
  * - `DateTimePickerBody`：纯内容（类型 + 日期 + 时/分双滚轮），可以塞进任何容器；
  * - `DateTimeSheet`：给它的 Modal 外壳，底部弹出。
- * 这样"面板里内嵌"和"独立弹出"共用同一份实现，不会出现两套走样的 UI。
+ * 这样"内嵌常驻"和"独立弹出"共用同一份实现，不会出现两套走样的 UI。
  */
 
 export interface DateTimeDraft {
@@ -193,14 +193,30 @@ export function DateTimePickerBody({ value, onChange, onScrollLockChange }: Date
   );
 }
 
+/**
+ * 快捷预设：一键把草稿定成"今天 18:00"这类完整时间。
+ * 点下即应用并收起（预设的值是完整的，没必要再按一次确认）。
+ */
+export interface DateTimePreset {
+  key: string;
+  label: string;
+  build: () => DateTimeDraft;
+}
+
 export interface DateTimeSheetProps {
   visible: boolean;
   value: DateTimeDraft;
   onChange: (next: DateTimeDraft) => void;
+  /**
+   * 确认时把**当时的时间值**传出来 —— 这样预设 chip 可以"应用 + 确认"一步完成，
+   * 不用等 onChange 的 state 更新（同步连调会拿到旧值）。
+   */
+  onConfirm: (value: DateTimeDraft) => void;
   onCancel: () => void;
-  onConfirm: () => void;
   title?: string;
   confirmLabel?: string;
+  /** 顶部一排快捷预设（如记一件事的"今天 18:00"）。不传就不渲染 */
+  presets?: readonly DateTimePreset[];
 }
 
 /** 底部弹出的外壳：输入框的"时间"快捷按钮直接用它 */
@@ -210,8 +226,9 @@ export function DateTimeSheet({
   onChange,
   onCancel,
   onConfirm,
-  title = '自定义时间',
+  title = '选个时间',
   confirmLabel,
+  presets,
 }: DateTimeSheetProps) {
   const theme = useTheme();
   /** 滚轮按住时关掉本页的滚动（见 TimeWheel 文件头第 1 条） */
@@ -238,6 +255,26 @@ export function DateTimeSheet({
             showsVerticalScrollIndicator={false}
             scrollEnabled={!wheelLocked}
             style={styles.sheetBody}>
+            {presets && presets.length > 0 ? (
+              <View style={styles.presetRow}>
+                {presets.map((preset) => (
+                  <Pressable
+                    key={preset.key}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      const next = preset.build();
+                      onChange(next);
+                      onConfirm(next);
+                    }}
+                    style={[
+                      styles.presetChip,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}>
+                    <ThemedText type="small">{preset.label}</ThemedText>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             <DateTimePickerBody
               value={value}
               onChange={onChange}
@@ -247,7 +284,7 @@ export function DateTimeSheet({
 
           <Pressable
             accessibilityRole="button"
-            onPress={onConfirm}
+            onPress={() => onConfirm(value)}
             style={[styles.primary, { backgroundColor: theme.text }]}>
             <ThemedText type="smallBold" style={{ color: theme.background }}>
               {confirmLabel ?? `设为 ${describeDraft(value)}`}
@@ -294,6 +331,17 @@ const styles = StyleSheet.create({
   quickChip: {
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.one,
+    borderRadius: Spacing.two,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    marginBottom: Spacing.one,
+  },
+  presetChip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
     borderRadius: Spacing.two,
   },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },

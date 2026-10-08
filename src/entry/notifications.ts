@@ -1,6 +1,10 @@
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import { addDays } from 'date-fns';
 import { LogBox, Platform } from 'react-native';
 
+import { coursesOnDate, type Course, type Term } from '@/domain/course';
+import type { CalEvent } from '@/domain/event';
+import { describeEventFire, eventFireAt, type EventFire } from '@/domain/event-reminder';
 import { taskAnchor, type Task } from '@/domain/task';
 
 /**
@@ -89,7 +93,7 @@ export async function getReminderSupport(): Promise<ReminderSupport> {
   }
   let granted = false;
   try {
-    granted = isGranted(await mod.getPermissionsAsync());
+    granted = await hasNotificationPermission(mod);
   } catch {
     granted = false;
   }
@@ -151,11 +155,23 @@ function registerHandler(mod: NotificationsModule): void {
 export async function ensureNotificationPermission(): Promise<boolean> {
   const Notifications = await loadNotifications();
   if (!Notifications) return false;
+  if (await hasNotificationPermission(Notifications)) return true;
   try {
-    const current = await Notifications.getPermissionsAsync();
-    if (isGranted(current)) return true;
     const requested = await Notifications.requestPermissionsAsync();
     return isGranted(requested);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 只问"现在有没有权限"，**不弹框**。
+ * 启动时补排提醒要走这条：用户刚打开 App 就被问"要不要通知"太唐突，
+ * 权限框只该出现在他主动做了一件事之后（记录、导入课表、导入考试）。
+ */
+async function hasNotificationPermission(mod: NotificationsModule): Promise<boolean> {
+  try {
+    return isGranted(await mod.getPermissionsAsync());
   } catch {
     return false;
   }
@@ -272,4 +288,153 @@ export async function cancelAllReminders(): Promise<void> {
   } catch {
     // 忽略
   }
+}
+
+/**
+ * 按未来几天的课重排提醒，返回排上了几条。
+ *
+ * **为什么是"全撤重排"而不是增量维护**：课表是随时会变的东西（重导一次、
+ * 删一门、改个上课时间）。增量太容易漏掉"已经排出去的那条旧通知" ——
+ * 它还会在原时刻弹出来，内容却跟现状对不上，而用户根本不知道那条是旧的。
+ * 全撤重排一把，逻辑上就没有这种漏洞；代价也小：一学期几十门课，
+ * 7 天内也就几十条。
+ *
+ * **为什么只排 7 天**：一次性通知在安卓上有数量上限，一学期全排完会被系统
+ * 静默丢掉一部分（最难查的那种 bug）；而且那么远的通知本来就该随课表变动重排。
+ *
+ * 每门课提前多久由 `course.reminderMinutesBefore` 决定，`null` = 这门课不提醒。
+ */
+export async function syncCourseReminders(
+  courses: readonly Course[],
+  term: Term | null,
+  days = 7,
+): Promise<number> {
+  const Notifications = await loadNotifications();
+  if (!Notifications) return 0;
+
+  try {
+    // 只撤"课程提醒"（按 data.courseId 认），不动任务那边的通知
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const item of scheduled) {
+      const data = item.content.data as { courseId?: string } | undefined;
+      if (data?.courseId) await Notifications.cancelScheduledNotificationAsync(item.identifier);
+    }
+  } catch {
+    // 撤不干净就别往下排 —— 硬排的后果是同一条课弹出两个通知
+    return 0;
+  }
+
+  if (!term || !courses.length) return 0;
+  if (!(await ensureNotificationPermission())) return 0;
+  await ensureAndroidChannel(Notifications);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const now = Date.now();
+  let count = 0;
+
+  for (let offset = 0; offset < days; offset += 1) {
+    const date = addDays(today, offset);
+    for (const slot of coursesOnDate(courses, date, term)) {
+      const lead = slot.course.reminderMinutesBefore;
+      if (lead == null || lead < 0) continue;
+      // slot.start 是"当天第几分钟"，减掉提前量就是该响的时刻
+      const fireAt = new Date(today.getTime() + (slot.start - lead) * 60_000);
+      if (fireAt.getTime() <= now) continue; // 已经过点的课不补提醒
+
+      const periods =
+        slot.session.startPeriod === slot.session.endPeriod
+          ? `第 ${slot.session.startPeriod} 节`
+          : `第 ${slot.session.startPeriod}-${slot.session.endPeriod} 节`;
+      const body = [periods, slot.session.location ?? slot.course.location, slot.course.teacher]
+        .filter((part): part is string => Boolean(part))
+        .join(' · ');
+
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: slot.course.title,
+            body,
+            data: { courseId: slot.course.id },
+          },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireAt },
+        });
+        count += 1;
+      } catch {
+        // 单条排不上不影响其余
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * 给固定日程（考试）排提醒，返回排上了几条。**没有提前量字段** ——
+ * 什么时候响由 `domain/event-reminder.ts` 定死（前一天 20:00，排不上退开考前 1 小时），
+ * 这里只负责把它变成系统通知。
+ *
+ * **同样全撤重排**：考试的导入是"整批替换"语义（教务网重新查一次就整批再导一遍），
+ * 增量维护只会留下一批指向旧考试的幽灵通知 —— 它们还会在原时刻弹出来，
+ * 而用户根本不知道那是上一次导入的。
+ *
+ * **为什么不限天数**（课程那边只排 7 天）：一学期也就十来场考试，
+ * 一次性通知的数量上限撑得住；而且考试本来就发生在几周之后，
+ * 限成 7 天等于一场都排不上 —— 那这个功能就白做了。
+ *
+ * `requestPermission: false` 给**启动时补排**用：系统在重启后可能丢掉已排的一次性
+ * 通知，而考试远在几周后、不像课表那样每次改动都会重排，所以在启动时补一次。
+ * 但那时不该弹权限框（见 hasNotificationPermission 的说明）。
+ */
+export async function syncEventReminders(
+  events: readonly CalEvent[],
+  options: { requestPermission?: boolean } = {},
+): Promise<number> {
+  const Notifications = await loadNotifications();
+  if (!Notifications) return 0;
+
+  try {
+    // 只撤"考试提醒"（按 data.eventId 认），不动任务和课程的通知
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const item of scheduled) {
+      const data = item.content.data as { eventId?: string } | undefined;
+      if (data?.eventId) await Notifications.cancelScheduledNotificationAsync(item.identifier);
+    }
+  } catch {
+    // 撤不干净就别往下排 —— 硬排的后果是同一场考试弹出两个通知
+    return 0;
+  }
+
+  const now = new Date();
+  const upcoming: { event: CalEvent; fire: EventFire }[] = [];
+  for (const event of events) {
+    if (event.deletedAt) continue;
+    const fire = eventFireAt(event, now);
+    if (fire) upcoming.push({ event, fire });
+  }
+  if (!upcoming.length) return 0;
+
+  const granted =
+    options.requestPermission === false
+      ? await hasNotificationPermission(Notifications)
+      : await ensureNotificationPermission();
+  if (!granted) return 0;
+  await ensureAndroidChannel(Notifications);
+
+  let count = 0;
+  for (const { event, fire } of upcoming) {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: event.title,
+          body: describeEventFire(event, fire),
+          data: { eventId: event.id },
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fire.at },
+      });
+      count += 1;
+    } catch {
+      // 单条排不上不影响其余
+    }
+  }
+  return count;
 }
