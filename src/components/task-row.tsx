@@ -74,6 +74,10 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
               内部枚举，摆出来只会让人问"这俩有什么区别"；
             - 提醒不显示：定了时间就有提醒（默认提前 15 分钟），那是设定不是状态；
             - 时间、重复、等谁：都会直接改变你此刻要不要动它，留。
+
+            地点也留：它同样改变你此刻动不动它（"在家"和"去三教"是两种行动），
+            而且**只有用户自己填过才出现** —— 与"系统塞进来的那一堆状态"不同，
+            不会把每一行都堆满。metaRow 本来就是换行的，多一项不会挤掉别的。
           */}
           {task.kind === TaskKind.Habit ? <Meta text={KIND_LABEL[task.kind]} /> : null}
           {task.repeat ? <Meta text={describeRepeat(task.repeat)} /> : null}
@@ -85,6 +89,7 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
           ) : (
             <Meta text="待规划" muted />
           )}
+          {task.location ? <Meta text={task.location} /> : null}
         </View>
       </View>
 

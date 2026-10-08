@@ -152,9 +152,11 @@ export default function TaskDetailScreen() {
   /** 输入框内容单独放，避免每次写库都重渲染整页 */
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
+  const [location, setLocation] = useState('');
   const [waitingFor, setWaitingFor] = useState('');
   const titleRef = useRef('');
   const noteRef = useRef('');
+  const locationRef = useRef('');
   const waitingRef = useRef('');
   /** 目标值：本期次数 / 每次时长（习惯型才有） */
   const [goalOcc, setGoalOcc] = useState('');
@@ -175,9 +177,11 @@ export default function TaskDetailScreen() {
         setDraft(draftFromTask(found));
         setTitle(found.title);
         setNote(found.note ?? '');
+        setLocation(found.location ?? '');
         setWaitingFor(found.waitingFor ?? '');
         titleRef.current = found.title;
         noteRef.current = found.note ?? '';
+        locationRef.current = found.location ?? '';
         waitingRef.current = found.waitingFor ?? '';
         const occ = found.targetOccurrences ? String(found.targetOccurrences) : '';
         const min = found.targetMinutes ? String(found.targetMinutes) : '';
@@ -247,6 +251,12 @@ export default function TaskDetailScreen() {
     const next = noteRef.current.trim();
     if (!task || next === (task.note ?? '')) return;
     await patch({ note: next || null });
+  }, [task, patch]);
+
+  const saveLocation = useCallback(async () => {
+    const next = locationRef.current.trim();
+    if (!task || next === (task.location ?? '')) return;
+    await patch({ location: next || null });
   }, [task, patch]);
 
   const saveWaiting = useCallback(async () => {
@@ -675,6 +685,30 @@ export default function TaskDetailScreen() {
             },
           ]}
         />
+
+        {/*
+          地点：选填的一等字段。它是"这件事在哪儿发生"，而不是备注里的一句话 ——
+          日历上要知道往哪走，那一眼不该靠点进详情页才看得见。
+          与课程 / 固定日程上的同名字段对齐（那两个一直就有）。
+        */}
+        <View
+          style={[
+            styles.locationRow,
+            { borderColor: theme.backgroundSelected, backgroundColor: theme.background },
+          ]}>
+          <Ionicons name="location-outline" size={15} color={theme.textSecondary} />
+          <TextInput
+            value={location}
+            onChangeText={(value) => {
+              setLocation(value);
+              locationRef.current = value;
+            }}
+            onBlur={() => void saveLocation()}
+            placeholder="在哪（选填）"
+            placeholderTextColor={theme.textSecondary}
+            style={[styles.locationInput, { color: theme.text }]}
+          />
+        </View>
 
         {/* 专注累计：原来挂在最底部的「开始做」卡上，那里现在只剩一个底栏按钮 */}
         {describeProgress(task) ? (
@@ -1176,6 +1210,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     textAlignVertical: 'top',
+  },
+  locationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderRadius: Spacing.two,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  locationInput: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+    padding: 0,
   },
   row: {
     flexDirection: 'row',

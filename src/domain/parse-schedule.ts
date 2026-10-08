@@ -28,18 +28,22 @@ export interface ParsedSchedule {
   /** 去掉时间词与重复词后、**提炼过的**标题（粘一整段通知时只取它真正的那一行） */
   title: string;
   /**
-   * 标题之外剩下的正文。粘一整段通知时，"地点：xxx""服装要求：xxx"这类信息
-   * 全落在这儿 —— **不丢**是这一层唯一的立场（没有地点字段，也不必为它开一个）。
+   * 标题之外剩下的正文。粘一整段通知时，"服装要求：xxx""请假条…"这类信息
+   * 全落在这儿 —— **不丢**是这一层唯一的立场。识出来的时间与地点不在此列：
+   * 它们已经进了各自的字段，备注里再留一份只是重复。
    */
   note: string | null;
-  /**
-   * 抠掉时间词之后、**未经提炼的完整正文**（`title` 与 `note` 都从它来）。
-   * 给"原文即内容"的地方用 —— 想法库的 `content` 就是全文，
-   * 那儿不该像任务标题一样被挑出一行、其余塞进备注。
-   */
-  body: string;
   /** 识别出的时间；null = 没识别到 */
   time: TaskTime | null;
+  /**
+   * 识别出的地点；null = 没识别到（或写的是"待定"这类空信息）。
+   *
+   * 认到之后它就从正文里切走了 —— 地点已经在字段上，备注里再留一份只是重复
+   * （与"时间渣"同一个道理，见 `extractLocation`）。
+   */
+  location: string | null;
+  /** 命中的地点片段原文 */
+  locationMatched: string | null;
   /** 识别出的重复；null = 没识别到 */
   repeat: RepeatRule | null;
   /**
@@ -121,7 +125,26 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
   // ③ 提醒："提前半小时提醒我" / "记得提醒我"。命中的片段同样要切掉 —— 它是指令，不是内容
   const remind = extractReminder(text);
 
-  const spans = [...(rep?.spans ?? []), ...(tm?.spans ?? []), ...(remind?.spans ?? [])];
+  /*
+   * ④ 地点。**与时间片段重叠就整个作废**：中文里「地点：xxx」的值一直吃到行尾，
+   * 而"值后面紧跟时刻"的写法（"地点：教一101 19:00"）会让它把时间也吞进来 ——
+   * 那样切完就**少了一个时刻**，而时间比地点重要得多。宁可退回"没认出地点"。
+   */
+  const place = (() => {
+    const hit = extractLocation(text);
+    if (!hit) return null;
+    const clash = [...(rep?.spans ?? []), ...(tm?.spans ?? [])].some((s) =>
+      overlaps(s, hit.spans[0]!),
+    );
+    return clash ? null : hit;
+  })();
+
+  const spans = [
+    ...(rep?.spans ?? []),
+    ...(tm?.spans ?? []),
+    ...(remind?.spans ?? []),
+    ...(place?.spans ?? []),
+  ];
   let picked = pickTitle(removeSpans(text, spans) || text);
   /*
    * 提醒是**指令**、不是内容，所以默认连它一起切。但极端输入会切得什么都不剩 ——
@@ -130,12 +153,14 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
    * 空标题会让上层退回用整段原文（连时间词一起）当名字。
    */
   if (!/[\p{L}\p{N}]/u.test(picked.title)) {
-    const onlyTime = pickTitle(removeSpans(text, [...(rep?.spans ?? []), ...(tm?.spans ?? [])]));
+    const onlyTime = pickTitle(
+      removeSpans(text, [...(rep?.spans ?? []), ...(tm?.spans ?? []), ...(place?.spans ?? [])]),
+    );
     if (/[\p{L}\p{N}]/u.test(onlyTime.title)) picked = onlyTime;
   }
 
   /*
-   * ④ 重复里已经写明周几时，**第一期以它为准**。
+   * ⑤ 重复里已经写明周几时，**第一期以它为准**。
    *
    * 「每周一三五跑步」里的「周一」只是列表的第一项，不代表第一期就在周一 ——
    * 用户等的是眼下最近的那一次。日期规则只会匹配到列表里的第一个「周X」，
@@ -150,8 +175,9 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
   return {
     title: picked.title,
     note: picked.rest,
-    body: picked.body,
     time: aligned,
+    location: place?.location ?? null,
+    locationMatched: place?.raw ?? null,
     repeat: rep?.repeat ?? null,
     reminder: remind?.minutes ?? null,
     reminderUnspecified: Boolean(remind && remind.minutes == null),
@@ -168,8 +194,9 @@ function empty(text: string): ParsedSchedule {
   return {
     title: text,
     note: null,
-    body: text,
     time: null,
+    location: null,
+    locationMatched: null,
     repeat: null,
     reminder: null,
     reminderUnspecified: false,
@@ -353,6 +380,90 @@ function extractReminder(text: string): ReminderHit | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* 地点                                                                */
+/* ------------------------------------------------------------------ */
+
+interface LocationHit {
+  location: string;
+  spans: Span[];
+  raw: string;
+}
+
+/**
+ * 「地点：另行通知」这类**写了等于没写**的值 —— 认了它，地点字段上就挂着一句
+ * 废话，用户还得自己去删。宁可这行原样留在备注里，等他真知道地点时再填。
+ * 「线上」不在此列：那是明确的地点。
+ */
+const EMPTY_PLACES = /^(待定|另行通知|未定|未知|不详|暂无|无|待通知|稍后通知)$/i;
+
+/** 成对的引号壳（`"人民大会堂"` → `人民大会堂`） */
+const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['"', '"'],
+  ["'", "'"],
+  ['“', '”'],
+  ['「', '」'],
+  ['『', '』'],
+  ['【', '】'],
+];
+
+/**
+ * 剥引号，但**只在首尾成对时剥**。
+ *
+ * 「地点："一站式"学生社区211」里的引号是原文对"一站式"的强调，不是包住整个地点的壳 ——
+ * 见引号就剥会留下一个孤零零的闭引号（`一站式"学生社区211`），比不剥更难看。
+ */
+function stripQuotes(value: string): string {
+  for (const [open, close] of QUOTE_PAIRS) {
+    if (value.length > open.length + close.length && value.startsWith(open) && value.endsWith(close)) {
+      return value.slice(open.length, value.length - close.length).trim();
+    }
+  }
+  return value;
+}
+
+/**
+ * 认地点。**只认写明标签的那种**：「地点：xxx」「活动地点：xxx」「地址：xxx」。
+ *
+ * 不认「在体育馆开会」这类 —— 中文里"在"字太常见（"在家工作"是地点还是状态？），
+ * 认错地点比认不出糟得多：用户会按着错的地方出门。
+ *
+ * 值的边界收在"**不含句读、也不含下一个标签**"上，于是：
+ * - 「地点：三教101，请提前到」只取到「三教101」，"请提前到"仍留在备注里；
+ * - 「地点：教一101 时间：9点」在第二个冒号前停下。
+ * 两条都不会把别的内容一口吞掉。
+ */
+function extractLocation(text: string): LocationHit | null {
+  /*
+   * `[ \t]*` 而不是 `\s*`：**空白绝不能跨行**。
+   * 通知里「活动时间及地点：」这一行以标签+冒号结尾、值在下一行，
+   * 用 `\s*` 的话它会吃掉换行，把下一行的「🕖时间」当成地点 —— 真数据上就是这么错的。
+   * 冒号后紧跟换行 ⇒ 这一处没有值 ⇒ 正则自然不匹配，继续去找真正的那个「地点：」。
+   *
+   * 标签前也**不吃空格**：时间正则会把它后面的空格一起圈进自己的区间，
+   * 地点若从那个空格起算，两段就"碰"上了，overlap 检查会把地点整个毙掉。
+   *
+   * 值里排除「请 / 注意 / 务必 / 记得 / 联系 / 届时 / 电话」：这些字几乎不会出现在
+   * 地名里，而它们出现就意味着值后面接了另一句话（"地点：教一101 请提前到"）——
+   * 在那儿停下，地点拿到手，那句话也仍然留在备注里。
+   */
+  const m =
+    /(?:活动|会议|集合|上课|报到)?(?:地点|地址|场地|位置)[ \t]*[：:][ \t]*([^\n，。；！？,;!?：:请注意务必记得联系届时电话]{1,30})/.exec(
+      text,
+    );
+  if (!m) return null;
+
+  const value = stripQuotes(m[1]!.replace(/[\s，。；、]+$/, ''));
+  if (!value || EMPTY_PLACES.test(value)) return null;
+
+  // 整段（标签 + 值）一起切掉：地点已经进了字段，备注里再留一份只是重复
+  return {
+    location: value,
+    spans: [{ start: m.index, end: m.index + m[0].length }],
+    raw: m[0],
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* 时间                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -365,6 +476,11 @@ interface TimeHit {
 
 function spanOf(m: RegExpExecArray): Span {
   return { start: m.index, end: m.index + m[0].length };
+}
+
+/** 两段在原文里是否交叠。用来让"地点"给"时间"让路（见 parseSchedule ④） */
+function overlaps(a: Span, b: Span): boolean {
+  return a.start < b.end && b.start < a.end;
 }
 
 function parseTime(text: string, now: Date): TimeHit | null {
@@ -651,7 +767,7 @@ const TITLE_MAX = 40;
  * 这里**不做语义理解**（那是能力层 `Understand` 的事）：一行都挑不出像样的，
  * 就退回"整段压平后截断" —— 宁可标题长一点，也不替用户编一个他没写的名字。
  */
-function pickTitle(raw: string): { title: string; rest: string | null; body: string } {
+function pickTitle(raw: string): { title: string; rest: string | null } {
   const lines = raw
     .split('\n')
     .map((line) => ({
@@ -663,7 +779,7 @@ function pickTitle(raw: string): { title: string; rest: string | null; body: str
   const body = lines.map((l) => l.text).join('\n').trim() || raw.split(TIME_CUT).join(' ').trim();
 
   if (lines.length <= 1) {
-    return { title: shorten(cleanTitle(body)), rest: null, body };
+    return { title: shorten(cleanTitle(body)), rest: null };
   }
 
   const at = lines.findIndex((line) => isTitleLike(line.text));
@@ -674,7 +790,7 @@ function pickTitle(raw: string): { title: string; rest: string | null; body: str
     .join('\n')
     .trim();
 
-  return { title: shorten(cleanTitle(head)), rest: rest || null, body };
+  return { title: shorten(cleanTitle(head)), rest: rest || null };
 }
 
 /**
@@ -715,13 +831,17 @@ function stripLineMarks(line: string): string {
 /**
  * 这一行像不像"这段文字的名字"。三条否决都很便宜，而且**只在多行文本里生效**：
  * 太短（序号碎片、"时间"两个字）、寒暄（称呼开场）、以冒号结尾（分节小标题，
- * 比如"活动时间及地点："——它是小标题，不是这件事的名字）。
+ * 比如"活动时间及地点："——它是小标题，不是这件事的名字）、以地点标签开头。
+ *
+ * 最后那条是给**没认出来的地点行**兜底的：「地点：另行通知」不会被 extractLocation
+ * 认走（那是空信息，得留在备注里），但它显然也不是这件事的名字。
  */
 function isTitleLike(line: string): boolean {
   const s = line.trim();
   if (s.length < 3) return false;
   if (/^(各位|尊敬的|亲爱的|大家好|你们好)/.test(s)) return false;
   if (/[：:]$/.test(s)) return false;
+  if (/^(?:活动|会议|集合|上课|报到)?\s*(?:地点|地址|场地|位置)\s*[：:]/.test(s)) return false;
   return true;
 }
 

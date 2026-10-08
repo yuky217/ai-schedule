@@ -49,6 +49,8 @@ export interface CreateTaskInput {
   /** 便捷写法，等价于 time.dueAt */
   dueAt?: string | null;
   note?: string | null;
+  /** 地点（可选）：一件事在哪儿发生 */
+  location?: string | null;
   tags?: string[];
   priority?: Priority;
   containerId?: string | null;
@@ -71,6 +73,7 @@ export function createTask(input: CreateTaskInput): Task {
     ...createBase('task'),
     title: input.title.trim(),
     note: input.note ?? null,
+    location: input.location?.trim() || null,
     kind,
     status: TaskStatus.Todo,
     time: normalizeTime(kind, input),

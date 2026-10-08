@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS ${TABLES.tasks} (
   id                TEXT PRIMARY KEY NOT NULL,
   title             TEXT NOT NULL,
   note              TEXT,
+  location          TEXT,
   kind              TEXT NOT NULL,
   status            TEXT NOT NULL,
   time_attribute    TEXT NOT NULL,
@@ -284,4 +285,13 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
   7: [
     `ALTER TABLE ${TABLES.ideas} ADD COLUMN breakdown_task_id TEXT`,
   ],
+  /**
+   * v8 = tasks 加 location（地点）。
+   *
+   * 课程与固定日程**早就有这个列**，只有任务没有 —— 于是"粘一整段通知"里
+   * 那句「地点：xxx」只能躺在备注里，日历上看不见"要去哪"。
+   * 加列而不是开新表：它跟 note 一样是任务自己的一行属性，永远随任务一起读出来。
+   * **可空**，于是老数据不用回填 —— 没填过地点的任务读出来跟以前完全一样。
+   */
+  8: [`ALTER TABLE ${TABLES.tasks} ADD COLUMN location TEXT`],
 };

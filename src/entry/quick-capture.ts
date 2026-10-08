@@ -84,8 +84,12 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
 
   // 【灵感】→ 想法库：不提醒、不催办
   if (decision.route === 'idea') {
-    // 想法库的 content 就是全文 —— "提炼标题"是给任务用的，别把想法截成一行
-    const idea = createIdea(parsed.body || displayText, source);
+    /*
+     * 想法库的 content 是**用户输入的那段原文**，一字不改。
+     * 不能拿解析后的 title/note：那是给任务用的"提炼 + 抠掉时间地点"，
+     * 想法不排时间、也没有地点字段，抠掉任何一个字都是白丢信息。
+     */
+    const idea = createIdea(text, source);
     await ideaRepository.create(idea);
     return {
       id: idea.id,
@@ -122,6 +126,8 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   const task = createTask({
     title: displayText,
     note: parsed.note,
+    // 地点：解析出来的直接带走（"地点：xxx"已经从备注里切走，不会两边各留一份）
+    location: parsed.location,
     kind,
     time: time ?? undefined,
     source,

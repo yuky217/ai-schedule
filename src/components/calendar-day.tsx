@@ -673,8 +673,14 @@ function TimedBlock({
             <ThemedText type="small" numberOfLines={2} style={done ? styles.struck : undefined}>
               {task.title}
             </ThemedText>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.blockTime}>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.blockTime} numberOfLines={1}>
               {formatMinutes(start)}–{formatMinutes(end)}
+              {/*
+                地点跟着时刻走，接在同一行 —— 跟上面的课程带一个路子。
+                块矮的时候不显示（**块高就是空间预算**）：半小时的块只有 46px，
+                塞进来只会把时刻挤没，而"几点"比"在哪儿"要紧。
+              */}
+              {task.location && height >= HOUR_HEIGHT ? ` · ${task.location}` : ''}
             </ThemedText>
           </View>
           {/* 勾选圈是开关（2026-10-08）：没做的点一下完成，点错了再点一下就回来 ——

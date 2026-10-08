@@ -361,3 +361,40 @@ describe('日历时间窗（判据 = 整段重叠）', () => {
     expect((await taskRepository.listInbox()).map((t) => t.id)).toEqual([task.id]);
   });
 });
+
+/**
+ * 地点（schema v8 加的列）。
+ *
+ * 这一组测的是**真实 SQL**，因为列名写错、mapper 漏映射这类错，tsc 一个字都不会报 ——
+ * 它们只在跑起来的那一刻现形。库里存不住的行**就是没有**，用户不会收到任何报错。
+ */
+describe('地点：存得下，也读得回', () => {
+  it('写进去的地点原样读回来（含引号这种容易被"清洗"掉的字符）', async () => {
+    const task = createTask({
+      title: '团委大会',
+      kind: TaskKind.Schedule,
+      location: '"一站式"学生社区211',
+    });
+    await taskRepository.create(task);
+
+    expect((await taskRepository.getById(task.id))?.location).toBe('"一站式"学生社区211');
+  });
+
+  it('没填地点读出来是 null，不是空串', async () => {
+    const task = untimed();
+    await taskRepository.create(task);
+
+    expect((await taskRepository.getById(task.id))?.location).toBeNull();
+  });
+
+  it('改地点与清空地点都落得下', async () => {
+    const task = untimed();
+    await taskRepository.create(task);
+
+    await taskRepository.update(task.id, { location: '三教101' });
+    expect((await taskRepository.getById(task.id))?.location).toBe('三教101');
+
+    await taskRepository.update(task.id, { location: null });
+    expect((await taskRepository.getById(task.id))?.location).toBeNull();
+  });
+});

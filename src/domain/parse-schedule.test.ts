@@ -347,21 +347,21 @@ describe('粘一整段通知：标题只取它真正的那一行', () => {
     expect(parseSchedule(NOTICE, NOW).title).toBe('团委大会暨团委素质拓展活动开展');
   });
 
-  it('地点不进任何字段，但一个字都没丢 —— 全在备注里', () => {
+  it('地点进 location 字段，引号剥掉；备注里不再重复一份', () => {
+    const r = parseSchedule(NOTICE, NOW);
+    expect(r.location).toBe('"一站式"学生社区211');
+    expect(r.note).not.toContain('一站式');
+  });
+
+  it('备注留下的是"除了名字/时间/地点之外的原文"，一条不丢', () => {
     const note = parseSchedule(NOTICE, NOW).note ?? '';
-    expect(note).toContain('地点："一站式"学生社区211');
     expect(note).toContain('服装要求');
     expect(note).toContain('请假条');
+    expect(note).toContain('@所有人');
   });
 
   it('时间行不留渣：时间已经进了字段，备注里不再重复一份', () => {
     expect(parseSchedule(NOTICE, NOW).note).not.toContain('（下周三）');
-  });
-
-  it('body 是未经提炼的完整正文（想法库用得到：那儿的 content 就是全文）', () => {
-    const body = parseSchedule(NOTICE, NOW).body;
-    expect(body).toContain('地点："一站式"学生社区211');
-    expect(body).toContain('关于团委大会暨团委素质拓展活动开展通知');
   });
 });
 
@@ -370,7 +370,6 @@ describe('标题提炼只在多行时才动手', () => {
     const r = parseSchedule('明天下午3点开会', NOW);
     expect(r.title).toBe('开会');
     expect(r.note).toBeNull();
-    expect(r.body).toBe('开会');
   });
 
   it('第一行是寒暄时往后找，不拿"各位…你们好"当名字', () => {
@@ -394,3 +393,66 @@ describe('标题提炼只在多行时才动手', () => {
     expect(r.title).toContain('各位');
   });
 });
+
+/**
+ * 地点（2026-10-08 用户拍板开字段）。
+ *
+ * 立场和别的识别一样：**只认写明标签的那种**，认不出就原样留在备注里。
+ * 不认「在体育馆开会」这类 —— 中文里"在"字太常见，认错地点比认不出糟得多
+ * （用户会按着错的地方出门）。
+ */
+describe('地点：只认 "标签：值" 那种写法', () => {
+  it('常见的几种标签都认', () => {
+    const cases: Array<[string, string]> = [
+      ['明天9点开会 地点：教一101', '教一101'],
+      ['明天9点开会 活动地点：教一101', '教一101'],
+      ['明天9点 地址：三号楼201', '三号楼201'],
+      ['明天9点 场地：体育馆', '体育馆'],
+      ['明天9点 集合地点：三教门口', '三教门口'],
+    ];
+    for (const [text, want] of cases) {
+      expect(parseSchedule(text, NOW).location, text).toBe(want);
+    }
+  });
+
+  it('值的边界：不吞后面的那句话，也不跨到下一个标签', () => {
+    // 「请」处停下 —— 地点拿到手，"请提前到"还留在正文里
+    const a = parseSchedule('明天9点开会 地点：教一101 请提前到', NOW);
+    expect(a.location).toBe('教一101');
+    expect(a.title).toContain('请提前到');
+
+    // 逗号处停下（标题行写长一点，别撞上"两个字不算标题"那条既有判据）
+    const b = parseSchedule('10月9日开运动会彩排\n地点：教一101，请提前到', NOW);
+    expect(b.location).toBe('教一101');
+    expect(b.note).toContain('请提前到');
+  });
+
+  it('引号：包住整个地点的壳剥掉，只是强调的引号留着', () => {
+    expect(parseSchedule('开会 地点："人民大会堂"', NOW).location).toBe('人民大会堂');
+    expect(parseSchedule('开会 地点：「三教101」', NOW).location).toBe('三教101');
+    // "一站式"是原话里的强调引号，与后面的 211 一起才是完整地点，剥掉会剩个孤零零的闭引号
+    expect(parseSchedule('开会 地点："一站式"学生社区211', NOW).location).toBe(
+      '"一站式"学生社区211',
+    );
+  });
+
+  it('"写了等于没写"的值不认，那行原样留在备注里', () => {
+    const text = ['家长会', '地点：另行通知'].join('\n');
+    const r = parseSchedule(text, NOW);
+    expect(r.location).toBeNull();
+    expect(r.note).toContain('另行通知');
+  });
+
+  it('不认「地点在xxx」：没有标签冒号的写法一律放过（"在家工作"是地点还是状态？）', () => {
+    const r = parseSchedule('明天在体育馆开会', NOW);
+    expect(r.location).toBeNull();
+  });
+
+  it('地点与时间重叠时给时间让路 —— 宁可没认出地点，也不能少一个时刻', () => {
+    // 「地点：」的值里裹着时刻：认它就会连时刻一起切走，所以整个不认，时间照常识出
+    const r = parseSchedule('开会 地点：明天10点楼下集合', NOW);
+    expect(r.location).toBeNull();
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 10, 0));
+  });
+});
+

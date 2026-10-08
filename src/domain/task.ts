@@ -52,6 +52,14 @@ export interface TaskProgress {
 export interface Task extends BaseEntity {
   title: string;
   note?: string | null;
+  /**
+   * 地点（可选）。**与课程、固定日程上的同名字段对齐** —— 那两者早就有它了，
+   * 只有任务没有，于是"粘一整段通知"里那句「🏠地点：…」只能躺在备注里。
+   *
+   * 它是"这件事在哪儿发生"，不是"这件事是什么"的一部分：日历上你要知道去哪，
+   * 而那一眼不该靠点进详情页才能看见。
+   */
+  location?: string | null;
   kind: TaskKind;
   status: TaskStatus;
   time: TaskTime;

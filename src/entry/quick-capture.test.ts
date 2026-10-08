@@ -65,10 +65,14 @@ describe('quickCapture：粘一整段通知', () => {
     expect(r.route).toBe('calendar');
   });
 
-  it('原文没有丢：地点这些全在备注里', async () => {
+  it('地点进了 location 字段，备注里不留重复', async () => {
     await quickCapture({ text: NOTICE });
     const task = written[0]!;
-    expect(String(task.note)).toContain('地点："一站式"学生社区211');
+    expect(task.location).toBe('"一站式"学生社区211');
+    expect(String(task.note)).not.toContain('一站式');
+    // 除名字 / 时间 / 地点之外的原文一条不丢
+    expect(String(task.note)).toContain('服装要求');
+    expect(String(task.note)).toContain('请假条');
   });
 
   /*

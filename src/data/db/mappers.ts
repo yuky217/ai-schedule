@@ -93,6 +93,7 @@ interface BaseRow {
 export interface TaskRow extends BaseRow {
   title: string;
   note: string | null;
+  location: string | null;
   kind: string;
   status: string;
   time_attribute: string;
@@ -126,6 +127,7 @@ export function taskFromRow(row: TaskRow): Task {
     ...readBase(row),
     title: row.title,
     note: row.note,
+    location: row.location,
     kind: row.kind as Task['kind'],
     status: row.status as Task['status'],
     time,
@@ -155,6 +157,7 @@ export function taskColumns(task: Task): ColumnMap {
     id: task.id,
     title: task.title,
     note: task.note ?? null,
+    location: task.location ?? null,
     kind: task.kind,
     status: task.status,
     time_attribute: time.attribute,

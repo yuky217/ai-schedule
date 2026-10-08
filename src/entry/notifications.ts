@@ -228,7 +228,7 @@ export async function scheduleTaskReminder(task: Task): Promise<string | null> {
   }
 
   const isDeadline = task.time.attribute === 'deadline';
-  const body =
+  const when =
     offsetMinutes > 0
       ? `还有 ${offsetMinutes >= 60 ? `${offsetMinutes / 60} 小时` : `${offsetMinutes} 分钟`}${
           isDeadline ? '截止' : '开始'
@@ -236,6 +236,12 @@ export async function scheduleTaskReminder(task: Task): Promise<string | null> {
       : task.kind === 'schedule'
         ? '到点了'
         : '这件事的截止时间快到了';
+  /*
+   * 地点跟着提醒一起送达。
+   * 看到通知的那一刻，正是要决定"现在动不动身、往哪走"的那一刻 ——
+   * 把地点留在详情页里，等于用户收到提醒后还得再点两下才知道去哪儿。
+   */
+  const body = task.location ? `${when} · ${task.location}` : when;
 
   try {
     const Notifications = await loadNotifications();
