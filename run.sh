@@ -12,6 +12,10 @@ case "$CMD" in
   test) exec npx vitest run "$@" ;;
   # 出 APK：Windows 路径不能含中文（clang/ninja/prefab 都按 GBK 读 UTF-8 会乱码），
   # 所以项目必须放在纯 ASCII 路径下构建。全套 env 缺一不可，逐条理由见下面注释。
+  # ⚠️ 必须 assembleRelease（2026-10-08 教训）：debug 包**不内嵌 JS bundle**，
+  # 装到手机上会去找 Metro 开发服务器 —— 没有 Metro 就永远卡在蓝底启动屏。
+  # release 包才把 JS 编进 APK（assets/index.android.bundle），离线可跑。
+  # 签名用的是 debug keystore（build.gradle 里 release 段就这么配的），个人安装够用。
   apk)
     # PATH 里的 node 是 22.22.2，跑 prebuild 会 0xC0000409 崩，必须用 24
     export PATH="D:/node:$PATH"
@@ -21,6 +25,17 @@ case "$CMD" in
     export ANDROID_HOME="D:/Android/Sdk"
     # which java 拿到的是 Oracle javapath shim，dirname 会得到错目录，直接写死
     export JAVA_HOME="D:/java_JDK"
+    # gradlew 在 android/ 里；自己 cd 进去，从哪个目录调这条命令都成立
+    cd android || exit 1
+    exec ./gradlew assembleRelease --no-daemon -x lint --max-workers=4 "$@" ;;
+  apk-debug)
+    # 只给"连着电脑跑 Metro 调试"用：npx expo start 起服务器，debug 包才有东西可加载
+    export PATH="D:/node:$PATH"
+    export GRADLE_USER_HOME="D:/gradle-home"
+    export TMP="D:/tmp-build" TEMP="D:/tmp-build"
+    export ANDROID_HOME="D:/Android/Sdk"
+    export JAVA_HOME="D:/java_JDK"
+    cd android || exit 1
     exec ./gradlew assembleDebug --no-daemon -x lint --max-workers=4 "$@" ;;
   *) exec "$CMD" "$@" ;;
 esac
