@@ -223,6 +223,8 @@ interface AppState {
 
   /** 开一次专注（可绑定任务）。返回会话，供页面拿到 id */
   startFocus: (taskId: string | null, plannedMinutes?: number | null) => Promise<FocusSession>;
+  /** 中途改计划时长等轻量更新（页面持着 startFocus 返回的会话对象改完存回） */
+  saveFocusSession: (session: FocusSession) => Promise<void>;
   /**
    * 结束专注：落库 + 把时长记到任务上（够目标就自动完成）+ 给一句回执。
    *
@@ -691,6 +693,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const session = createFocusSession(taskId, plannedMinutes ?? null);
     await focusRepository.create(session);
     return session;
+  },
+
+  saveFocusSession: async (session) => {
+    await focusRepository.save(session);
   },
 
   finishFocus: async (sessionId, payload) => {

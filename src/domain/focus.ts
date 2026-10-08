@@ -1,5 +1,8 @@
 import type { BaseEntity } from './base';
 
+/** 时长档位（设置页与专注页共用同一份，两边不会出现不一样的档） */
+export const FOCUS_MINUTE_PRESETS = [15, 25, 45, 60] as const;
+
 /**
  * 专注会话（主文档第六节）。
  *

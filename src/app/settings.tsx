@@ -13,11 +13,10 @@ import { restoreFromPicker } from '@/data/backup/import';
 import { SCHEMA_VERSION } from '@/data/db/schema';
 import { getReminderSupport, sendTestReminder, type ReminderSupport } from '@/entry/notifications';
 import { disableOverlay, enableOverlay, getOverlaySupport, type OverlaySupport } from '@/entry/overlay';
+import { FOCUS_MINUTE_PRESETS } from '@/domain/focus';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
-
-const FOCUS_PRESETS = [15, 25, 45, 60] as const;
 
 /**
  * 设置页。
@@ -193,7 +192,7 @@ export default function SettingsScreen() {
             默认专注时长（分钟）
           </ThemedText>
           <View style={styles.chips}>
-            {FOCUS_PRESETS.map((minutes) => {
+            {FOCUS_MINUTE_PRESETS.map((minutes) => {
               const active = settings.defaultFocusMinutes === minutes;
               return (
                 <Pressable

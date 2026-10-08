@@ -5,11 +5,13 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { ChoiceSheet } from '@/components/choice-sheet';
 import { GrowthOrb } from '@/components/growth-orb';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { TimeAttribute } from '@/domain/enums';
+import { FOCUS_MINUTE_PRESETS, type FocusSession } from '@/domain/focus';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -41,10 +43,17 @@ export default function FocusScreen() {
 
   const startFocus = useAppStore((state) => state.startFocus);
   const finishFocus = useAppStore((state) => state.finishFocus);
+  const saveFocusSession = useAppStore((state) => state.saveFocusSession);
   const loadTask = useAppStore((state) => state.loadTask);
 
   const [boundTask, setBoundTask] = useState<Task | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /*
+   * 计划时长：进场带设置里的默认值，**当场可改** ——
+   * "这次想专注 45 分钟"不该逼人先去设置页改全局默认再回来（第一原则②）。
+   */
+  const [planned, setPlanned] = useState(defaultMinutes);
+  const [pickMinutes, setPickMinutes] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [running, setRunning] = useState(true);
   const [intent, setIntent] = useState('');
@@ -54,6 +63,7 @@ export default function FocusScreen() {
 
   const elapsedRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
+  const sessionRef = useRef<FocusSession | null>(null);
   const finishedRef = useRef(false);
 
   useEffect(() => {
@@ -81,7 +91,10 @@ export default function FocusScreen() {
     let cancelled = false;
     (async () => {
       const session = await startFocus(taskId, defaultMinutes);
-      if (!cancelled) setSessionId(session.id);
+      if (!cancelled) {
+        sessionRef.current = session;
+        setSessionId(session.id);
+      }
     })();
     return () => {
       cancelled = true;
@@ -89,6 +102,17 @@ export default function FocusScreen() {
     // 只在进入页面时执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 中途改计划时长：本地立即生效（进度条马上变），库里也顺手更新 */
+  const changePlanned = (minutes: number) => {
+    setPickMinutes(false);
+    if (minutes === planned) return;
+    setPlanned(minutes);
+    const session = sessionRef.current;
+    if (!session) return;
+    session.plannedMinutes = minutes;
+    void saveFocusSession({ ...session, plannedMinutes: minutes });
+  };
 
   // 计时
   useEffect(() => {
@@ -134,7 +158,7 @@ export default function FocusScreen() {
     }
   };
 
-  const plannedSeconds = defaultMinutes * 60;
+  const plannedSeconds = planned * 60;
   const progress = plannedSeconds > 0 ? Math.min(1, elapsed / plannedSeconds) : 0;
 
   return (
@@ -148,17 +172,27 @@ export default function FocusScreen() {
             : '没绑定具体任务也可以，先专注再说'
       }
       right={
+        /* 语义要能和「结束」区分开：这个出口 = 时长照记、但不标记完成 */
         <Pressable hitSlop={8} onPress={() => router.back()}>
-          <Ionicons name="chevron-down" size={24} color={theme.textSecondary} />
+          <ThemedText type="small" themeColor="textSecondary">
+            不记了
+          </ThemedText>
         </Pressable>
       }>
       {/* 主角：时间 */}
       <View style={styles.timerBlock}>
         <ThemedText style={styles.timer}>{formatDuration(elapsed)}</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary">
-          {running ? `计划 ${defaultMinutes} 分钟` : '已暂停'} ·
-          {progress >= 1 ? ' 已经超出计划，随时可以收工' : ` 完成度 ${Math.round(progress * 100)}%`}
-        </ThemedText>
+        <View style={styles.planRow}>
+          <Pressable hitSlop={8} onPress={() => setPickMinutes(true)} style={styles.planChip}>
+            <Ionicons name="timer-outline" size={14} color={theme.textSecondary} />
+            <ThemedText type="small" themeColor="textSecondary">
+              {running ? `计划 ${planned} 分钟` : `已暂停 · 计划 ${planned} 分钟`}
+            </ThemedText>
+          </Pressable>
+          <ThemedText type="small" themeColor="textSecondary">
+            {progress >= 1 ? '已超出计划，随时可以收工' : `完成度 ${Math.round(progress * 100)}%`}
+          </ThemedText>
+        </View>
       </View>
 
       <View style={styles.orbBlock}>
@@ -240,12 +274,33 @@ export default function FocusScreen() {
           </ThemedText>
         </Pressable>
       </View>
+
+      {/* 场计划时长：点「计划 N 分钟」弹出，选中即生效（不做二次确认） */}
+      <ChoiceSheet
+        visible={pickMinutes}
+        title="这场专注计划多久"
+        options={FOCUS_MINUTE_PRESETS.map((m) => ({ key: String(m), label: `${m} 分钟` }))}
+        selectedKey={String(planned)}
+        onSelect={(key) => changePlanned(Number(key))}
+        onClose={() => setPickMinutes(false)}
+      />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
   timerBlock: { alignItems: 'center', gap: Spacing.two, paddingTop: Spacing.five },
+  planRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three, flexWrap: 'wrap', justifyContent: 'center' },
+  planChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.half,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    borderRadius: Spacing.two,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'transparent',
+  },
   timer: {
     fontSize: 64,
     lineHeight: 72,
