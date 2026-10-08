@@ -20,10 +20,13 @@ describe('日期 + 时刻', () => {
     expect(r.repeat).toBeNull();
   });
 
-  it('今晚8点提醒吃药', () => {
+  it('今晚8点提醒吃药 —— 「提醒」是指令，标题只剩「吃药」', () => {
     const r = parseSchedule('今晚8点提醒吃药', NOW);
-    expect(r.title).toBe('提醒吃药');
+    expect(r.title).toBe('吃药');
     expect(r.time?.startAt).toBe(at(2026, 10, 7, 20, 0));
+    // 提了提醒但没写提前多久 → 交给上层按类型定（这里不猜）
+    expect(r.reminder).toBeNull();
+    expect(r.reminderUnspecified).toBe(true);
   });
 
   it('周五下午3点开会 → 本周五（还没到）', () => {
@@ -229,6 +232,62 @@ describe('中文数字时刻', () => {
     expect(r.time?.startAt).toBeNull();
     expect(new Date(r.time!.dueAt!).getDay()).toBe(5);
     expect(new Date(r.time!.dueAt!).getHours()).toBe(23);
+  });
+});
+
+/**
+ * 提醒识别（2026-10-08）。
+ *
+ * 规则是"**没提就不提醒**"，所以这一层的每一句话都在决定"要不要发通知" ——
+ * 动词是入场券（光有"提前半小时"可能是行程），写明的量优先于类型默认值。
+ */
+describe('提醒', () => {
+  it('提前半小时提醒我 → 30 分钟，并把它从标题里切掉', () => {
+    const r = parseSchedule('明天下午3点开会，提前半小时提醒我', NOW);
+    expect(r.reminder).toBe(30);
+    expect(r.reminderUnspecified).toBe(false);
+    expect(r.reminderLabel).toBe('提前 30 分钟');
+    expect(r.reminderMatched).toContain('提前半小时');
+    expect(r.title).toBe('开会');
+  });
+
+  it('阿拉伯数字与小时都认', () => {
+    expect(parseSchedule('10月8日 12:00 前交表，提前30分钟提醒', NOW).reminder).toBe(30);
+    expect(parseSchedule('10月8日 12:00 前交表，提前1小时提醒我', NOW).reminder).toBe(60);
+    expect(parseSchedule('10月8日 12:00 前交表，提前两小时叫我', NOW).reminder).toBe(120);
+  });
+
+  it('准点提醒 → 0（不是"没写"）', () => {
+    const r = parseSchedule('明天9点开会，准点提醒我', NOW);
+    expect(r.reminder).toBe(0);
+    expect(r.reminderUnspecified).toBe(false);
+    expect(r.title).toBe('开会');
+  });
+
+  it('只提了提醒没给量 → 交给类型默认值，这里不猜', () => {
+    const r = parseSchedule('明天9点开会，记得提醒我', NOW);
+    expect(r.reminder).toBeNull();
+    expect(r.reminderUnspecified).toBe(true);
+    expect(r.title).toBe('开会');
+  });
+
+  it('没有提醒动词 → 一个字都不认（"提前半小时出发"不是提醒）', () => {
+    const r = parseSchedule('明天9点出发，提前半小时出门', NOW);
+    expect(r.reminder).toBeNull();
+    expect(r.reminderUnspecified).toBe(false);
+    expect(r.reminderMatched).toBeNull();
+  });
+
+  it('切到什么都不剩时退一步：留着「提醒我」当标题，也不给空标题', () => {
+    const r = parseSchedule('明天9点提醒我', NOW);
+    expect(r.title.trim().length).toBeGreaterThan(0);
+    expect(r.reminderUnspecified).toBe(true);
+  });
+
+  it('整段通知里没有提醒动词 → 不认（"关于…通知"里的"通知"不算）', () => {
+    const r = parseSchedule('关于团委大会的通知\n时间：10月14日 19:00\n地点：211', NOW);
+    expect(r.reminder).toBeNull();
+    expect(r.reminderUnspecified).toBe(false);
   });
 });
 

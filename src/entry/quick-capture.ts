@@ -5,6 +5,7 @@ import type { TaskKind } from '@/domain/enums';
 import { createIdea, createTask } from '@/domain/factory';
 import { decideRoute, type CaptureRoute } from '@/domain/routing';
 import { parseSchedule } from '@/domain/parse-schedule';
+import { resolveReminderMinutes } from '@/domain/reminder';
 import type { RepeatRule, TaskTime } from '@/domain/task';
 
 import { scheduleTaskReminder } from './notifications';
@@ -30,7 +31,10 @@ export interface QuickCaptureInput {
    */
   containerId?: string | null;
   repeat?: RepeatRule | null;
-  /** 提醒提前量（分钟），0 = 准点 */
+  /**
+   * 用户当场设的提醒提前量（分钟）：0 = 准点，**null = 明确不要提醒**。
+   * **不传 = 没动过** —— 这时才轮到"文字里写了什么"和"这件事的类型默认值"来决定。
+   */
   reminderMinutesBefore?: number | null;
   /** 覆盖自动分流的类型（用户明确指定"这是习惯"） */
   kind?: TaskKind;
@@ -94,19 +98,40 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   }
 
   // 【要完成的事】→ 收集箱 / 日历
+  const kind = input.kind ?? decision.kind;
+  /*
+   * 提醒：**没提就不提醒**（2026-10-08 用户拍板）。
+   *
+   * 以前只要落到日历就一律排一条准点提醒，于是"没点过提醒那一格"的人也被提醒，
+   * 而且准点提醒对"要出门的事"等于没提醒（那一刻人该出发了）。现在的规则：
+   * 文字里提到提醒（"提前半小时提醒我"）或用户在 chip 里设过，才有提醒；
+   * 只提了"提醒"没给量的，按这件事的类型给默认值（domain/reminder）。
+   * 收口在 resolveReminderMinutes —— chip 上显示的值和这里存进库的值必须同源。
+   */
+  const reminderMinutesBefore = time
+    ? resolveReminderMinutes({
+        manual: input.reminderMinutesBefore,
+        parsed: parsed.reminder,
+        parsedUnspecified: parsed.reminderUnspecified,
+        kind,
+        attribute: time.attribute,
+        repeat,
+      })
+    : null;
+
   const task = createTask({
     title: displayText,
     note: parsed.note,
-    kind: input.kind ?? decision.kind,
+    kind,
     time: time ?? undefined,
     source,
     containerId: input.containerId ?? null,
     repeat,
-    reminderMinutesBefore: input.reminderMinutesBefore ?? null,
+    reminderMinutesBefore,
   });
   await taskRepository.create(task);
 
-  // 只有落到日历（有明确时间）的才排提醒
+  // 只有落到日历（有明确时间）的才排提醒；没设提醒时 scheduleTaskReminder 直接返回 null
   const reminderScheduled =
     decision.route === 'calendar' ? (await scheduleTaskReminder(task)) !== null : false;
 

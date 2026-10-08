@@ -42,10 +42,10 @@ export function decideRoute(draft: CaptureDraft): RouteDecision {
   }
 
   if (time.attribute === TimeAttribute.Fixed) {
-    return { route: 'calendar', kind: 'schedule', reason: '有固定时间 → 日历 + 提醒' };
+    return { route: 'calendar', kind: 'schedule', reason: '有固定时间 → 日历' };
   }
 
-  return { route: 'calendar', kind: 'execution', reason: '有明确截止 → 日历 + 提醒' };
+  return { route: 'calendar', kind: 'execution', reason: '有明确截止 → 日历' };
 }
 
 /**

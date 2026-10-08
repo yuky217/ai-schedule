@@ -82,9 +82,16 @@ export function describeRepeat(rule: RepeatRule): string {
   return n > 1 ? `每 ${n} 周` : '每周';
 }
 
-/** 提前量的中文短描述 */
+/**
+ * 提前量的中文短描述。
+ *
+ * `null` 与 `0` 在这里是**两件不同的事**（2026-10-08 起）：
+ * `null` = 不提醒（没设过、或用户明确关掉），`0` = 准点提醒。
+ * 以前两者都说成"准点"，于是界面永远说不清"这条到底会不会响"。
+ */
 export function describeReminder(minutes: number | null | undefined): string {
-  if (!minutes || minutes <= 0) return '准点';
+  if (minutes == null) return '不提醒';
+  if (minutes <= 0) return '准点';
   if (minutes < 60) return `提前 ${minutes} 分钟`;
   const hours = minutes / 60;
   return Number.isInteger(hours) ? `提前 ${hours} 小时` : `提前 ${minutes} 分钟`;

@@ -484,9 +484,11 @@ export default function TaskDetailScreen() {
    * 这里再说一遍就成了同一句话说两遍（而且"点一下"已经不成立 —— 调整栏就在下面）。
    */
   const timeHint = anchor
-    ? `${isDeadline ? '截止' : '开始'} · 提醒 ${describeReminder(task.reminderMinutesBefore)}${
-        task.repeat ? ` · ${describeRepeat(task.repeat)}` : ''
-      }`
+    ? `${isDeadline ? '截止' : '开始'} · ${
+        task.reminderMinutesBefore == null
+          ? '不提醒'
+          : `提醒 ${describeReminder(task.reminderMinutesBefore)}`
+      }${task.repeat ? ` · ${describeRepeat(task.repeat)}` : ''}`
     : '';
 
   /**
@@ -1114,8 +1116,7 @@ export default function TaskDetailScreen() {
         initialView={sheetView}
         onClose={() => setSheetOpen(false)}
         onSchedule={handleSchedule}
-        onSetReminder={(target, minutes) => {
-          setTask((current) =>
+        onSetReminder={(target, minutes) => {          setTask((current) =>
             current ? { ...current, reminderMinutesBefore: minutes } : current,
           );
           void updateTask(target.id, { reminderMinutesBefore: minutes });

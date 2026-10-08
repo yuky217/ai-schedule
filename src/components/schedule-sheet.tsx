@@ -35,8 +35,8 @@ export interface ScheduleSheetProps {
   task: Task | null;
   onClose: () => void;
   onSchedule: (task: Task, time: TaskTime) => void;
-  /** 设置提前量（分钟）。不传则隐藏该设置行 */
-  onSetReminder?: (task: Task, minutes: number) => void;
+  /** 设置提前量（分钟）。**null = 不提醒**。不传则隐藏该设置行 */
+  onSetReminder?: (task: Task, minutes: number | null) => void;
   /** 设置重复规则。不传则隐藏该设置行 */
   onSetRepeat?: (task: Task, rule: RepeatRule | null) => void;
   /** 打开时停在那一层：详情页点"提醒"就直接进提醒层，少一次点按 */
@@ -67,7 +67,7 @@ export function ScheduleSheet({
     onClose();
   };
 
-  const handleReminder = (minutes: number) => {
+  const handleReminder = (minutes: number | null) => {
     if (!task || !onSetReminder) return;
     onSetReminder(task, minutes);
     setView('main');
@@ -114,7 +114,7 @@ export function ScheduleSheet({
             {view === 'main' ? (
               <>
                 <ThemedText type="small" themeColor="textSecondary" style={styles.subtitle}>
-                  安排后会落到日历并按时提醒
+                  安排后落到日历；提醒不自动开，要的话在下面设
                 </ThemedText>
 
                 <View style={styles.grid}>
@@ -149,7 +149,7 @@ export function ScheduleSheet({
                     <SettingRow
                       icon="notifications-outline"
                       label="提醒"
-                      value={describeReminder(task?.reminderMinutesBefore ?? 0)}
+                      value={describeReminder(task?.reminderMinutesBefore)}
                       theme={theme}
                       onPress={() => setView('reminder')}
                     />
@@ -167,9 +167,17 @@ export function ScheduleSheet({
               </>
             ) : null}
 
-            {view === 'reminder'
-              ? REMINDER_PRESETS.map((preset) => {
-                  const current = (task?.reminderMinutesBefore ?? 0) === preset.minutes;
+            {view === 'reminder' ? (
+              <>
+                {/* 「不提醒」排第一：它是默认值，用户最可能来这儿做的就是把提醒关掉 */}
+                <ChipRow
+                  label="不提醒"
+                  selected={task?.reminderMinutesBefore == null}
+                  theme={theme}
+                  onPress={() => handleReminder(null)}
+                />
+                {REMINDER_PRESETS.map((preset) => {
+                  const current = task?.reminderMinutesBefore === preset.minutes;
                   return (
                     <ChipRow
                       key={preset.id}
@@ -179,8 +187,9 @@ export function ScheduleSheet({
                       onPress={() => handleReminder(preset.minutes)}
                     />
                   );
-                })
-              : null}
+                })}
+              </>
+            ) : null}
 
             {view === 'repeat'
               ? REPEAT_PRESETS.map((preset) => {

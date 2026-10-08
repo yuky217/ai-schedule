@@ -29,8 +29,14 @@ vi.mock('@/data/repositories/idea-repository', () => ({
   },
 }));
 
+/*
+ * 排程器照真实契约来：**没设提醒就不排**（真实现里也是这个 guard）。
+ * 如果这里无脑返回一个 id，"没提提醒就不发通知"这条口径就永远测不出来。
+ */
 vi.mock('./notifications', () => ({
-  scheduleTaskReminder: vi.fn(async () => 'notification-id'),
+  scheduleTaskReminder: vi.fn(async (task: { reminderMinutesBefore?: number | null }) =>
+    task.reminderMinutesBefore == null ? null : 'notification-id',
+  ),
 }));
 
 const NOTICE = [
@@ -65,12 +71,44 @@ describe('quickCapture：粘一整段通知', () => {
     expect(String(task.note)).toContain('地点："一站式"学生社区211');
   });
 
-  it('有时间 → 进日历，并排上提醒', async () => {
+  /*
+   * 2026-10-08 用户拍板：**没提提醒就不发通知**。
+   * 这段通知里一个字都没提"提醒"，所以它只落到日历上，不会有人来打扰你。
+   * （以前只要落到日历就一律排一条准点提醒。）
+   */
+  it('有时间 → 进日历，但这段通知没提提醒 → 不排通知', async () => {
     const r = await quickCapture({ text: NOTICE });
     const time = written[0]!.time as { startAt: string; endAt: string };
     expect(new Date(time.startAt).getHours()).toBe(19);
     expect(new Date(time.endAt).getHours()).toBe(21);
+    expect(written[0]!.reminderMinutesBefore).toBeNull();
+    expect(r.reminderScheduled).toBe(false);
+  });
+
+  it('文字里写了提前量 → 落库时带上它', async () => {
+    const r = await quickCapture({ text: '10月14日 19:00 团委大会，提前半小时提醒我' });
+    expect(written[0]!.reminderMinutesBefore).toBe(30);
     expect(r.reminderScheduled).toBe(true);
+  });
+
+  it('只提了提醒没给量 → 按事情的类型给默认值（日程 10 分钟）', async () => {
+    const r = await quickCapture({ text: '10月14日 19:00 团委大会，记得提醒我' });
+    expect(written[0]!.reminderMinutesBefore).toBe(10);
+    expect(r.reminderScheduled).toBe(true);
+  });
+
+  it('只提了提醒没给量、是截止型 → 提前 1 小时', async () => {
+    await quickCapture({ text: '10月14日 12:00 前交请假条，记得提醒我' });
+    expect(written[0]!.reminderMinutesBefore).toBe(60);
+  });
+
+  it('用户点了「不提醒」→ 压过文字里写的', async () => {
+    const r = await quickCapture({
+      text: '10月14日 19:00 团委大会，提前半小时提醒我',
+      reminderMinutesBefore: null,
+    });
+    expect(written[0]!.reminderMinutesBefore).toBeNull();
+    expect(r.reminderScheduled).toBe(false);
   });
 
   /*

@@ -1,7 +1,7 @@
 import { addDays, addMonths, startOfDay, startOfWeek } from 'date-fns';
 
 import { RepeatFreq, TimeAttribute } from './enums';
-import { describeRepeat } from './repeat-next';
+import { describeReminder, describeRepeat } from './repeat-next';
 import { timeAnchor, type RepeatRule, type TaskTime } from './task';
 
 /**
@@ -10,6 +10,7 @@ import { timeAnchor, type RepeatRule, type TaskTime } from './task';
  * "明天下午3点开会"   → 标题「开会」+ 固定时间明天 15:00
  * "每周五晚上7点健身" → 标题「健身」+ 重复每周五 + 下一个周五 19:00
  * "下个月10号前交合同" → 标题「交合同」+ 截止下月 10 号 23:59
+ * "明天9点开会，提前半小时提醒我" → 标题「开会」+ 明天 9:00 + 提醒提前 30 分钟
  *
  * 设计原则：
  * - 纯函数、不依赖 React Native，方便单测；
@@ -41,6 +42,20 @@ export interface ParsedSchedule {
   time: TaskTime | null;
   /** 识别出的重复；null = 没识别到 */
   repeat: RepeatRule | null;
+  /**
+   * 文字里写明的提醒提前量（分钟）；0 = 准点；**null = 没写**。
+   *
+   * 注意与 `reminderUnspecified` 的分工：这里只是"写没写具体多久"，
+   * 至于"到底提不提醒"，由 domain/reminder 的 `resolveReminderMinutes` 收口 ——
+   * 没提提醒就不提醒，提了没写量才按事情类型给默认值。
+   */
+  reminder: number | null;
+  /** 提了"提醒"但没说提前多久（"记得提醒我"） */
+  reminderUnspecified: boolean;
+  /** 人类可读的提醒，如 "提前 30 分钟" / "提醒" */
+  reminderLabel: string | null;
+  /** 命中的提醒片段原文 */
+  reminderMatched: string | null;
   /** 人类可读的时间，如 "明天 15:00" */
   label: string | null;
   /** 人类可读的重复，如 "每周五" */
@@ -103,11 +118,24 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
    */
   const tm = parseTime(text, now);
 
-  const spans = [...(rep?.spans ?? []), ...(tm?.spans ?? [])];
-  const picked = pickTitle(removeSpans(text, spans) || text);
+  // ③ 提醒："提前半小时提醒我" / "记得提醒我"。命中的片段同样要切掉 —— 它是指令，不是内容
+  const remind = extractReminder(text);
+
+  const spans = [...(rep?.spans ?? []), ...(tm?.spans ?? []), ...(remind?.spans ?? [])];
+  let picked = pickTitle(removeSpans(text, spans) || text);
+  /*
+   * 提醒是**指令**、不是内容，所以默认连它一起切。但极端输入会切得什么都不剩 ——
+   * "明天9点提醒我"：时间和"提醒我"都切掉之后，一个字的标题都没有了。
+   * 这时退一步：只切时间，把"提醒我"留下来当标题。**空标题比丑标题糟得多** ——
+   * 空标题会让上层退回用整段原文（连时间词一起）当名字。
+   */
+  if (!/[\p{L}\p{N}]/u.test(picked.title)) {
+    const onlyTime = pickTitle(removeSpans(text, [...(rep?.spans ?? []), ...(tm?.spans ?? [])]));
+    if (/[\p{L}\p{N}]/u.test(onlyTime.title)) picked = onlyTime;
+  }
 
   /*
-   * ③ 重复里已经写明周几时，**第一期以它为准**。
+   * ④ 重复里已经写明周几时，**第一期以它为准**。
    *
    * 「每周一三五跑步」里的「周一」只是列表的第一项，不代表第一期就在周一 ——
    * 用户等的是眼下最近的那一次。日期规则只会匹配到列表里的第一个「周X」，
@@ -125,6 +153,10 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
     body: picked.body,
     time: aligned,
     repeat: rep?.repeat ?? null,
+    reminder: remind?.minutes ?? null,
+    reminderUnspecified: Boolean(remind && remind.minutes == null),
+    reminderLabel: remind?.label ?? null,
+    reminderMatched: remind?.raw ?? null,
     label: tm?.label ?? null,
     repeatLabel: rep?.label ?? null,
     matched: tm?.raw ?? null,
@@ -139,6 +171,10 @@ function empty(text: string): ParsedSchedule {
     body: text,
     time: null,
     repeat: null,
+    reminder: null,
+    reminderUnspecified: false,
+    reminderLabel: null,
+    reminderMatched: null,
     label: null,
     repeatLabel: null,
     matched: null,
@@ -245,6 +281,75 @@ const CN_NUM: Record<string, number> = {
 function cnOrDigit(s: string): number | null {
   if (/^\d+$/.test(s)) return Number(s);
   return CN_NUM[s] ?? null;
+}
+
+/* ------------------------------------------------------------------ */
+/* 提醒                                                                */
+/* ------------------------------------------------------------------ */
+
+interface ReminderHit {
+  /** 写明的提前量（分钟，0 = 准点）；**null = 提了提醒但没说提前多久** */
+  minutes: number | null;
+  label: string;
+  spans: Span[];
+  raw: string;
+}
+
+/**
+ * 提醒动词（连常见的衬字一起吃掉）。
+ *
+ * 衬字必须一起切：`记得提醒我` 只切「提醒」，剩下的「记得…我」会粘到标题上，
+ * 而 `明天9点提醒我` 这种更极端 —— 时间和动词都切掉之后什么都不剩，标题成了空的。
+ * 所以「记得 / 请 / 一下 / 我」这些跟着动词走。
+ */
+const REMINDER_VERB = /(?:记得|别忘了|别忘|请|要)?\s*(?:提醒|叫我|喊我|通知我|别让我忘)(?:一下|一声|我)?/;
+
+/**
+ * 认"这件事要不要提醒我"。
+ *
+ * **动词是入场券**：没有「提醒 / 叫我 / 喊我」这类词，光看到「提前半小时」一律不算 ——
+ * "提前半小时出发"说的是行程，不是提醒，误判的代价是给用户排一条他没要的通知。
+ * 有了入场券之后再看写明没写明提前多久：
+ * - 「提前半小时提醒我」→ 30；「提前 1 小时提醒」→ 60；「提前两小时叫我」→ 120
+ * - 「准点提醒我 / 到点喊我」→ 0
+ * - 「记得提醒我」→ **没给量**（`minutes = null`），由调用方按这件事的类型给默认值
+ *   （见 `domain/reminder.defaultReminderMinutes`）—— 这里**不猜**，猜了就没法按类型分
+ *
+ * 命中的片段会被切掉：它是指令，不是这件事的名字。
+ * "通知我"要带着"我"才算 —— 通知类公文的标题里满是"关于…通知"，那是壳不是提醒。
+ */
+function extractReminder(text: string): ReminderHit | null {
+  const verb = REMINDER_VERB.exec(text);
+  if (!verb) return null;
+
+  // 连"提前"都没说，就是那一刻响
+  const onTime = /(?:准点|到点|按时|准时)\s*(?:提醒|叫我|喊我|通知我)(?:一下|一声|我)?/.exec(text);
+  if (onTime) {
+    return { minutes: 0, label: describeReminder(0), spans: [spanOf(onTime)], raw: onTime[0] };
+  }
+
+  const lead = /提前\s*(半|\d{1,3}|[一二两三四五六七八九十]{1,2})\s*个?\s*(小时|分钟|分)/.exec(text);
+  if (lead) {
+    const per = lead[2] === '小时' ? 60 : 1;
+    // 「半」只有接"小时"才是 30 分钟；「提前半分」这种不当提醒处理
+    const amount =
+      lead[1] === '半' ? (per === 60 ? 30 : null) : (() => {
+        const n = cnHour(lead[1]!);
+        return n == null ? null : n * per;
+      })();
+    if (amount != null && amount > 0 && amount <= 1440 * 7) {
+      return {
+        minutes: amount,
+        label: describeReminder(amount),
+        // 提前量与动词相邻时两个区间会被 removeSpans 合成一段，切完不留碎字
+        spans: [spanOf(lead), spanOf(verb)],
+        raw: `${lead[0]}${verb[0]}`,
+      };
+    }
+  }
+
+  // 只说了"提醒"，没说提前多久
+  return { minutes: null, label: '提醒', spans: [spanOf(verb)], raw: verb[0] };
 }
 
 /* ------------------------------------------------------------------ */
@@ -496,11 +601,11 @@ function pickGroup(m: RegExpExecArray): string {
 }
 
 /**
- * 被切掉的时间在原文里留下的记号。
+ * 被切掉的时间 / 提醒在原文里留下的记号。
  *
  * `\u0000` 是几乎不可能出现在用户文本里的控制字符。留着它不是为了显示，
  * 而是为了让下一步能分辨"**这一行的时间被抠走过**"——这是"这行是时间渣、
- * 别留在备注里"唯一的依据（见 `isTimeResidue`）。
+ * 别留在备注里"唯一的依据（见 `isTimeResidue`）。提醒片段也用它。
  */
 const TIME_CUT = '\u0000';
 

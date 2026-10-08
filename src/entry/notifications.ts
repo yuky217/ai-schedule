@@ -201,17 +201,23 @@ async function ensureAndroidChannel(mod: NotificationsModule): Promise<void> {
  * 给任务排一条提醒。返回通知 id，失败返回 null。
  * 已经过期的任务不补排 —— 用户不需要被"昨天的会"打扰。
  *
- * 提前量：task.reminderMinutesBefore > 0 时在开始/截止前 N 分钟触发；
+ * **没设提醒就不排**（`reminderMinutesBefore == null`，见 domain/reminder.ts 的三态说明）：
+ * 以前 null 当准点用，于是"没点过提醒那一格"的人也会被提醒 ——
+ * 默认打扰用户是比默认安静更糟的错，因为用户根本不知道去哪儿关掉它。
+ *
+ * 提前量：> 0 时在开始/截止前 N 分钟触发；0 = 准点；
  * 若提前量时刻已过但准点还没到，退回准点提醒（比不提醒好）。
  */
 export async function scheduleTaskReminder(task: Task): Promise<string | null> {
+  if (task.reminderMinutesBefore == null) return null;
+
   const anchor = taskAnchor(task);
   if (!anchor) return null;
 
   const anchorDate = new Date(anchor);
   if (Number.isNaN(anchorDate.getTime())) return null;
 
-  const offsetMinutes = task.reminderMinutesBefore ?? 0;
+  const offsetMinutes = task.reminderMinutesBefore;
   let fireAt = new Date(anchorDate.getTime() - offsetMinutes * 60_000);
   if (fireAt.getTime() <= Date.now()) {
     if (offsetMinutes > 0 && anchorDate.getTime() > Date.now()) {

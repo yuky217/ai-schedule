@@ -17,8 +17,13 @@ import { Spacing } from '@/constants/theme';
 import type { Container } from '@/domain/container';
 import { parseSchedule } from '@/domain/parse-schedule';
 import { describeReminder, describeRepeat, REMINDER_PRESETS, REPEAT_PRESETS } from '@/domain/repeat-next';
+import { resolveReminderMinutes } from '@/domain/reminder';
+import { decideRoute } from '@/domain/routing';
 import { timeAnchor, type RepeatRule, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
+
+/** ChoiceSheet 里「不提醒」那一项的 key */
+const REMINDER_OFF = '__off__';
 
 /**
  * 快速记录输入条 —— 入口层里最常用的那个。
@@ -31,6 +36,11 @@ import { useTheme } from '@/hooks/use-theme';
  * 下方"时间"按钮又说同一件事；现在合成一个 chip —— 有手动值显示手动值，没手动值
  * 显示自动识别的结果，都没有才是占位的「时间」。点它就是把那一刻改成自己想要的，
  * 界面因此少一行，识别结果也从"只读的提示"变成了"能点能改的东西"。
+ *
+ * **提醒 chip 默认是"不提醒"**（2026-10-08）：它亮起来只有一种原因 ——
+ * 这次真的会有通知。文字里写了（"提前半小时提醒我"，`parse-schedule` 认出来）
+ * 或者用户自己点过。没提就不发通知，因为默认打扰比默认安静更难挽回：
+ * 用户被无用的提醒烦到时，根本不知道去哪儿关掉它。
  */
 export interface CaptureOptions {
   asIdea: boolean;
@@ -75,16 +85,35 @@ export function CaptureInput({
   const [draft, setDraft] = useState<DateTimeDraft>(() => defaultDraft());
   const [containerId, setContainerId] = useState<string | null>(null);
   const [repeat, setRepeat] = useState<RepeatRule | null>(null);
-  const [reminder, setReminder] = useState<number | null>(null);
+  /**
+   * 提醒提前量：**三态**。
+   * `undefined` = 用户没动过这一格（这时才轮到"文字里写了什么"和类型默认值），
+   * `null` = 用户明确选了「不提醒」（**压过文字里写的**），`number` = 用户选的具体提前量。
+   */
+  const [reminder, setReminder] = useState<number | null | undefined>(undefined);
 
   /**
-   * 打字时实时解析一遍，把结果直接喂给"时间 chip"（不再另起一行提示）。
+   * 打字时实时解析一遍，把结果直接喂给"时间 chip"和"提醒 chip"（不再另起一行提示）。
    * 用户自己设过时间就不解析了 —— 手动的意思比识别到的更明确。
+   *
+   * 提醒要在这里一并算出来（而不是等落库时再算）：**chip 上显示的值必须就是
+   * 最终会存进库的值**。否则又会出现"界面说提前 10 分钟、实际存的是不提醒"。
+   * 所以这里做的是和 `quickCapture` 同一件事：先分流拿到类型，再过
+   * `resolveReminderMinutes`（手动 > 文字写明 > 类型默认 > 不提醒）。
    */
   const parsed = useMemo(() => {
     if (asIdea || text.trim().length < 2 || time) return null;
     const result = parseSchedule(text);
-    return result.time && result.label ? result : null;
+    if (!result.time || !result.label) return null;
+    const decision = decideRoute({ text: result.title || text, time: result.time });
+    const reminder = resolveReminderMinutes({
+      parsed: result.reminder,
+      parsedUnspecified: result.reminderUnspecified,
+      kind: decision.kind,
+      attribute: result.time.attribute,
+      repeat: result.repeat,
+    });
+    return { time: result.time, label: result.label, reminder };
   }, [text, asIdea, time]);
 
   /**
@@ -94,6 +123,14 @@ export function CaptureInput({
   const timeChipTime = time ?? parsed?.time ?? null;
   const timeChipLabel = timeChipTime ? formatTimeOfTime(timeChipTime) : '时间';
 
+  /**
+   * 提醒 chip：手动的 > 文字里认出来的。**默认不提醒** ——
+   * 所以它亮起来只有一种原因：这次真的会有通知（文字里写了，或用户点了）。
+   */
+  const reminderValue = reminder !== undefined ? reminder : (parsed?.reminder ?? null);
+  const reminderLabel =
+    reminder === null ? '不提醒' : reminderValue == null ? '提醒' : describeReminder(reminderValue);
+
   const canSubmit = text.trim().length > 0 && !busy;
 
   const reset = () => {
@@ -102,7 +139,7 @@ export function CaptureInput({
     setTime(null);
     setContainerId(null);
     setRepeat(null);
-    setReminder(null);
+    setReminder(undefined);
     setDraft(defaultDraft());
   };
 
@@ -140,10 +177,10 @@ export function CaptureInput({
   const currentRepeatId =
     REPEAT_PRESETS.find((p) => JSON.stringify(p.rule) === JSON.stringify(repeat))?.id ?? 'none';
 
-  const reminderOptions: ChoiceOption[] = REMINDER_PRESETS.map((p) => ({
-    key: String(p.minutes),
-    label: p.label,
-  }));
+  const reminderOptions: ChoiceOption[] = [
+    { key: REMINDER_OFF, label: '不提醒' },
+    ...REMINDER_PRESETS.map((p) => ({ key: String(p.minutes), label: p.label })),
+  ];
 
   return (
     <View
@@ -211,10 +248,10 @@ export function CaptureInput({
         />
         <QuickButton
           icon="notifications-outline"
-          label={reminder != null && reminder > 0 ? describeReminder(reminder) : '提醒'}
-          active={reminder != null && reminder > 0}
+          label={reminderLabel}
+          active={reminderValue != null}
           onPress={() => setSheet('reminder')}
-          onClear={reminder != null && reminder > 0 ? () => setReminder(null) : undefined}
+          onClear={reminder !== undefined ? () => setReminder(undefined) : undefined}
         />
       </View>
 
@@ -279,10 +316,11 @@ export function CaptureInput({
         visible={sheet === 'reminder'}
         title="提醒时间"
         options={reminderOptions}
-        selectedKey={String(reminder ?? 0)}
+        selectedKey={reminderValue == null ? REMINDER_OFF : String(reminderValue)}
         onClose={() => setSheet(null)}
         onSelect={(key) => {
-          setReminder(Number(key));
+          // 「不提醒」存的是 null，它不是"没设过"（undefined）—— 它会压过文字里写的提醒
+          setReminder(key === REMINDER_OFF ? null : Number(key));
           setSheet(null);
         }}
       />

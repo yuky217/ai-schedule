@@ -45,7 +45,7 @@ import { formatDateLong, formatDayTime } from '@/utils/datetime';
 const ROUTE_FEEDBACK: Record<CaptureRoute, string> = {
   idea: '已放进想法库，不提醒',
   inbox: '已放进收集箱，等你安排时间',
-  calendar: '已落到日历，到点提醒你',
+  calendar: '已落到日历',
 };
 
 export default function HomeScreen() {
