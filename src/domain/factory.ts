@@ -18,6 +18,7 @@ import {
 } from './enums';
 import type { ContainerKind } from './enums';
 import { EventKind, type CalEvent } from './event';
+import { defaultReminderMinutes } from './reminder';
 import type { FocusSession } from './focus';
 import type { Idea } from './idea';
 import type { RepeatRule, Task, TaskTime } from './task';
@@ -247,14 +248,34 @@ export interface CreateCourseInput {
 }
 
 /**
- * 新课默认提前 15 分钟提醒。
+ * 新课默认提前多久提醒 —— **与任务走同一条规则**（`defaultReminderMinutes`）。
  *
- * **为什么给非零默认值**：用户把课表导进来，图的就是"别错过课"。
- * 默认不提醒等于把"要不要提醒"这个决定又推回给他 —— 而他得先知道
- * 有这么一个开关存在，才可能去开。15 分钟够从宿舍走到教室，也不至于太早。
+ * ## 为什么是委托而不是自己写一个常数（2026-10-08 用户拍板）
+ *
+ * 这里原本硬写 15，而"记一条"那条通道走的是五档判断（截止 60 / 重复 0 /
+ * 准备动作 60 / 有地点 20 / 兜底 10）。同一件事两条通道给出不同的数，
+ * 改哪边都要去两个地方找 —— 而用户根本不知道有两个地方。
+ *
+ * 委托之后，**课就落到「有地点的日程」那一档（20 分钟）**：
+ * 课天然有教室（`location` 基本一直有），语义上它就是"要动身去某个地方的事"，
+ * 与「地点：三教101」的会得到同一个数。这才是"统一口径"的实质 ——
+ * 不是把 15 改成 10，而是让课归到它本来该在的那一档。
+ *
+ * 为什么仍然给**非零**默认值：用户把课表导进来图的就是"别错过课"，
+ * 默认不提醒等于把"要不要提醒"的决定又推回给他，而他得先知道有这个开关才能开。
+ * 20 分钟够从宿舍走到教室（也从上一节课的教室走到下一节课的），
  * 不想要的人在课程详情页关掉即可。
+ *
+ * ⚠️ 只作用于**新建**的课。已经存进库的不动 —— 用户可能自己调过（哪怕就是 15），
+ * 替他改是僭越；迁移还要面对"怎么区分默认 15 和手动 15"这个无解的问题。
  */
-export const DEFAULT_COURSE_REMINDER = 15;
+export const DEFAULT_COURSE_REMINDER = defaultReminderMinutes({
+  // 课是"到了点要出现在某地"的事：固定时间型 + 日程型
+  kind: TaskKind.Schedule,
+  attribute: TimeAttribute.Fixed,
+  // 课几乎总有教室，这是它区别于"线上会"的地方 —— 有地点就要留出走路的时间
+  location: '教室',
+});
 
 export function createCourse(input: CreateCourseInput): Course {
   const title = input.title.trim();
@@ -266,7 +287,16 @@ export function createCourse(input: CreateCourseInput): Course {
     note: input.note ?? null,
     colorIndex: input.colorIndex ?? colorIndexOf(title),
     sessions: sanitizeSessions(input.sessions ?? []),
-    reminderMinutesBefore: input.reminderMinutesBefore ?? DEFAULT_COURSE_REMINDER,
+    /*
+      这里刻意用 `=== undefined` 而不是 `??`。
+      `null` 在这个字段上是**有含义的值**（= 这门课不提醒，见 reminder.ts 的三种状态），
+      而 `??` 会把 null 也当成"没给"，于是"我要关掉提醒"被静默改回默认 20 ——
+      用户点了「不提醒」，导入/保存后又开始响。`undefined` 才是"没提这件事"。
+    */
+    reminderMinutesBefore:
+      input.reminderMinutesBefore === undefined
+        ? DEFAULT_COURSE_REMINDER
+        : input.reminderMinutesBefore,
   };
 }
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach } from 'vitest';
 
 import { TaskKind, TaskStatus, TimeAttribute } from './enums';
 import { RepeatFreq } from './enums';
+import { createCourse, DEFAULT_COURSE_REMINDER } from './factory';
 import {
   defaultReminderMinutes,
   describeNextFire,
@@ -222,6 +223,44 @@ describe('defaultReminderMinutes', () => {
     it('准备动作压过地点 —— 有地点只到 20，但"出发去机场"要 1 小时', () => {
       expect(defaultReminderMinutes({ ...base, location: '机场', text: '出发去机场' })).toBe(60);
     });
+  });
+});
+
+/**
+ * 课表与"记一条"是**两条独立的通道**（`createCourse` vs `resolveReminderMinutes`），
+ * 曾经各自给出不同的数（课硬写 15、任务兜底 10），用户从两个入口看同一件事
+ * 会看到两个答案。现在课委托同一个 `defaultReminderMinutes` —— 这几条钉住它。
+ *
+ * 验牙：把 `DEFAULT_COURSE_REMINDER` 改回硬写 `15`，第 1、2 条立刻变红。
+ */
+describe('课表提醒与任务提醒同源', () => {
+  it('新课的默认提前量 = 「有地点的日程」那一档，而不是独立常数', () => {
+    expect(DEFAULT_COURSE_REMINDER).toBe(
+      defaultReminderMinutes({
+        kind: TaskKind.Schedule,
+        attribute: TimeAttribute.Fixed,
+        location: '教室',
+      }),
+    );
+    expect(DEFAULT_COURSE_REMINDER).toBe(20);
+  });
+
+  it('同一件事走两条通道得到同一个数', () => {
+    // "去教室上课"这件事：课表通道（createCourse）与记一条通道（有地点的日程）
+    const viaCourse = createCourse({ title: '高等数学' }).reminderMinutesBefore;
+    const viaTask = resolveReminderMinutes({
+      kind: TaskKind.Schedule,
+      attribute: TimeAttribute.Fixed,
+      parsedUnspecified: true,
+      location: '三教101',
+    });
+    expect(viaCourse).toBe(viaTask);
+  });
+
+  it('导入课上写得明的提前量仍然优先（没被默认值吃掉）', () => {
+    expect(createCourse({ title: '英语', reminderMinutesBefore: 5 }).reminderMinutesBefore).toBe(5);
+    expect(createCourse({ title: '英语', reminderMinutesBefore: null }).reminderMinutesBefore).toBeNull();
+    expect(createCourse({ title: '英语', reminderMinutesBefore: 0 }).reminderMinutesBefore).toBe(0);
   });
 });
 

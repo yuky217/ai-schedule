@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>日历形状语言</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1c1c1e; --sub:#6e6e73;
+    --line:#e3e3e6; --sel:#1c1c1e; --muted:#b0b0b6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 22px 40px;background:var(--bg);color:var(--ink);
+       font:14px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  h1{font-size:17px;margin:0 0 4px;font-weight:700}
+  .lead{font-size:12.5px;color:var(--sub);margin:0 0 22px}
+  .card{background:var(--card);border-radius:14px;padding:16px 14px 14px;margin:0 0 16px}
+  .label{font-size:11.5px;color:var(--sub);margin:0 0 10px;font-weight:600}
+
+  /* ---------- 月历 ---------- */
+  .mhead{display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:6px}
+  .mhead span{text-align:center;font-size:11.5px;color:var(--sub)}
+  .mgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+  .mcell{display:flex;flex-direction:column;align-items:center;gap:4px;padding:5px 0;position:relative}
+  .mcell.out{opacity:.4}
+  .daynum{width:30px;height:30px;border-radius:15px;display:flex;align-items:center;
+          justify-content:center;font-size:14px;line-height:18px}
+  .mcell.today .daynum{border:1.5px solid var(--ink)}
+  .mcell.sel .daynum{background:var(--sel);color:var(--card)}
+  .dots{display:flex;gap:3px;min-height:4px}
+  .d{width:4px;height:4px}
+  .d-task{border-radius:2px;background:var(--muted)}
+  .d-course{border-radius:2px;border:1px solid var(--muted);background:transparent}
+  .d-exam{border-radius:0;background:var(--muted)}
+  .mcell.sel .d-task,.mcell.sel .d-exam{background:var(--card)}
+  .mcell.sel .d-course{border-color:var(--card)}
+
+  /* ---------- 图例 ---------- */
+  .lg{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--sub);
+      border-top:1px solid var(--line);padding-top:12px;margin-top:14px}
+  .lg i{display:inline-block;width:8px;height:8px;margin-right:6px;vertical-align:middle;position:relative;top:-1px}
+  .zoombox{display:flex;gap:34px;align-items:center;padding:6px 0 0 6px}
+  .zoombox i{display:inline-block;transform:scale(6);margin:14px 10px 14px 2px}
+  .zoomlab{display:flex;gap:52px;font-size:11.5px;color:var(--sub);padding-left:2px}
+
+  /* ---------- 日视图横切 ---------- */
+  .day{}    /* 时间轴容器 */
+  .row{display:flex;align-items:stretch;min-height:52px;border-top:1px solid var(--line)}
+  .gutter{width:46px;flex:none;font-size:11px;color:var(--sub);padding-top:4px;text-align:center}
+  .lane{flex:1;position:relative;padding:3px 0}
+  .band{border:1px dashed var(--muted);border-radius:8px;opacity:.55;
+        padding:3px 8px;font-size:11.5px;color:var(--sub)}
+  .blk{background:#e9e9ec;border-radius:8px;display:flex;overflow:hidden;align-items:stretch}
+  .bar{width:3px;background:var(--ink);flex:none}
+  .blkbody{flex:1;padding:4px 8px;display:flex;flex-direction:column;justify-content:center}
+  .blkbody .t{font-size:12.5px}
+  .blkbody .s{font-size:11px;color:var(--sub)}
+  .ring{width:22px;height:22px;border-radius:11px;border:1.5px solid var(--muted);
+        align-self:center;margin-right:5px;flex:none}
+  .ring.on{background:var(--muted);display:flex;align-items:center;justify-content:center;
+           color:var(--card);font-size:12px}
+  .stack{display:flex;flex-direction:column;gap:4px}
+  .split{display:flex;gap:6px}
+  .split>*{flex:1}
+  .note{font-size:11.5px;color:var(--sub);margin:8px 0 0}
+  code{background:#ececf0;border-radius:4px;padding:1px 5px;font-size:11.5px}
+</style>
+</head>
+<body>
+  <h1>日历形状语言</h1>
+  <p class="lead">课 / 考试 / 任务三种东西靠<b>形状</b>区分，不靠文字标签 —— 一眼看出这格是要去的课，还是要交的作业。</p>
+
+  <div class="card">
+    <p class="label">月视图圆点 · 顺序先课 → 再考试 → 最后任务，名额不够时先丢课</p>
+    <div class="mhead" id="mh"></div>
+    <div class="mgrid" id="mg"></div>
+    <div class="lg">
+      <span><i class="d d-task"></i>实心＝任务</span>
+      <span><i class="d d-course"></i>空心＝课</span>
+      <span><i class="d d-exam"></i>方块＝考试</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="label">放大 6 倍（同一组样式）</p>
+    <div class="zoombox">
+      <i class="d d-task"></i><i class="d d-course"></i><i class="d d-exam"></i>
+    </div>
+    <div class="zoomlab"><span>任务</span><span>课</span><span>考试</span></div>
+  </div>
+
+  <div class="card">
+    <p class="label">日视图时间轴 · 课是虚线带（背景），考试与任务是实心块（差别：任务有勾选圈）</p>
+    <div class="day">
+      <div class="row">
+        <div class="gutter">08:00</div>
+        <div class="lane"><div class="band">高等数学 · 三教 201</div></div>
+      </div>
+      <div class="row">
+        <div class="gutter">09:00</div>
+        <div class="lane"><div class="stack">
+          <div class="band">线性代数 · 二教 105</div>
+        </div></div>
+      </div>
+      <div class="row">
+        <div class="gutter">10:00</div>
+        <div class="lane"><div class="split">
+          <div class="blk"><div class="bar"></div>
+            <div class="blkbody"><span class="t">结构力学考试</span><span class="s">09:00–11:00 · 一教 302</span></div>
+          </div>
+          <div class="blk"><div class="bar"></div>
+            <div class="blkbody"><span class="t">交实验报告</span><span class="s">10:00–10:30</span></div>
+            <div class="ring"></div>
+          </div>
+        </div></div>
+      </div>
+      <div class="row">
+        <div class="gutter">14:00</div>
+        <div class="lane"><div class="blk"><div class="bar"></div>
+          <div class="blkbody"><span class="t">小组讨论</span><span class="s">14:00–15:00 · 图书馆研讨间</span></div>
+          <div class="ring on">✓</div>
+        </div></div>
+      </div>
+    </div>
+    <p class="note">第 3 行演示<b>同刻两件事并排</b>（考试 + 任务，分道算法给的宽度）。<br>
+      考试块<b>没有勾选圈也拖不动</b> —— 到点就是它；任务圈点一下就能完成（最后一行的 ✓）。</p>
+  </div>
+
+  <div class="card">
+    <p class="label">月历圆点的优先级（<code>dayShapes</code>）</p>
+    <div class="mgrid" id="mg2" style="grid-template-columns:repeat(7,1fr)"></div>
+    <p class="note">依次：两件事 / 满课 / 两场考试 / 3 课+1 考+1 事（课被挤到 1 个）/ 5 课+1 考+3 事（课全被挤掉）/
+      1 课+1 事（有富余，课留着）/ 1 课+1 考+2 事。</p>
+  </div>
+
+<script>
+const MAX = 3;
+function dayShapes(count, marks) {
+  const courses = marks?.courses ?? 0, exams = marks?.exams ?? 0;
+  const keepTasks = Math.min(count, MAX);
+  const keepExams = Math.min(exams, MAX - keepTasks);
+  const keepCourses = Math.min(courses, MAX - keepTasks - keepExams);
+  return [...Array(keepCourses).fill('course'), ...Array(keepExams).fill('exam'), ...Array(keepTasks).fill('task')];
+}
+const cls = s => s === 'course' ? 'd d-course' : s === 'exam' ? 'd d-exam' : 'd d-task';
+const dots = shapes => `<div class="dots">${shapes.map(s => `<i class="${cls(s)}"></i>`).join('')}</div>`;
+
+// 月历表头
+document.getElementById('mh').innerHTML = ['一','二','三','四','五','六','日'].map(x=>`<span>${x}</span>`).join('');
+
+// 月历：造一个像真的一样的 10 月（1 号是周四 → 首格 9/28 周一）
+const month = [
+  // [日号, 是否本月, 任务数, {课, 考}]
+  [28,0,0,{courses:3,exams:0}],[29,0,1,{courses:2,exams:0}],[30,0,0,{courses:4,exams:0}],
+  [1,1,0,{courses:4,exams:0}],[2,1,1,{courses:2,exams:0}],[3,1,2,{courses:0,exams:0}],[4,1,0,{courses:0,exams:0}],
+  [5,1,0,{courses:3,exams:0}],[6,1,1,{courses:3,exams:0}],[7,1,1,{courses:2,exams:0}],[8,1,2,{courses:2,exams:0}],
+  [9,1,1,{courses:3,exams:1}],[10,1,0,{courses:0,exams:0}],[11,1,3,{courses:1,exams:0}],
+  [12,1,0,{courses:4,exams:0}],[13,1,1,{courses:2,exams:0}],[14,1,1,{courses:1,exams:1}],[15,1,1,{courses:2,exams:0}],
+  [16,1,2,{courses:5,exams:1}],[17,1,0,{courses:0,exams:0}],[18,1,1,{courses:0,exams:0}],
+  [19,1,0,{courses:3,exams:0}],[20,1,1,{courses:3,exams:0}],[21,1,1,{courses:2,exams:0}],[22,1,2,{courses:2,exams:0}],
+  [23,1,1,{courses:2,exams:1}],[24,1,5,{courses:0,exams:2}],[25,1,0,{courses:0,exams:0}],
+  [26,1,0,{courses:4,exams:0}],[27,1,2,{courses:2,exams:0}],[28,1,1,{courses:3,exams:0}],[29,1,1,{courses:1,exams:0}],
+  [30,1,2,{courses:1,exams:1}],[31,1,1,{courses:0,exams:0}],
+  [1,0,0,{courses:0,exams:0}],[2,0,1,{courses:0,exams:0}],[3,0,0,{courses:0,exams:0}],[4,0,0,{courses:0,exams:0}],
+  [5,0,0,{courses:0,exams:0}],[6,0,0,{courses:0,exams:0}],[7,0,0,{courses:0,exams:0}],
+];
+const mg = document.getElementById('mg');
+month.forEach(([d, inMonth, count, marks], i) => {
+  const el = document.createElement('div');
+  el.className = 'mcell' + (inMonth ? '' : ' out') + (d === 15 ? ' sel' : '') + (d === 22 && inMonth ? ' today' : '');
+  el.innerHTML = `<div class="daynum">${d}</div>${dots(dayShapes(count, marks))}`;
+  mg.appendChild(el);
+});
+
+// 第二张：纯优先级对照
+const samples = [[2,{courses:0,exams:0}],[0,{courses:4,exams:0}],[0,{courses:0,exams:2}],
+  [1,{courses:3,exams:1}],[3,{courses:5,exams:1}],[1,{courses:1,exams:0}],[2,{courses:1,exams:1}]];
+const mg2 = document.getElementById('mg2');
+samples.forEach(([count, marks]) => {
+  const el = document.createElement('div');
+  el.className = 'mcell';
+  el.innerHTML = `<div class="daynum" style="visibility:hidden">·</div>${dots(dayShapes(count, marks))}`;
+  mg2.appendChild(el);
+});
+</script>
+</body>
+</html>
