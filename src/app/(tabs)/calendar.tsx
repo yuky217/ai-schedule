@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { addDays, addMonths, format, isSameDay, startOfWeek } from 'date-fns';
 import { useRouter } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -40,6 +41,7 @@ import {
 } from '@/domain/course';
 import { describeEvent, type CalEvent } from '@/domain/event';
 import { TaskStatus } from '@/domain/enums';
+import { describeMark, nextMarkDate, pickUpcoming, sortMarkViews, type MarkView } from '@/domain/marks';
 import { buildPlacedTime, buildRetimedSpanTime, buildRetimedTime, buildTimeOnDay } from '@/domain/schedule-presets';
 import { taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
@@ -53,7 +55,8 @@ import { toDate } from '@/utils/datetime';
  * 日历：只呈现"有明确时间"的事。
  *
  * 四个视图共用一套导航（切视图不重新查库、不重挂列表）：
- * - 月：看全局节奏（哪天忙），**长按任意一行**拖到日期格即改期
+ * - 月：看全局节奏（哪天忙），**长按任意一行**拖到日期格即改期；
+ *   纪念日也落在这里 —— 格子点出它落在哪天，点中那天的卡片说清是什么日子
  * - 周：7 天列 × 小时轴的时间网格，**长按任务块横拖换天、纵拖换时刻**；
  *   跨天落下后自动切到那天的日视图，接着微调；点表头也能直接进某天
  * - 日：看当天时间轴，**长按任务块上下拖**即改时刻（吸 15 分钟刻度）
@@ -95,6 +98,14 @@ const keyToDate = (key: string): Date => {
   return new Date(y, m - 1, d);
 };
 
+/** 日卡里的纪念日行：把 describeMark 的大字小字拼成一句话（"3 天后 · 第 2 周年"） */
+const markLine = (view: MarkView): string =>
+  view.headline === '今天'
+    ? view.caption === '就是这天'
+      ? '就是今天'
+      : `今天 · ${view.caption}`
+    : `${view.headline} ${view.caption}`;
+
 export default function CalendarScreen() {
   const theme = useTheme();
   const router = useRouter();
@@ -115,6 +126,8 @@ export default function CalendarScreen() {
   const inbox = useAppStore((state) => state.inbox);
   // 考试同理：一学期十来场，全量放 store，页面按日期分桶
   const events = useAppStore((state) => state.events);
+  // 纪念日也全量在 store：它就那么几个日子，月历的圆点和日卡里的行都从这儿出
+  const marks = useAppStore((state) => state.marks);
   const saveCourse = useAppStore((state) => state.saveCourse);
   /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
   const timetableOn = useSettings((state) => state.timetableEnabled);
@@ -374,13 +387,41 @@ export default function CalendarScreen() {
     return map;
   }, [events]);
 
+  /**
+   * 纪念日落进日历的换算：每个纪念日算"离今天最近的那一次"落在哪天
+   * （年度重复的滚到下一次周年，换算在 domain/nextMarkDate）。
+   * 月历的圆点、点中那天日卡里的行，用的都是这一张表 ——
+   * 两边永远是同一天，不会"格子上点出来了、卡片里却没说"。
+   */
+  const marksByDay = useMemo(() => {
+    const map = new Map<string, MarkView[]>();
+    for (const mark of marks) {
+      const date = nextMarkDate(mark);
+      if (!date) continue;
+      const key = dayKey(date);
+      const bucket = map.get(key) ?? [];
+      bucket.push(describeMark(mark));
+      map.set(key, bucket);
+    }
+    return map;
+  }, [marks]);
+
+  /** 底部那张"快到的日子"卡：挑法与原来首页那张同一份口径 */
+  const upcomingMarks = useMemo(
+    () => pickUpcoming(sortMarkViews(marks.map((mark) => describeMark(mark))), 3),
+    [marks],
+  );
+
   const monthCounts = useMemo(() => {
     const merged = new Map(countsByDay);
     for (const key of examsByDay.keys()) merged.set(key, (merged.get(key) ?? 0) + 1);
+    // 纪念日也点出来：生日值得提前两天看见。点中那天，日卡里会说清这是什么
+    for (const key of marksByDay.keys()) merged.set(key, (merged.get(key) ?? 0) + 1);
     return merged;
-  }, [countsByDay, examsByDay]);
+  }, [countsByDay, examsByDay, marksByDay]);
 
   const selectedExams = examsByDay.get(dayKey(selected)) ?? [];
+  const selectedMarks = marksByDay.get(dayKey(selected)) ?? [];
 
   const handleDrop = useCallback(
     (task: Task, key: string) => {
@@ -634,6 +675,22 @@ export default function CalendarScreen() {
                   <Card
                     title={`${isSameDay(selected, now) ? '今天' : format(selected, 'M月d日')} · ${selectedTasks.length + selectedExams.length} 件`}
                     hint={selectedTasks.length ? '长按任一行，拖到上面的日期格即可改期' : undefined}>
+                    {/* 纪念日排在最前：它不是"一件事"，是这一天本身的底色 */}
+                    {selectedMarks.map((view) => (
+                      <Pressable
+                        key={view.mark.id}
+                        accessibilityRole="button"
+                        onPress={() => router.push('/marks')}
+                        style={styles.examRow}>
+                        <Ionicons name="gift-outline" size={15} color={theme.textSecondary} />
+                        <ThemedText type="smallBold" numberOfLines={1} style={styles.examTitle}>
+                          {view.mark.title}
+                        </ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {markLine(view)}
+                        </ThemedText>
+                      </Pressable>
+                    ))}
                     {selectedExams.map((event) => (
                       <View key={event.id} style={styles.examRow}>
                         <ThemedText type="smallBold" numberOfLines={1} style={styles.examTitle}>
@@ -654,9 +711,54 @@ export default function CalendarScreen() {
                           onComplete={guardedToggle}
                         />
                       ))
-                    ) : selectedExams.length ? null : (
+                    ) : selectedExams.length || selectedMarks.length ? null : (
                       <ThemedText type="small" themeColor="textSecondary">
                         这一天没有安排
+                      </ThemedText>
+                    )}
+                  </Card>
+
+                  {/*
+                    纪念日：它的家本来就该是日历 —— 它是"一个日子"，不是"一件事"。
+                    两层呈现：上面月历把"那一次"点出来、点中那天日卡里说清；
+                    这张卡只回答一个问题：最近有什么日子快到了。
+                  */}
+                  <Card
+                    title="纪念日"
+                    hint={upcomingMarks.length ? undefined : '记一个还剩几天的日子'}
+                    right={
+                      <Pressable onPress={() => router.push('/marks')}>
+                        <ThemedText type="small" themeColor="textSecondary">
+                          {marks.length ? '全部' : '去添加'}
+                        </ThemedText>
+                      </Pressable>
+                    }>
+                    {upcomingMarks.length ? (
+                      upcomingMarks.map((view) => (
+                        <Pressable
+                          key={view.mark.id}
+                          accessibilityRole="button"
+                          onPress={() => router.push('/marks')}
+                          style={styles.markRow}>
+                          <View style={styles.markNumberBlock}>
+                            <ThemedText type="smallBold" style={styles.markNumber}>
+                              {view.headline}
+                            </ThemedText>
+                            <ThemedText
+                              type="small"
+                              themeColor="textSecondary"
+                              style={styles.markCaption}>
+                              {view.caption}
+                            </ThemedText>
+                          </View>
+                          <ThemedText type="small" numberOfLines={1} style={styles.markTitle}>
+                            {view.mark.title}
+                          </ThemedText>
+                        </Pressable>
+                      ))
+                    ) : (
+                      <ThemedText type="small" themeColor="textSecondary">
+                        还没有纪念日。生日、考试、在一起多久，都可以记一个。
                       </ThemedText>
                     )}
                   </Card>
@@ -983,6 +1085,11 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.one,
   },
   examTitle: { flex: 1 },
+  markRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  markNumberBlock: { flexDirection: 'row', alignItems: 'baseline', gap: 3, minWidth: 62 },
+  markNumber: { fontSize: 16, lineHeight: 20, fontVariant: ['tabular-nums'] },
+  markCaption: { fontSize: 11, lineHeight: 14 },
+  markTitle: { flex: 1 },
   ghost: {
     position: 'absolute',
     left: 0,

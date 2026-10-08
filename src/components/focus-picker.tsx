@@ -52,8 +52,12 @@ export interface FocusPickerProps {
  *
  * 刻意压得比一开始小一圈：首页的主角是"开始"，不是"挑"。
  * 挑这一下只要看得清标题就够了，把省下来的高度让给那颗开始键。
+ *
+ * 宽度收到 100：格子只承担"认出是哪件"，不承担"读完标题"，
+ * 再宽就是在给滑动区里的每一格白白交占地税。
+ * 高度不动：任务格是两行标题 + 一行理由，56 已经刚好装满，再压就裁字了。
  */
-const ITEM_WIDTH = 128;
+const ITEM_WIDTH = 100;
 const ITEM_HEIGHT = 56;
 
 const clampIndex = (index: number, total: number): number =>

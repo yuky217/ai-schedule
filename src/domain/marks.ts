@@ -100,7 +100,20 @@ export function sortMarkViews(views: MarkView[]): MarkView[] {
   });
 }
 
-/** 首页卡片：先把"还没发生"的倒数日按远近排出来，不够再用正数日补齐 */
+/**
+ * 这个纪念日在日历上落在哪天 —— "离今天最近的那一次"。
+ *
+ * 年度重复的滚到下一次周年（含今天），不重复的就是它本身那天。
+ * 月历按它把纪念日点上格子：只看得到"下一次"；已经过去又不重复的日子，
+ * 只有翻回那个月才现身 —— 那不是遗漏，翻过那一页本来就该看到它。
+ */
+export function nextMarkDate(mark: Mark, now: Date = new Date()): Date | null {
+  const base = parseDayKey(mark.date);
+  if (!base) return null;
+  return mark.repeatYearly ? nextAnnual(base, now) : base;
+}
+
+/** 日历页卡片：先把"还没发生"的倒数日按远近排出来，不够再用正数日补齐 */
 export function pickUpcoming(views: MarkView[], limit = 3): MarkView[] {
   const upcoming = views.filter((v) => v.mark.kind === MarkKind.Countdown && v.days >= 0);
   if (upcoming.length >= limit) return upcoming.slice(0, limit);

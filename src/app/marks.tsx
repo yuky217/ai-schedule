@@ -293,8 +293,8 @@ export default function MarksScreen() {
         <View style={styles.tipRow}>
           <Ionicons name="information-circle-outline" size={16} color={theme.textSecondary} />
           <ThemedText type="small" themeColor="textSecondary" style={styles.tipText}>
-            纪念日独立于任务：不占日历、不提醒、不进收集箱，只是让日子有个地方待着。
-            首页会挑几个最近要发生的显示出来。
+            纪念日独立于任务：不提醒、不进收集箱，只是让日子有个地方待着。
+            日历页会把它点在那天，并挑几个最近要发生的列出来。
           </ThemedText>
         </View>
       </Card>

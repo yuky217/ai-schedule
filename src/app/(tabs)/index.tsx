@@ -19,7 +19,6 @@ import {
   FOCUS_PICKER_LIMIT,
   listFocusCandidates,
 } from '@/domain/focus-candidate';
-import { describeMark, pickUpcoming, sortMarkViews } from '@/domain/marks';
 import type { CaptureRoute } from '@/domain/routing';
 import { taskAnchor, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
@@ -34,7 +33,8 @@ import { formatDateLong, formatDayTime } from '@/utils/datetime';
  *   2. 专注 —— **一个提案**（一件事 + 一句"为什么是它"）+ 一个动作。
  *      提案的规则全在 domain/focus-candidate.ts，页面只负责显示。
  *      挑的规则是"停在哪件就是哪件"，确认只有一个键。
- *   3. 慢事 —— 纪念日 / 习惯两张卡常驻底部，不再折叠（折叠等于多一次点击）。
+ *   3. 慢事 —— 习惯卡常驻底部，不折叠（折叠等于多一次点击）。
+ *      纪念日不在这里：它是"一个日子"而不是"一件事"，家在日历页。
  *
  * 立场：**首页要能回答"现在做哪件"，而不是把全部家当摆出来**。
  * 今天那几件不在这儿铺成列表 —— 专注选择器左右滑就是它们，
@@ -59,7 +59,6 @@ export default function HomeScreen() {
   const clearFocusFeedback = useAppStore((state) => state.clearFocusFeedback);
   const error = useAppStore((state) => state.error);
   const capture = useAppStore((state) => state.capture);
-  const marks = useAppStore((state) => state.marks);
   const tasks = useAppStore((state) => state.tasks);
   const habits = useAppStore((state) => state.habits);
   const checkins = useAppStore((state) => state.checkins);
@@ -155,12 +154,6 @@ export default function HomeScreen() {
   const habitDoneToday = useMemo(
     () => habits.filter((habit) => hasCheckedInOn(checkinKeys.get(habit.id) ?? [], new Date())).length,
     [habits, checkinKeys],
-  );
-
-  /** 纪念日：只挑几个最近要发生的，不占首页主角 */
-  const upcomingMarks = useMemo(
-    () => pickUpcoming(sortMarkViews(marks.map((mark) => describeMark(mark))), 3),
-    [marks],
   );
 
   /**
@@ -362,45 +355,7 @@ export default function HomeScreen() {
         </Pressable>
       </Card>
 
-      {/* 慢事：常驻两张卡，不用展开 —— 折叠等于多一次点击 */}
-      {/* 纪念日：不提醒、不催办，只是把日子摆在你眼前 */}
-      <Card
-        title="纪念日"
-        hint={upcomingMarks.length ? undefined : '记一个还剩几天的日子'}
-        right={
-          <Pressable onPress={() => router.push('/marks')}>
-            <ThemedText type="small" themeColor="textSecondary">
-              {marks.length ? '全部' : '去添加'}
-            </ThemedText>
-          </Pressable>
-        }>
-        {upcomingMarks.length ? (
-          upcomingMarks.map((view) => (
-            <Pressable
-              key={view.mark.id}
-              accessibilityRole="button"
-              onPress={() => router.push('/marks')}
-              style={styles.markRow}>
-              <View style={styles.markNumberBlock}>
-                <ThemedText type="smallBold" style={styles.markNumber}>
-                  {view.headline}
-                </ThemedText>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.markCaption}>
-                  {view.caption}
-                </ThemedText>
-              </View>
-              <ThemedText type="small" numberOfLines={1} style={styles.markTitle}>
-                {view.mark.title}
-              </ThemedText>
-            </Pressable>
-          ))
-        ) : (
-          <ThemedText type="small" themeColor="textSecondary">
-            还没有纪念日。生日、考试、在一起多久，都可以记一个。
-          </ThemedText>
-        )}
-      </Card>
-
+      {/* 慢事：常驻一张卡，不用展开 —— 折叠等于多一次点击 */}
       {/* 习惯：日常里累积的那部分，不占 Tab，首页给一张卡 */}
       {habits.length ? (
         <Card
@@ -480,11 +435,6 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  markRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
-  markNumberBlock: { flexDirection: 'row', alignItems: 'baseline', gap: 3, minWidth: 62 },
-  markNumber: { fontSize: 16, lineHeight: 20, fontVariant: ['tabular-nums'] },
-  markCaption: { fontSize: 11, lineHeight: 14 },
-  markTitle: { flex: 1 },
   habitTitle: { flex: 1 },
   habitRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   habitCheck: {
