@@ -256,3 +256,82 @@ describe('不猜：认不出来就一个字都不认', () => {
     expect(r.title).toBe('');
   });
 });
+
+/**
+ * 用户真实粘贴进来的一整段通知（2026-10-08 原样给的，一个字没改）。
+ *
+ * 这一段的意义在于：**词形明确的那些时间词，本来就已经认得出来**（下面第一条断言
+ * 第一次跑就是绿的）—— 卡住的地方从来不是"看不懂 19:00-21:50"，
+ * 而是三百字的通知会整段变成日程标题。所以这一组测试盯的是**标题与备注怎么分**。
+ */
+describe('粘一整段通知：标题只取它真正的那一行', () => {
+  const NOTICE = [
+    '#关于团委大会暨团委素质拓展活动开展通知',
+    '各位委员、部长、干事，你们好！',
+    '🎊为了帮助干事更快地融入团委大家庭，增进新老成员之间的了解与信任，加强各部门之间的沟通与协作，团委决定开展第一次团委大会暨团委素质拓展活动，现有以下安排：',
+    '1️⃣活动时间及地点：',
+    '🕖时间：10月14日（下周三） 晚19:00-21:50',
+    '🏠地点："一站式"学生社区211',
+    '2️⃣服装要求👔：统一上白下黑（白色上装，黑色下装）',
+    '3️⃣本次活动原则上需全员参加，下附有本次团委大会请假条，若有特殊情况需以正当理由填写请假条，并于【10月14日 12：00】前交给部门部长❗',
+    '🌸若对活动安排有任何疑问，欢迎随时咨询！期待第一次团委大会暨大团建圆满举行！🎉🎉🥰🥰@所有人',
+  ].join('\n');
+
+  it('时间照旧认出来（整段文本不妨碍词形匹配）', () => {
+    const r = parseSchedule(NOTICE, NOW);
+    expect(r.time?.startAt).toBe(at(2026, 10, 14, 19, 0));
+    expect(r.time?.endAt).toBe(at(2026, 10, 14, 21, 50));
+    expect(r.label).toBe('10月14日 周三 19:00–21:50');
+  });
+
+  it('标题 = 第一行的名字，并剥掉"关于…通知"这层壳', () => {
+    expect(parseSchedule(NOTICE, NOW).title).toBe('团委大会暨团委素质拓展活动开展');
+  });
+
+  it('地点不进任何字段，但一个字都没丢 —— 全在备注里', () => {
+    const note = parseSchedule(NOTICE, NOW).note ?? '';
+    expect(note).toContain('地点："一站式"学生社区211');
+    expect(note).toContain('服装要求');
+    expect(note).toContain('请假条');
+  });
+
+  it('时间行不留渣：时间已经进了字段，备注里不再重复一份', () => {
+    expect(parseSchedule(NOTICE, NOW).note).not.toContain('（下周三）');
+  });
+
+  it('body 是未经提炼的完整正文（想法库用得到：那儿的 content 就是全文）', () => {
+    const body = parseSchedule(NOTICE, NOW).body;
+    expect(body).toContain('地点："一站式"学生社区211');
+    expect(body).toContain('关于团委大会暨团委素质拓展活动开展通知');
+  });
+});
+
+describe('标题提炼只在多行时才动手', () => {
+  it('单行输入行为完全不变：不提炼、备注为空', () => {
+    const r = parseSchedule('明天下午3点开会', NOW);
+    expect(r.title).toBe('开会');
+    expect(r.note).toBeNull();
+    expect(r.body).toBe('开会');
+  });
+
+  it('第一行是寒暄时往后找，不拿"各位…你们好"当名字', () => {
+    const text = ['各位同学：', '运动会彩排', '10月9日 上午9:00 田径场'].join('\n');
+    expect(parseSchedule(text, NOW).title).toBe('运动会彩排');
+  });
+
+  it('"地方跟时间写在同一行"时地方要留下 —— 别把"田径场"当时间渣清掉', () => {
+    const text = ['运动会彩排', '10月9日 上午9:00 田径场'].join('\n');
+    expect(parseSchedule(text, NOW).note).toContain('田径场');
+  });
+
+  it('"时间：另行通知"一个字都没被抠过，不许删', () => {
+    const text = ['家长会', '时间：另行通知'].join('\n');
+    expect(parseSchedule(text, NOW).note).toContain('另行通知');
+  });
+
+  it('一行都挑不出像样的标题时，退回整段（宁长不猜）', () => {
+    const text = ['各位：', '好'].join('\n');
+    const r = parseSchedule(text, NOW);
+    expect(r.title).toContain('各位');
+  });
+});

@@ -55,16 +55,22 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
 
   const source = input.source ?? CaptureSource.Manual;
 
-  // 自动识别日程：调用方没给时间时，先从文本里解析一次（本地启发式，能力层关闭也可用）
-  const parsed = input.time == null ? parseSchedule(text) : null;
-  const time: TaskTime | null = input.time ?? parsed?.time ?? null;
-  const displayText = parsed && parsed.title.trim() ? parsed.title : text;
+  /*
+   * 先解析一次（本地启发式，能力层关闭也可用）。
+   *
+   * **不再"用户给了时间就跳过解析"**：解析出来的不只是时间，还有标题与备注 ——
+   * 用户在 chip 里手选过时刻之后，粘进来的那一整段通知照样得提炼出名字，
+   * 否则他得到的是一条标题两百字的日程。时间那一项仍然**手动的压过猜的**。
+   */
+  const parsed = parseSchedule(text);
+  const time: TaskTime | null = input.time ?? parsed.time ?? null;
+  const displayText = parsed.title.trim() ? parsed.title : text;
   /*
    * 重复同样要接上。"每天 8 点吃药"识别出了 repeat，但如果只把它算出来不写进任务，
    * 用户得到的就是一条**只有今天**的任务 —— 明天不会再出现，而且看不出哪里不对。
    * 用户当场在快捷按钮里设过就以他的为准（手写的永远压过猜的）。
    */
-  const repeat = input.repeat ?? parsed?.repeat ?? null;
+  const repeat = input.repeat ?? parsed.repeat ?? null;
 
   const decision = decideRoute({
     text: displayText,
@@ -74,7 +80,8 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
 
   // 【灵感】→ 想法库：不提醒、不催办
   if (decision.route === 'idea') {
-    const idea = createIdea(displayText, source);
+    // 想法库的 content 就是全文 —— "提炼标题"是给任务用的，别把想法截成一行
+    const idea = createIdea(parsed.body || displayText, source);
     await ideaRepository.create(idea);
     return {
       id: idea.id,
@@ -89,6 +96,7 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   // 【要完成的事】→ 收集箱 / 日历
   const task = createTask({
     title: displayText,
+    note: parsed.note,
     kind: input.kind ?? decision.kind,
     time: time ?? undefined,
     source,

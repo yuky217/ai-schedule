@@ -24,8 +24,19 @@ import { timeAnchor, type RepeatRule, type TaskTime } from './task';
  */
 
 export interface ParsedSchedule {
-  /** 去掉时间词与重复词后的正文 */
+  /** 去掉时间词与重复词后、**提炼过的**标题（粘一整段通知时只取它真正的那一行） */
   title: string;
+  /**
+   * 标题之外剩下的正文。粘一整段通知时，"地点：xxx""服装要求：xxx"这类信息
+   * 全落在这儿 —— **不丢**是这一层唯一的立场（没有地点字段，也不必为它开一个）。
+   */
+  note: string | null;
+  /**
+   * 抠掉时间词之后、**未经提炼的完整正文**（`title` 与 `note` 都从它来）。
+   * 给"原文即内容"的地方用 —— 想法库的 `content` 就是全文，
+   * 那儿不该像任务标题一样被挑出一行、其余塞进备注。
+   */
+  body: string;
   /** 识别出的时间；null = 没识别到 */
   time: TaskTime | null;
   /** 识别出的重复；null = 没识别到 */
@@ -93,8 +104,7 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
   const tm = parseTime(text, now);
 
   const spans = [...(rep?.spans ?? []), ...(tm?.spans ?? [])];
-  const stripped = removeSpans(text, spans);
-  const title = stripped || text;
+  const picked = pickTitle(removeSpans(text, spans) || text);
 
   /*
    * ③ 重复里已经写明周几时，**第一期以它为准**。
@@ -110,7 +120,9 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
       : (tm?.time ?? null);
 
   return {
-    title,
+    title: picked.title,
+    note: picked.rest,
+    body: picked.body,
     time: aligned,
     repeat: rep?.repeat ?? null,
     label: tm?.label ?? null,
@@ -123,6 +135,8 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
 function empty(text: string): ParsedSchedule {
   return {
     title: text,
+    note: null,
+    body: text,
     time: null,
     repeat: null,
     label: null,
@@ -482,12 +496,24 @@ function pickGroup(m: RegExpExecArray): string {
 }
 
 /**
+ * 被切掉的时间在原文里留下的记号。
+ *
+ * `\u0000` 是几乎不可能出现在用户文本里的控制字符。留着它不是为了显示，
+ * 而是为了让下一步能分辨"**这一行的时间被抠走过**"——这是"这行是时间渣、
+ * 别留在备注里"唯一的依据（见 `isTimeResidue`）。
+ */
+const TIME_CUT = '\u0000';
+
+/**
  * 把若干区间从文本里切掉，**有重叠就合并**。
  * 「每周五前交报告」里「每周五」与「周五前」重叠，分开切会剩一堆碎字，
  * 合并成一段再切才能得到干净的「交报告」。
+ *
+ * **保留换行**（这儿不做 `cleanTitle`）：下一步的 `pickTitle` 要靠"行"来挑标题 ——
+ * 在这儿把换行压成空格，一整段通知就变成一大坨，再也不可能认出它真正的名字。
  */
 function removeSpans(text: string, spans: Span[]): string {
-  if (!spans.length) return cleanTitle(text);
+  if (!spans.length) return text;
   const sorted = [...spans].sort((a, b) => a.start - b.start || a.end - b.end);
   const merged: Span[] = [];
   for (const span of sorted) {
@@ -498,11 +524,116 @@ function removeSpans(text: string, spans: Span[]): string {
   let out = '';
   let cursor = 0;
   for (const span of merged) {
-    out += `${text.slice(cursor, span.start)} `;
+    out += `${text.slice(cursor, span.start)}${TIME_CUT}`;
     cursor = span.end;
   }
   out += text.slice(cursor);
-  return cleanTitle(out);
+  return out;
+}
+
+/** 标题上限：收集箱一行放得下。超出的部分仍在备注里，不是丢掉 */
+const TITLE_MAX = 40;
+
+/**
+ * 从"抠掉时间词之后剩下的正文"里挑出标题与备注。
+ *
+ * - **单行**（记一件事时的绝大多数输入）＝老行为：清洗 + 截断，备注为空。
+ * - **多行**（用户把一整段通知粘进来）＝逐行挑。依据是一个很朴素的约定：
+ *   **这段文字的第一行就是它的名字** —— 通知、公告、聊天里的长消息都这么写。
+ *   挑之前先洗掉行首的 md 标记 / 序号 / 图标；"各位…你们好""活动时间及地点："
+ *   这类明显不是名字的行跳过。剩下的一律进备注。
+ *
+ * 这里**不做语义理解**（那是能力层 `Understand` 的事）：一行都挑不出像样的，
+ * 就退回"整段压平后截断" —— 宁可标题长一点，也不替用户编一个他没写的名字。
+ */
+function pickTitle(raw: string): { title: string; rest: string | null; body: string } {
+  const lines = raw
+    .split('\n')
+    .map((line) => ({
+      text: stripLineMarks(line.split(TIME_CUT).join(' ')),
+      cut: line.includes(TIME_CUT),
+    }))
+    .filter((line) => line.text.trim().length > 0 && !isTimeResidue(line));
+
+  const body = lines.map((l) => l.text).join('\n').trim() || raw.split(TIME_CUT).join(' ').trim();
+
+  if (lines.length <= 1) {
+    return { title: shorten(cleanTitle(body)), rest: null, body };
+  }
+
+  const at = lines.findIndex((line) => isTitleLike(line.text));
+  const head = at >= 0 ? lines[at]!.text : cleanTitle(body);
+  const rest = lines
+    .filter((_, i) => i !== at)
+    .map((l) => l.text)
+    .join('\n')
+    .trim();
+
+  return { title: shorten(cleanTitle(head)), rest: rest || null, body };
+}
+
+/**
+ * 这一行是不是"时间被抠走之后剩下的渣"。
+ *
+ * 时间已经提成日程的时间字段了，备注里再留一份「时间： （下周三） 晚」只有坏处。
+ * 判据收得很紧，三个条件缺一不可：
+ * ① **这一行真的被抠过时间** —— 不是所有以"时间："开头的行都算，
+ *    「时间：另行通知」一个字都没被抠走，那是有用信息，不能删；
+ * ② **这一行本来就是时间行的样子**（以"时间："这类标签开头）—— 少了它，
+ *    「10月9日 上午9:00 田径场」被抠完只剩"田径场"，一个地名就这么没了；
+ * ③ **抠完剩下的有效字不到十个** —— 剩得多说明这行还有别的内容。
+ */
+function isTimeResidue({ text, cut }: { text: string; cut: boolean }): boolean {
+  if (!cut) return false;
+  if (!/^(活动|会议|开始|集合)?时间\s*[：:]/.test(text)) return false;
+  return text.replace(/[^\p{Script=Han}\d]/gu, '').length < 10;
+}
+
+/**
+ * 洗掉行首的装饰与行首行尾的标点 —— **只用来挑标题**，备注里的原文照旧。
+ *
+ * 顺序有讲究：`1️⃣` 是"1 + 变体选择符 + 键帽"三个码点，不先整块去掉，
+ * 后面那条"数字序号"规则接不住它，会剩一个光秃秃的"1"贴在标题前面。
+ */
+function stripLineMarks(line: string): string {
+  return line
+    .replace(/\d?\uFE0F?\u20E3/g, '') // 1️⃣ 这类键帽整块去
+    .replace(/\uFE0F/g, '')
+    .replace(/^[\s>*#\-–—•·]+/, '') // markdown 标记
+    .replace(/^[（(]?\d{1,2}[）).、]\s*/, '') // 1. / 1、 / (1)
+    .replace(/^[一二三四五六七八九十]{1,2}[、.）)]\s*/, '') // 一、
+    .replace(/^[\p{Extended_Pictographic}\s]+/u, '') // 图标
+    .replace(/^[\s，。、,.；;：:]+|[\s，。、,.；;：:！!？?]+$/g, '')
+    .trim();
+}
+
+/**
+ * 这一行像不像"这段文字的名字"。三条否决都很便宜，而且**只在多行文本里生效**：
+ * 太短（序号碎片、"时间"两个字）、寒暄（称呼开场）、以冒号结尾（分节小标题，
+ * 比如"活动时间及地点："——它是小标题，不是这件事的名字）。
+ */
+function isTitleLike(line: string): boolean {
+  const s = line.trim();
+  if (s.length < 3) return false;
+  if (/^(各位|尊敬的|亲爱的|大家好|你们好)/.test(s)) return false;
+  if (/[：:]$/.test(s)) return false;
+  return true;
+}
+
+/**
+ * 收尾：剥掉公文的壳，再超长截断。
+ *
+ * "关于 X 的通知"里，**"关于…通知"是壳不是名字** —— 而通知类文本的第一行几乎
+ * 全是这个格式，所以这条窄规则（必须"关于"开头**且**通知/公告/安排结尾同时成立）
+ * 命中率很高、误伤面很小。剥完不足两个字就认输，原样留着。
+ */
+function shorten(title: string): string {
+  let t = title;
+  if (/^关于.{2,}/.test(t) && /(通知|公告|安排|方案)$/.test(t)) {
+    const inner = t.replace(/^关于\s*/, '').replace(/的?(通知|公告|安排|方案)$/, '');
+    if (inner.length >= 2) t = inner;
+  }
+  return t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX)}…` : t;
 }
 
 function cleanTitle(text: string): string {
