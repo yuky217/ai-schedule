@@ -142,6 +142,25 @@ export function describeNextFire(task: Task, now: Date = new Date()): string {
 }
 
 /**
+ * 「有明显的准备动作」的词 —— 命中就把默认提前量抬到 1 小时。
+ *
+ * 这些词共同点：**光知道"几点出发"没用，你得提前开始收拾**。
+ * 「出发 / 赶 + 交通工具 / 收拾行李 / 出门 / 接人送人」就是这类。
+ *
+ * ## 为什么只认这几个，而不是"开会 / 课 / 交"
+ *
+ * 词表越宽，命中的越可能是**自称**而不是**行为**：
+ * "课程设计答辩"里有「课」、"会议纪要整理"里有「会」，
+ * 都会被误抬到提前 1 小时。而**猜错的提醒用户根本不知道去哪儿改** ——
+ * 与 `extractLocation` 同一个取舍：**只认明确词形，宁可不认，绝不瞎认**。
+ *
+ * `赶` 必须带交通工具（"赶飞机"算，"赶工/赶紧"不算）；
+ * `接 / 送` 必须带人（"接电话"不算）。
+ */
+const PREP_ACTION =
+  /出发|出门|动身|启程|上路|收拾|打包|整理行李|装行李|赶(?:飞机|火车|高铁|车|班车|大巴|轮渡|船)|[接送](?:人|机|站|朋友|同学|老师|孩子)/;
+
+/**
  * 「提了提醒、但没说提前多久」时，这件事该提前多久。
  *
  * 分类型给，而不是一律准点（准点对"要出门的事"等于没提醒）：
@@ -149,7 +168,22 @@ export function describeNextFire(task: Task, now: Date = new Date()): string {
  *   准点提醒等于通知你"已经晚了"。
  * - **重复 / 习惯型**（"每天 8 点吃药"、"每周三次跑步"）：准点 —— 到点就该做，
  *   提前 10 分钟没有额外价值。
- * - **其余**（开会、活动、约好的事）：提前 10 分钟 —— 你需要的是"该动身了"。
+ * - **有地点的日程**（教室、会议室、别人那儿）：提前 20 分钟 —— 要动身：
+ *   走路、换教室、找楼，10 分钟只够你从座位上站起来。
+ * - **标题里有明显准备动作**（"19:90 出发去机场"）：提前 1 小时 ——
+ *   收拾、出门、赶车都要时间，等到该出发了才提醒等于没提醒。
+ * - **其余**（线上会、自己安排的时段）：提前 10 分钟 —— 你只需要"准备开始了"。
+ *
+ * ## 两条判断依据为什么是它们俩
+ *
+ * 地点是**结构化字段**（用户填的，或「地点：xxx」识别到的），判断零成本零误判；
+ * 准备动作是**标题里的明确词形**，词表窄到几乎不会自伤。
+ * 相比之下"开会 vs 自习"要靠猜关键词 —— 猜错的提醒比不给默认值更烦。
+ *
+ * ## 顺序（别调换）
+ *
+ * ① 截止型（最硬的时间形态）→ ② 准点档（重复/习惯："到点做"这件事压过一切，
+ * 每天 8 点吃药不会因为"有地点"就变成提前 20）→ ③ 准备动作 → ④ 地点 → ⑤ 兜底。
  *
  * 只用在"用户提了提醒但没给量"（"记得提醒我"）那一处。**没提就是不提醒**。
  */
@@ -157,9 +191,15 @@ export function defaultReminderMinutes(ctx: {
   kind: TaskKind;
   attribute: TimeAttribute;
   repeat?: RepeatRule | null;
+  /** 有地点 = 要动身。传解析出的地点或任务上已填的地点 */
+  location?: string | null;
+  /** 标题或备注原文，用来找「出发 / 赶飞机」这类准备动作 */
+  text?: string | null;
 }): number {
   if (ctx.attribute === TimeAttribute.Deadline) return 60;
   if (ctx.repeat || ctx.kind === 'habit') return 0;
+  if (ctx.text && PREP_ACTION.test(ctx.text)) return 60;
+  if (ctx.location) return 20;
   return 10;
 }
 
@@ -182,6 +222,10 @@ export function resolveReminderMinutes(args: {
   kind: TaskKind;
   attribute: TimeAttribute;
   repeat?: RepeatRule | null;
+  /** 解析出的地点（"地点：三教101"）。有它就默认提前 20 分钟 */
+  location?: string | null;
+  /** 原文，用来找「出发 / 赶飞机」这类准备动作 */
+  text?: string | null;
 }): number | null {
   if (args.manual !== undefined) return args.manual;
   if (args.parsed != null) return args.parsed;
@@ -190,6 +234,8 @@ export function resolveReminderMinutes(args: {
       kind: args.kind,
       attribute: args.attribute,
       repeat: args.repeat,
+      location: args.location,
+      text: args.text,
     });
   }
   return null;

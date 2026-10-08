@@ -120,6 +120,10 @@ export function CaptureInput({
       kind: decision.kind,
       attribute: result.time.attribute,
       repeat: result.repeat,
+      // 与 quickCapture 传的是同两样：地点的字段值 + 用来找准备动作的原文。
+      // 少传一个，chip 上显示的就和最后存进库的不是一个数了。
+      location: result.location,
+      text,
     });
     return { time: result.time, label: result.label, reminder };
   }, [text, asIdea, time]);

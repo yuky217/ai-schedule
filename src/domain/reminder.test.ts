@@ -146,7 +146,8 @@ describe('describeNextFire', () => {
 
 /**
  * 「提了提醒、但没说提前多久」时该提前多久 —— 按事情类型给（2026-10-08 用户要求）。
- * 三条分支对应三类事的正确时刻：截止要留出做的时间、重复到点就该做、其余要动身。
+ * 分支对应各类事的正确时刻：截止要留出做的时间、重复到点就该做、
+ * 有地点要动身、有准备动作要收拾、其余只需"准备开始"。
  */
 describe('defaultReminderMinutes', () => {
   const base = { kind: TaskKind.Execution, attribute: TimeAttribute.Fixed } as const;
@@ -168,8 +169,59 @@ describe('defaultReminderMinutes', () => {
     expect(defaultReminderMinutes({ ...base, kind: TaskKind.Habit })).toBe(0);
   });
 
-  it('其余（开会、活动、约好的事）→ 提前 10 分钟', () => {
-    expect(defaultReminderMinutes({ ...base, kind: TaskKind.Schedule })).toBe(10);
+  it('有地点的日程 → 提前 20 分钟（要动身：走路、换教室、找楼）', () => {
+    expect(defaultReminderMinutes({ ...base, location: '三教101' })).toBe(20);
+  });
+
+  it('没地点的日程 → 保持提前 10 分钟（线上会、自己安排的时段）', () => {
+    expect(defaultReminderMinutes(base)).toBe(10);
+    expect(defaultReminderMinutes({ ...base, location: null })).toBe(10);
+  });
+
+  it('标题里有准备动作 → 提前 1 小时（收拾、出门、赶车都要时间）', () => {
+    expect(defaultReminderMinutes({ ...base, text: '19:00 出发去机场' })).toBe(60);
+    expect(defaultReminderMinutes({ ...base, text: '赶高铁回家' })).toBe(60);
+    expect(defaultReminderMinutes({ ...base, text: '收拾行李' })).toBe(60);
+  });
+
+  /*
+   * 词表窄是刻意的：这些词回答的是"这件事是什么"，不是"要不要提前收拾"。
+   * 命中的代价是**替用户早响 50 分钟**，而他不知道去哪儿改 —— 宁可不认。
+   */
+  it('只是"开会 / 上课 / 交材料"不算准备动作（那是性质，不是行为）', () => {
+    expect(defaultReminderMinutes({ ...base, text: '下午 3 点开会' })).toBe(10);
+    expect(defaultReminderMinutes({ ...base, text: '课程设计答辩' })).toBe(10);
+    expect(defaultReminderMinutes({ ...base, text: '24:00 前交材料' })).toBe(10);
+  });
+
+  it('「赶」必须带交通工具、「接/送」必须带人（"赶紧"、"接电话"不算）', () => {
+    expect(defaultReminderMinutes({ ...base, text: '赶紧处理一下' })).toBe(10);
+    expect(defaultReminderMinutes({ ...base, text: '接个电话' })).toBe(10);
+    expect(defaultReminderMinutes({ ...base, text: '赶飞机' })).toBe(60);
+    expect(defaultReminderMinutes({ ...base, text: '接人' })).toBe(60);
+  });
+
+  describe('顺序（别调换）', () => {
+    it('截止型压过地点与准备动作', () => {
+      expect(
+        defaultReminderMinutes({ ...base, attribute: TimeAttribute.Deadline, location: '三教101' }),
+      ).toBe(60);
+    });
+
+    it('重复 / 习惯型压过地点 —— "每天 8 点吃药"不会因为写了地点就变成提前 20', () => {
+      expect(defaultReminderMinutes({ ...base, kind: TaskKind.Habit, location: '家里' })).toBe(0);
+      expect(
+        defaultReminderMinutes({
+          ...base,
+          location: '健身房',
+          repeat: { freq: RepeatFreq.Weekly, interval: 1 },
+        }),
+      ).toBe(0);
+    });
+
+    it('准备动作压过地点 —— 有地点只到 20，但"出发去机场"要 1 小时', () => {
+      expect(defaultReminderMinutes({ ...base, location: '机场', text: '出发去机场' })).toBe(60);
+    });
   });
 });
 
@@ -203,6 +255,41 @@ describe('resolveReminderMinutes', () => {
 
   it('用户点过具体值 → 压过文字里写的', () => {
     expect(resolveReminderMinutes({ ...base, manual: 5, parsed: 30 })).toBe(5);
+  });
+
+  /*
+   * 地点与原文必须**真的透传到默认值那一步** —— 界面（chip 显示什么）
+   * 与落库（存进 reminderMinutesBefore 的值）走的是同一个函数，
+   * 少传一个参数，chip 上写的就和库里存的不是一个数了。
+   */
+  it('地点与原文透传到默认值：有地点 20、有准备动作 60', () => {
+    expect(resolveReminderMinutes({ ...base, parsedUnspecified: true, location: '三教101' })).toBe(
+      20,
+    );
+    expect(
+      resolveReminderMinutes({ ...base, parsedUnspecified: true, text: '19:00 出发去机场' }),
+    ).toBe(60);
+    expect(resolveReminderMinutes({ ...base, parsedUnspecified: true })).toBe(10);
+  });
+
+  it('手动的仍压过地点与准备动作', () => {
+    expect(
+      resolveReminderMinutes({
+        ...base,
+        manual: 5,
+        parsedUnspecified: true,
+        location: '三教101',
+        text: '出发去机场',
+      }),
+    ).toBe(5);
+    expect(
+      resolveReminderMinutes({
+        ...base,
+        manual: null,
+        parsedUnspecified: true,
+        location: '三教101',
+      }),
+    ).toBeNull();
   });
 });
 

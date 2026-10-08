@@ -141,6 +141,67 @@ describe('截止式', () => {
     expect(r.time?.dueAt).toBe(at(2026, 10, 8, 15, 0));
     expect(r.title).toBe('交材料');
   });
+
+  /*
+   * 光一个时刻 + 前 —— 最常见的写法，此前**整条漏掉**：
+   * 带日期的截止式要求必须有日期词，于是「12点前交」被 ③ 的"只有时刻"接走，
+   * 落成"固定时间 12:00"，在日历上变成一个**要出席的事件**。
+   * 它其实是个截止：提醒该提前 1 小时、过了该进"已过期"。
+   */
+  it('12点前交 —— 不带日期也是截止，不是"12:00 有个会"', () => {
+    const r = parseSchedule('12点前交', NOW);
+    expect(r.time?.attribute).toBe('deadline');
+    expect(r.time?.dueAt).toBe(at(2026, 10, 7, 12, 0));
+    expect(r.time?.startAt).toBeNull();
+    expect(r.title).toBe('交');
+    expect(r.label).toBe('12:00 前');
+  });
+
+  it('三点半前给我 / 18:00前提交 —— 中文数字与冒点写法都算', () => {
+    expect(parseSchedule('三点半前给我', NOW).time?.dueAt).toBe(at(2026, 10, 7, 3, 30));
+    expect(parseSchedule('18:00前提交', NOW).time?.dueAt).toBe(at(2026, 10, 7, 18, 0));
+  });
+
+  it('带日期的写法仍走原来那条（label 说"明天"，比"今天"精确）', () => {
+    const r = parseSchedule('明天下午3点前交材料', NOW);
+    expect(r.label).not.toBe('15:00 前');
+    expect(r.time?.dueAt).toBe(at(2026, 10, 8, 15, 0));
+  });
+
+  it('不是截止的写法不受影响 —— "3点后再说"、"提前半小时出发"', () => {
+    expect(parseSchedule('3点后再说', NOW).time?.attribute).not.toBe('deadline');
+    expect(parseSchedule('提前半小时出发', NOW).time?.attribute).not.toBe('deadline');
+  });
+});
+
+/**
+ * 「明显的准备动作」——只服务于提醒默认值，所以判据必须**窄**：
+ * 只认"要不要提前收拾"，不认"这件事是什么"。
+ */
+describe('prepAction', () => {
+  it('出发 / 赶交通工具 / 收拾行李 / 接人 → true', () => {
+    for (const text of [
+      '19:00 出发去机场',
+      '明天赶高铁回家',
+      '收拾行李',
+      '晚上 8 点接人',
+      '出门买药',
+    ]) {
+      expect(parseSchedule(text, NOW).prepAction, text).toBe(true);
+    }
+  });
+
+  it('「开会 / 上课 / 交材料」→ false（那是性质，不是行为）', () => {
+    for (const text of ['下午 3 点开会', '课程设计答辩', '12点前交材料', '晚上七点背单词']) {
+      expect(parseSchedule(text, NOW).prepAction, text).toBe(false);
+    }
+  });
+
+  it('「赶」必须带交通工具、「接」必须带人（赶紧 / 接电话不算）', () => {
+    expect(parseSchedule('赶紧处理一下', NOW).prepAction).toBe(false);
+    expect(parseSchedule('接个电话', NOW).prepAction).toBe(false);
+    expect(parseSchedule('赶飞机', NOW).prepAction).toBe(true);
+  });
 });
 
 describe('时间段', () => {

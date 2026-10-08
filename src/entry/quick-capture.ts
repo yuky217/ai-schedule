@@ -130,6 +130,9 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
         kind,
         attribute: time.attribute,
         repeat,
+        // 默认值的两个依据：地点（要动身 → 20 分钟）、原文里的准备动作（要收拾 → 1 小时）
+        location: parsed.location,
+        text: displayText,
       })
     : null;
 

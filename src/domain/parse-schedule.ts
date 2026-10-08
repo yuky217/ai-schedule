@@ -44,6 +44,16 @@ export interface ParsedSchedule {
   location: string | null;
   /** 命中的地点片段原文 */
   locationMatched: string | null;
+  /**
+   * 标题（或备注重）里有"明显的准备动作"——「出发 / 赶飞机 / 收拾行李」这类。
+   *
+   * 用途只有一个：**提醒默认值**。这种事的提前量不该是"开始前 10 分钟"——
+   * 收拾、出门、赶车都要时间（见 `domain/reminder.defaultReminderMinutes`）。
+   *
+   * 为什么不在这里直接变成某个分钟数：提醒的优先级（手动 > 文字 > 默认）
+   * 收口在 reminder.ts，解析器只负责说"有没有"，不参与定档。
+   */
+  prepAction: boolean;
   /** 识别出的重复；null = 没识别到 */
   repeat: RepeatRule | null;
   /**
@@ -98,6 +108,22 @@ const TIME_EXPR =
 const RANGE_SEP = '(?:到|至|~|～|—|–|-|——)';
 /** 时段里第二段 TIME_EXPR 的整体组下标：第一段占 1..7，所以第二段整体是 8 */
 const RANGE_END_BASE = 8;
+
+/**
+ * 「有明显的准备动作」的词表，只服务于提醒默认值（见 `prepAction` 字段）。
+ *
+ * **为什么只认这几个**：词表越宽，越容易把"自称"当成"行为" ——
+ * "课程设计答辩"里有「课」、「会议纪要」里有「会」，都会被误抬到提前 1 小时。
+ * 而猜错的提醒**用户根本不知道去哪儿改**，比"提前量不够准"糟得多。
+ *
+ * `赶` 必须带交通工具（"赶飞机"算，"赶工/赶紧"不算）；
+ * `接 / 送` 必须带人（"接电话"不算）。
+ *
+ * 与 `domain/reminder.ts` 里同名词表是一份口径两处用（解析器要输出字段、
+ * 提醒默认值要读它），两边必须一起改 —— 有测试盯着它们一致。
+ */
+const PREP_ACTION =
+  /出发|出门|动身|启程|上路|收拾|打包|整理行李|装行李|赶(?:飞机|火车|高铁|车|班车|大巴|轮渡|船)|[接送](?:人|机|站|朋友|同学|老师|孩子)/;
 
 export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedule {
   const text = raw.trim();
@@ -178,6 +204,7 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
     time: aligned,
     location: place?.location ?? null,
     locationMatched: place?.raw ?? null,
+    prepAction: hasPrepAction(text),
     repeat: rep?.repeat ?? null,
     reminder: remind?.minutes ?? null,
     reminderUnspecified: Boolean(remind && remind.minutes == null),
@@ -197,6 +224,7 @@ function empty(text: string): ParsedSchedule {
     time: null,
     location: null,
     locationMatched: null,
+    prepAction: false,
     repeat: null,
     reminder: null,
     reminderUnspecified: false,
@@ -207,6 +235,19 @@ function empty(text: string): ParsedSchedule {
     matched: null,
     repeatMatched: null,
   };
+}
+
+/**
+ * 标题里有"明显的准备动作"吗（「出发 / 赶飞机 / 收拾行李」这类）。
+ *
+ * 词表窄是故意的：只认**动作**，不认"这件事是什么"。
+ * 「开会」「上课」「交材料」都不算 —— 它们回答的是"这件事的性质"，
+ * 而准备动作回答的是"要不要提前收拾"，后者才是提前量的依据。
+ *
+ * 与 `extractLocation` 同一个取舍：**宁可不认，绝不瞎认**。
+ */
+function hasPrepAction(text: string): boolean {
+  return PREP_ACTION.test(text);
 }
 
 /* ------------------------------------------------------------------ */
@@ -484,6 +525,30 @@ function overlaps(a: Span, b: Span): boolean {
 }
 
 function parseTime(text: string, now: Date): TimeHit | null {
+  // ➓ 截止式（不带日期）："12点前交" / "三点半前给我" / "18:00前提交"
+  //
+  // 必须在 ① 之前判：① 要求**必须有日期词**（"周五前"、"下个月10号前"），
+  // 而"今天之内 12 点前交"是最常见的写法 —— 漏了它，"12点前交"会退成
+  // "固定时间 12:00"，于是在日历上变成一个**要出席的事件**，
+  // 而它其实是个截止（提醒该提前 1 小时、该进"已过期"）。
+  //
+  // 带日期的由 ① 收走（那里的 label 会说"周五前"，比"今天 23:59 前"精确）；
+  // 这里只认"光一个时刻 + 前"，日期取**今天**，与 ④ 只有时段的口径一致。
+  const bareDeadline = new RegExp(`^${TIME_EXPR}\\s*之?前`).exec(text);
+  if (bareDeadline) {
+    const hm = to24h(bareDeadline, 1);
+    if (hm) {
+      const due = new Date(now);
+      due.setHours(hm.hour, hm.minute, 0, 0);
+      return {
+        time: deadlineTime(due),
+        label: `${clock(due)} 前`,
+        spans: [spanOf(bareDeadline)],
+        raw: bareDeadline[0],
+      };
+    }
+  }
+
   // ① 截止式："周五前交报告" / "明天下午3点前交" / "下个月10号前完成合同"
   const deadline = new RegExp(`${DATE_EXPR}\\s*(?:${TIME_EXPR}\\s*)?之?前`).exec(text);
   if (deadline) {

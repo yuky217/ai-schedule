@@ -158,6 +158,7 @@ describe('quickCapture：粘一整段通知', () => {
         },
         location: '学生活动中心',
         locationMatched: null,
+        prepAction: false,
         repeat: null,
         repeatLabel: null,
         repeatMatched: null,

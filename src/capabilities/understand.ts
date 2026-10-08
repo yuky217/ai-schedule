@@ -92,6 +92,12 @@ export function parseUnderstood(raw: unknown, now: Date): ParsedSchedule | null 
     // 命中的"原文片段"只有本地正则才知道（它靠区间切标题）——
     // 模型给的是结构化结果，这几个展示字段一律为 null，不假装知道
     locationMatched: null,
+    /*
+     * 「明显的准备动作」在模型这条路上不单独问 —— 它是由原文决定的，
+     * 本地词表在 `quickCapture` 里仍然会跑一遍（那边读的是标题原文）。
+     * 这里一律给 false，意思是"模型没提供这个信号"，而不是"没有"。
+     */
+    prepAction: false,
     repeat: readRepeat(obj.repeat),
     reminder: reminder.reminder,
     reminderUnspecified: reminder.reminderUnspecified,
