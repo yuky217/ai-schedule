@@ -9,7 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { TimetableGrid } from '@/components/timetable-grid';
 import { courseColor } from '@/constants/course-colors';
 import { Spacing } from '@/constants/theme';
-import { weekGrid, weekIndexOf, type Course, type CourseSlot, type Term } from '@/domain/course';
+import { maxSessionPeriod, weekGrid, weekIndexOf, type Course, type CourseSlot, type Term } from '@/domain/course';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -61,7 +61,14 @@ export function TimetableView({
   const days = useMemo(() => {
     const weekStart = startOfWeek(cursor, { weekStartsOn: 1 });
     return term
-      ? weekGrid(courses, weekStart, term)
+      ? /**
+         * `includeCanceled`：**只有课表格子要这一份**。
+         * 单次停掉的课要是直接凭空消失，用户既确认不了"取消生效了没有"，
+         * 也没有地方能点回去恢复；所以那一格照旧画出来，只是灰掉划掉。
+         * （日历背景带、首页"下一节课"、提醒都不带这个开关 —— 它们问的是
+         * "要上什么"，停掉的课不在答案里。）
+         */
+        weekGrid(courses, weekStart, term, { includeCanceled: true })
       : Array.from({ length: 7 }, (_, offset) => ({
           date: new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + offset),
           slots: [] as CourseSlot[],
@@ -71,14 +78,12 @@ export function TimetableView({
   /**
    * 网格行数按**整个学期**的课算，不按这一周 —— 否则从满课的周一翻到
    * 没课的周二，整张表的高度会跳一下，看着像界面出了错。
+   * 走 `maxSessionPeriod` 而不是自己遍历 sessions：单次调课也可能把某节课
+   * 挪到更靠后的节次，那节课同样不能被行数截掉（截掉就是凭空消失）。
    */
   const rows = useMemo(() => {
     if (!term) return 8;
-    let max = 0;
-    for (const course of courses) {
-      for (const session of course.sessions) max = Math.max(max, session.endPeriod);
-    }
-    return Math.min(Math.max(8, max), Math.max(1, term.periods.length));
+    return Math.min(Math.max(8, maxSessionPeriod(courses)), Math.max(1, term.periods.length));
   }, [courses, term]);
 
   /**

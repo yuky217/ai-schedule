@@ -15,6 +15,8 @@ import { CalendarDay } from '@/components/calendar-day';
 import { CalendarMonth } from '@/components/calendar-month';
 import { CalendarWeek } from '@/components/calendar-week';
 import { Card } from '@/components/card';
+import { CourseSessionSheet } from '@/components/course-session-sheet';
+import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
@@ -23,11 +25,17 @@ import { TimetableView } from '@/components/timetable-view';
 import { Spacing } from '@/constants/theme';
 import { calendarWindow, windowKey } from '@/domain/calendar-window';
 import {
+  applyCourseChange,
+  changeAnchor,
   coursesOnDate,
+  dropCourseChange,
+  makeCourseChange,
+  mondayOfWeek,
   moveSession,
   sessionKey,
   weekIndexOf,
   type Course,
+  type CourseSession,
   type CourseSlot,
 } from '@/domain/course';
 import { describeEvent, type CalEvent } from '@/domain/event';
@@ -49,8 +57,8 @@ import { toDate } from '@/utils/datetime';
  * - 周：7 天列 × 小时轴的时间网格，**长按任务块横拖换天、纵拖换时刻**；
  *   跨天落下后自动切到那天的日视图，接着微调；点表头也能直接进某天
  * - 日：看当天时间轴，**长按任务块上下拖**即改时刻（吸 15 分钟刻度）
- * - 课：一周的课表（周几 × 第几节），课块点一下进课程详情，
- *   **长按拖动课块**换星期/节次
+ * - 课：一周的课表（周几 × 第几节），**点课块**开这一块的面板（改这一次 / 不上这一次 /
+ *   去改整学期），**长按拖动课块**换星期/节次（那是改整学期）
  *
  * **课是背景，不是日程**：日/周视图里会把当天的课画成虚线带子（点不动、
  * 不参与分道），只回答"这段时间有课"；它是用户可以在设置里整个关掉的一层
@@ -242,16 +250,76 @@ export default function CalendarScreen() {
   const changeMode = useCallback((next: CalendarMode) => transition(next, null), [transition]);
   const focusDay = useCallback((date: Date) => transition('day', dayKey(date)), [transition]);
 
-  /** 点课程块 → 进课程详情（跟"点行/点块 = 进详情"同一条规矩） */
-  const openCourseSlot = useCallback(
-    (slot: CourseSlot) => {
-      // 拖完课块松手时 web 会补发一次 click —— 跟任务共用同一个 500ms 窗口
-      if (Date.now() - longPressAt.current < 500) return;
-      router.push(`/course/${slot.course.id}`);
+  /**
+   * 点课程块 → 打开**这一块自己的面板**（改这一次 / 这一次不上 / 去改整学期）。
+   *
+   * 为什么不直接进课程详情：单次调课必须知道"是哪一次"，也就是哪一天的那一块。
+   * 课程详情是"整门课"的视角、没有日期，在那儿做不了这件事 —— 所以课块先给自己
+   * 开一层，面板里再给一个通向整门课的出口。
+   */
+  const openCourseSlot = useCallback((slot: CourseSlot) => {
+    // 拖完课块松手时 web 会补发一次 click —— 跟任务共用同一个 500ms 窗口
+    if (Date.now() - longPressAt.current < 500) return;
+    setCourseSlot(slot);
+  }, []);
+
+  /* ---------------- 单次调课（只改这一次） ---------------- */
+
+  /** 被点开的那一块。时间面板打开时它**不清空** —— 确认键要用它算落到哪一天 */
+  const [courseSlot, setCourseSlot] = useState<CourseSlot | null>(null);
+  const [slotTimeOpen, setSlotTimeOpen] = useState(false);
+
+  /** 这一次不上 */
+  const cancelCourseSlot = useCallback(async () => {
+    if (!courseSlot) return;
+    const target = courseSlot;
+    setCourseSlot(null);
+    await saveCourse(
+      applyCourseChange(target.course, makeCourseChange(target, { canceled: true })),
+    );
+  }, [courseSlot, saveCourse]);
+
+  /** 撤销这次调整（停课时的"恢复上课"走的是同一个动作 —— 停课的唯一出路就是撤销） */
+  const restoreCourseSlot = useCallback(async () => {
+    if (!courseSlot) return;
+    const target = courseSlot;
+    setCourseSlot(null);
+    await saveCourse(dropCourseChange(target.course, changeAnchor(target)));
+  }, [courseSlot, saveCourse]);
+
+  /**
+   * 选好新时间 → 落到**被点那一块所在那一周**里的那一天。
+   *
+   * 用户看着第 7 周的课表点开面板、说"改到周五"，指的就是第 7 周的周五；
+   * 拿"今天所在那周"去换算会把它甩到别的周去。
+   */
+  const applySlotTime = useCallback(
+    async (picked: CourseSession) => {
+      const target = courseSlot;
+      setSlotTimeOpen(false);
+      if (!target) return;
+      setCourseSlot(null);
+      const weekStart = mondayOfWeek(target.date);
+      const toDate = new Date(
+        weekStart.getFullYear(),
+        weekStart.getMonth(),
+        weekStart.getDate() + ((picked.weekday + 6) % 7),
+      );
+      await saveCourse(
+        applyCourseChange(
+          target.course,
+          makeCourseChange(target, {
+            toDate,
+            startPeriod: picked.startPeriod,
+            endPeriod: picked.endPeriod,
+          }),
+        ),
+      );
     },
-    [router],
+    [courseSlot, saveCourse],
   );
-  /** 点"没有上课时间"清单里的一门 → 也进课程详情（在那儿补时间） */
+
+  /** 点"没有上课时间"清单里的一门 → 进课程详情（在那儿补时间） */
   const openCourse = useCallback(
     (course: Course) => router.push(`/course/${course.id}`),
     [router],
@@ -521,7 +589,7 @@ export default function CalendarScreen() {
       : mode === 'week'
         ? '长按块横拖换天、纵拖换时刻'
         : mode === 'timetable'
-          ? '长按拖课块换星期/节次 · 点一下看详情'
+          ? '点课块：改这一次（调课 / 停课）· 长按拖：改整学期'
           : '长按块拖动改时刻 · 拽上下边改时长';
 
   /**
@@ -715,6 +783,35 @@ export default function CalendarScreen() {
             </ThemedText>
           </Animated.View>
         ) : null}
+
+        {/* 课块的面板：时间选择器打开时先收起它，避免两层弹层叠在一起 */}
+        <CourseSlotSheet
+          visible={!!courseSlot && !slotTimeOpen}
+          slot={courseSlot}
+          periods={term?.periods ?? []}
+          onChangeTime={() => setSlotTimeOpen(true)}
+          onCancel={() => void cancelCourseSlot()}
+          onRestore={() => void restoreCourseSlot()}
+          onOpenCourse={() => {
+            if (!courseSlot) return;
+            const courseId = courseSlot.course.id;
+            setCourseSlot(null);
+            router.push(`/course/${courseId}`);
+          }}
+          onClose={() => setCourseSlot(null)}
+        />
+
+        <CourseSessionSheet
+          visible={slotTimeOpen}
+          totalWeeks={term?.totalWeeks ?? 18}
+          periodCount={term?.periods.length}
+          /* 预填当前那一次的时间：调过来的块填的是"它现在在哪儿"，停课的那一格
+             填的是它原本的安排 —— 两种情况下用户看到的都是屏幕上这一块的时间 */
+          initial={courseSlot?.session ?? null}
+          scope="once"
+          onSubmit={(picked) => void applySlotTime(picked)}
+          onClose={() => setSlotTimeOpen(false)}
+        />
       </View>
     </Screen>
   );

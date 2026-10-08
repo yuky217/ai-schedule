@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS ${TABLES.courses} (
   note          TEXT,
   color_index   INTEGER NOT NULL DEFAULT 0,
   sessions_json TEXT NOT NULL DEFAULT '[]',
+  -- 单次调课/停课（只覆盖某一天那一次，不动整学期）。与 sessions 同一个理由放在
+  -- 课程行上：永远跟课程一起读出来画格子，没有单独查询的需要。
+  changes_json  TEXT NOT NULL DEFAULT '[]',
   reminder_minutes_before INTEGER,
   ${COMMON_COLUMNS}
 );
@@ -257,4 +260,14 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
    * 新表由 DDL 的 `CREATE TABLE IF NOT EXISTS` 建出来，老库升级无需 ALTER。
    */
   5: [],
+  /**
+   * v6 = courses 加 changes_json（单次调课：只改某一天那一次，不动整学期）。
+   *
+   * 加列而不是开新表：它跟 sessions_json 一样，永远跟课程一起读出来画格子，
+   * 没有单独查询的需要，量也极小（一学期几条）。**带上 NOT NULL DEFAULT '[]'**，
+   * 于是老数据不需要回填 —— 没有单次调整就是空数组，读出来跟以前完全一致。
+   */
+  6: [
+    `ALTER TABLE ${TABLES.courses} ADD COLUMN changes_json TEXT NOT NULL DEFAULT '[]'`,
+  ],
 };

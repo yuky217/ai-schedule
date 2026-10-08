@@ -11,6 +11,7 @@ import { ThemedText } from '@/components/themed-text';
 import { courseColor } from '@/constants/course-colors';
 import { Spacing } from '@/constants/theme';
 import {
+  describeChange,
   describePeriods,
   describeWeeks,
   replaceSession,
@@ -227,6 +228,21 @@ export default function CourseDetailScreen() {
             <ThemedText type="small">还没有上课时间 —— 点这里补上一段</ThemedText>
           </Pressable>
         )}
+
+        {/*
+          单次调整（调课/停课）是**按天**的，不在这张"整学期"的列表里 ——
+          所以这里点一句，让用户知道自己调过几次、都调成了什么样，
+          以及去哪儿改回来。少了这句，从课程详情看过去就像"我那次调课丢了"。
+        */}
+        {course.changes?.length ? (
+          <ThemedText type="small" themeColor="textSecondary" style={styles.changeNote}>
+            {`另有 ${course.changes.length} 次单次调整 · ${course.changes
+              .slice(0, 2)
+              .map(describeChange)
+              .join('；')}${course.changes.length > 2 ? ' …' : ''}`}
+            {'（在课表里点那一块就能改回来）'}
+          </ThemedText>
+        ) : null}
       </Card>
 
       <CourseSessionSheet
@@ -338,6 +354,7 @@ const styles = StyleSheet.create({
   addRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.half },
   sessionText: { flex: 1, gap: 1 },
   sessionMeta: { fontSize: 12, lineHeight: 17 },
+  changeNote: { fontSize: 12, lineHeight: 17, marginTop: Spacing.one },
   reminderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one, paddingVertical: Spacing.one },
   spacer: { flex: 1 },
   danger: { alignSelf: 'center', paddingVertical: Spacing.two, paddingHorizontal: Spacing.three },

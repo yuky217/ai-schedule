@@ -96,6 +96,40 @@ export function courseWeeks(course: Course): number[] {
   return [...all].sort((a, b) => a - b);
 }
 
+/**
+ * 一次课的**单次调整**（"这周三的课改到周四上" / "这一次不上了"）。
+ *
+ * 与 `CourseSession` 的区别是**作用域**，这也是它必须单独存在的理由：
+ * session 说的是"整学期每周三第 3-4 节"，change 只覆盖**某一天的那一次**。
+ * 把后者塞进 session 里就变成"这门课这学期只有这一天有课"，整学期就没了。
+ *
+ * 身份是 `dateKey` + `fromKey` 一对 —— 原定哪一天的**哪一段安排**。
+ * 为什么不能只按日期定位：同一门课同一天可能有两段（周一 1-2 节 + 周一 5-6 节），
+ * 只认日期会把另一段一起改掉。
+ *
+ * 两种 kind **共用同一套身份**，所以"先调到周四、再改成不上"是同一条记录换状态，
+ * 而不是两条同时生效、互相打架的记录。
+ */
+export type CourseChange =
+  | {
+      kind: 'moved';
+      /** 原定的那一天（'YYYY-MM-DD'） */
+      dateKey: string;
+      /** 原定的那一段安排（`sessionKey`） */
+      fromKey: string;
+      /** 改到哪一天（'YYYY-MM-DD'）；与 dateKey 相同 = 只换了节次 */
+      toDateKey: string;
+      startPeriod: number;
+      endPeriod: number;
+      /** 单次换教室；null = 沿用原安排的教室 */
+      location?: string | null;
+    }
+  | {
+      kind: 'canceled';
+      dateKey: string;
+      fromKey: string;
+    };
+
 export interface Course extends BaseEntity {
   title: string;
   teacher?: string | null;
@@ -104,6 +138,14 @@ export interface Course extends BaseEntity {
   /** 取色板下标（配色在界面层决定，领域层不碰颜色） */
   colorIndex: number;
   sessions: CourseSession[];
+  /**
+   * 单次调整（调课 / 停课），只覆盖某一天那一次，不动整学期。
+   *
+   * 为什么直接挂在课程上、不再开一张表：它跟 sessions 一样，**永远跟课程一起读**
+   * （课表按整门课读出所有安排再画格子），没有单独查询的需要；量也极小
+   * （一学期几条）。拆表只会多一层 join，还要多一处备份同步。
+   */
+  changes?: CourseChange[];
   /** 上课提醒提前量（分钟）；null = 不提醒 */
   reminderMinutesBefore?: number | null;
 }
@@ -141,6 +183,12 @@ export interface CourseSlot {
   /** 当天第几分钟 */
   start: number;
   end: number;
+  /**
+   * 这一块是**单次调整**的结果（调课过来的、或者被停掉的）。
+   * 只要它非空，这一块就"不属于整学期"—— 界面上据此标注，
+   * 拖拽之类的"改整学期"动作也必须让开（见 timetable-grid）。
+   */
+  change?: CourseChange;
 }
 
 /** 那一天的课，按"开学第几天"排序用的天数差（本地日） */
@@ -175,16 +223,90 @@ export function sessionOccursOn(session: CourseSession, date: Date, term: Term):
   return isSessionActiveOnWeek(session, week);
 }
 
-/** 某天的课（含时刻换算）；作息表里查不到节次的安排会被跳过（不静默画错位置） */
-export function coursesOnDate(courses: readonly Course[], date: Date, term: Term): CourseSlot[] {
+/** `coursesOnDate` / `weekGrid` 的开关 */
+export interface CourseQueryOptions {
+  /**
+   * 把"单次停课"的那一格也返回（`slot.change.kind === 'canceled'`）。
+   *
+   * **默认为假**，因为绝大多数调用方问的是"这一天要上什么"，而停掉的课不在答案里
+   * —— 提醒、首页"下一节课"、日历的背景带都不该把它算进去（否则一节取消了的课
+   * 还会响铃、还会被当成"你接下来要去的地方"）。
+   *
+   * 只有课表格子要开它：那一格要是直接空掉，用户既没法确认"我取消的那节课
+   * 生效了没有"，也**没有地方能点回去撤销** —— 消失得无影无踪正是这个项目
+   * 一直在防的那种错。
+   */
+  includeCanceled?: boolean;
+}
+
+/**
+ * 某天的课（含时刻换算）；作息表里查不到节次的安排会被跳过（不静默画错位置）。
+ *
+ * 单次调整在这里生效，分两步走：
+ * ① 本来该在这一天的安排 —— 被单次调走或停掉的跳过；
+ * ② 被单次**调到这一天**的 —— 补进来。
+ * 两步都用同一条 change（身份 = 原定日期 + 原定那一段），所以不会出现
+ * "原格还在、目标格也有一份"的重复。
+ */
+export function coursesOnDate(
+  courses: readonly Course[],
+  date: Date,
+  term: Term,
+  options: CourseQueryOptions = {},
+): CourseSlot[] {
+  const key = toDayKey(date);
   const slots: CourseSlot[] = [];
   for (const course of courses) {
     if (course.deletedAt) continue;
+    const changes = course.changes ?? [];
+
+    // ① 本来就在这一天的安排
     for (const session of course.sessions) {
       if (!sessionOccursOn(session, date, term)) continue;
+      const change = changes.find(
+        (item) => item.dateKey === key && item.fromKey === sessionKey(session),
+      );
+      if (change) {
+        if (change.kind === 'canceled' && options.includeCanceled) {
+          const span = periodSpan(term.periods, session.startPeriod, session.endPeriod);
+          if (span) slots.push({ course, session, date, start: span.start, end: span.end, change });
+        }
+        continue; // 停课的不上；调走的由下面 ② 在目标那天补回来
+      }
       const span = periodSpan(term.periods, session.startPeriod, session.endPeriod);
       if (!span) continue;
       slots.push({ course, session, date, start: span.start, end: span.end });
+    }
+
+    // ② 被单次调到这一天的
+    for (const change of changes) {
+      if (change.kind !== 'moved' || change.toDateKey !== key) continue;
+      const span = periodSpan(term.periods, change.startPeriod, change.endPeriod);
+      if (!span) continue;
+      const source = course.sessions.find((session) => sessionKey(session) === change.fromKey);
+      slots.push({
+        course,
+        /**
+         * 调过来的这一块用一条"只在这天成立"的 session 描述它 ——
+         * 这样网格定位、文案、提醒都不用为它写第二套分支（它们只看 session）。
+         * 周次取原安排的：对渲染没有影响，但保持形状合法（空周次是非法安排）。
+         * 原安排已经不在（用户在详情页把那段删了）时兜一个当天所在的周次，
+         * **不静默丢掉这块** —— 那是用户亲手排上去的一次课。
+         */
+        session: {
+          weekday: date.getDay(),
+          startPeriod: change.startPeriod,
+          endPeriod: change.endPeriod,
+          weeks: source?.weeks.length
+            ? source.weeks
+            : [Math.max(1, weekIndexOf(term, date) ?? 1)],
+          location: change.location ?? source?.location ?? null,
+        },
+        date,
+        start: span.start,
+        end: span.end,
+        change,
+      });
     }
   }
   // 排序必须确定性：先按开始时刻，再按课程名（首字母/编码序）—— 同一时段的课不能随机换位
@@ -198,10 +320,11 @@ export function weekGrid(
   courses: readonly Course[],
   weekStart: Date,
   term: Term,
+  options: CourseQueryOptions = {},
 ): Array<{ date: Date; slots: CourseSlot[] }> {
   return Array.from({ length: 7 }, (_, offset) => {
     const date = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + offset);
-    return { date, slots: coursesOnDate(courses, date, term) };
+    return { date, slots: coursesOnDate(courses, date, term, options) };
   });
 }
 
@@ -366,9 +489,7 @@ export function weeksToText(weeks: readonly number[]): string {
 
 /** '第 3-4 节' / '第 5 节' */
 export function describePeriods(session: CourseSession): string {
-  return session.startPeriod === session.endPeriod
-    ? `第 ${session.startPeriod} 节`
-    : `第 ${session.startPeriod}-${session.endPeriod} 节`;
+  return periodsText(session.startPeriod, session.endPeriod);
 }
 
 /** '周三 第 3-4 节 · 第 1-16 周' */
@@ -511,6 +632,155 @@ function mergeSameSlots(sessions: readonly CourseSession[]): CourseSession[] {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* 单次调整：只改那一天那一次                                            */
+/* ------------------------------------------------------------------ */
+
+/** '第 3-4 节' / '第 5 节' —— 只要起止节，不需要一整条 session */
+function periodsText(startPeriod: number, endPeriod: number): string {
+  return startPeriod === endPeriod ? `第 ${startPeriod} 节` : `第 ${startPeriod}-${endPeriod} 节`;
+}
+
+/** `sessionKey` 的逆运算：'3-3-4' → 周三 第 3-4 节（解析不出来返回 null） */
+export function readSessionKey(
+  key: string,
+): { weekday: number; startPeriod: number; endPeriod: number } | null {
+  const matched = /^(\d)-(\d+)-(\d+)$/.exec(key);
+  if (!matched) return null;
+  const weekday = Number(matched[1]);
+  const startPeriod = Number(matched[2]);
+  const endPeriod = Number(matched[3]);
+  if (weekday < 0 || weekday > 6 || startPeriod < 1 || endPeriod < startPeriod) return null;
+  return { weekday, startPeriod, endPeriod };
+}
+
+/**
+ * 清理单次调整：丢掉读不懂的行、同一身份只留最后一条、按日期排序。
+ *
+ * 跟 `sanitizeSessions` 同一个理由 —— 库里可能存着历史或手工改坏的行，
+ * 一条非法的节次不该让整张课表画错位置。排序则是为了让"这学期调过几次"
+ * 在界面上顺序稳定（否则同一份数据每次进详情页顺序都可能不一样）。
+ */
+export function sanitizeChanges(
+  input: readonly (CourseChange | null | undefined)[] | null | undefined,
+): CourseChange[] {
+  const parsed: CourseChange[] = [];
+  for (const item of input ?? []) {
+    if (!item || typeof item !== 'object') continue;
+    if (!parseDayKey(item.dateKey)) continue;
+    if (readSessionKey(item.fromKey) == null) continue;
+    if (item.kind === 'canceled') {
+      parsed.push({ kind: 'canceled', dateKey: item.dateKey, fromKey: item.fromKey });
+      continue;
+    }
+    if (item.kind !== 'moved') continue;
+    if (!parseDayKey(item.toDateKey)) continue;
+    if (!Number.isInteger(item.startPeriod) || !Number.isInteger(item.endPeriod)) continue;
+    if (item.startPeriod < 1 || item.endPeriod < item.startPeriod) continue;
+    parsed.push({
+      kind: 'moved',
+      dateKey: item.dateKey,
+      fromKey: item.fromKey,
+      toDateKey: item.toDateKey,
+      startPeriod: item.startPeriod,
+      endPeriod: item.endPeriod,
+      location: item.location ?? null,
+    });
+  }
+  // 同一身份只留最后一条：写入路径本该已经覆盖过，这里是读库兜底 ——
+  // 两条同身份的记录会同时生效，表现为"这节课既被调走又被取消"
+  const unique = new Map<string, CourseChange>();
+  for (const item of parsed) unique.set(`${item.dateKey}#${item.fromKey}`, item);
+  return [...unique.values()].sort(
+    (a, b) => a.dateKey.localeCompare(b.dateKey) || a.fromKey.localeCompare(b.fromKey),
+  );
+}
+
+/** 这一次课的单次调整身份（原定日期 + 原定那一段） */
+export interface CourseChangeAnchor {
+  dateKey: string;
+  fromKey: string;
+}
+
+/**
+ * 被点的那一块**属于哪一次课** —— 也就是它的单次调整身份。
+ *
+ * 已经被调整过的块，身份仍然是**它原本那一次**：不能拿它现在的位置当身份，
+ * 否则"把调过来的课再调一次"会新建出第二条调整，而原来那条还留在原地继续生效
+ * （那节课会同时出现在两个地方）。
+ */
+export function changeAnchor(slot: CourseSlot): CourseChangeAnchor {
+  if (slot.change) return { dateKey: slot.change.dateKey, fromKey: slot.change.fromKey };
+  return { dateKey: toDayKey(slot.date), fromKey: sessionKey(slot.session) };
+}
+
+/**
+ * 被点的那一块 + 用户选的新时间 → 一条单次调整。
+ *
+ * `toDate` 跟 `slot.date` 是同一天 = 只换节次（"这节课挪到下午"），
+ * 这时 `toDateKey` 与 `dateKey` 相同，读的时候仍然会被正确处理
+ * （原格被让出来、同一格换个位置画）。
+ */
+export function makeCourseChange(
+  slot: CourseSlot,
+  target: { toDate: Date; startPeriod: number; endPeriod: number } | { canceled: true },
+): CourseChange {
+  const anchor = changeAnchor(slot);
+  if ('canceled' in target) return { kind: 'canceled', ...anchor };
+  const startPeriod = Math.max(1, Math.round(target.startPeriod));
+  return {
+    kind: 'moved',
+    ...anchor,
+    toDateKey: toDayKey(target.toDate),
+    startPeriod,
+    endPeriod: Math.max(startPeriod, Math.round(target.endPeriod)),
+    // 已经调过一次的，再改时间时保留原来的换教室 —— 两件事是独立的
+    location: slot.change?.kind === 'moved' ? slot.change.location ?? null : null,
+  };
+}
+
+/**
+ * 写入一条单次调整。同一身份已有就**覆盖**它 ——
+ * "先调到周四、又改成不上"是同一条记录在换状态，不是两条记录。
+ */
+export function applyCourseChange(course: Course, change: CourseChange): Course {
+  const rest = (course.changes ?? []).filter(
+    (item) => !(item.dateKey === change.dateKey && item.fromKey === change.fromKey),
+  );
+  return { ...course, changes: sanitizeChanges([...rest, change]) };
+}
+
+/** 撤销某一次的单次调整（恢复成整学期的原样） */
+export function dropCourseChange(course: Course, anchor: CourseChangeAnchor): Course {
+  return {
+    ...course,
+    changes: sanitizeChanges(
+      (course.changes ?? []).filter(
+        (item) => !(item.dateKey === anchor.dateKey && item.fromKey === anchor.fromKey),
+      ),
+    ),
+  };
+}
+
+/** '周三 第 3-4 节 → 周四 第 5-6 节' / '周三 第 3-4 节 这次不上' */
+export function describeChange(change: CourseChange): string {
+  const from = readSessionKey(change.fromKey);
+  const fromText = from
+    ? `${weekdayLabel(from.weekday)} ${periodsText(from.startPeriod, from.endPeriod)}`
+    : '原定的那一次';
+  if (change.kind === 'canceled') return `${fromText} 这次不上`;
+  const to = parseDayKey(change.toDateKey);
+  // 同一天只换了节次："周三 第 3-4 节 改到 第 5-6 节"。
+  // 这里不能照直说"改到周三" —— 日期没变，说出来反而像换了一天
+  if (to && change.toDateKey === change.dateKey) {
+    return `${fromText} 改到 ${periodsText(change.startPeriod, change.endPeriod)}`;
+  }
+  const toText = to
+    ? `${weekdayLabel(to.getDay())} ${periodsText(change.startPeriod, change.endPeriod)}`
+    : periodsText(change.startPeriod, change.endPeriod);
+  return `${fromText} → ${toText}`;
+}
+
 /**
  * 现有课程里用到的最大节次（没有课返回 0）。
  *
@@ -525,6 +795,14 @@ export function maxSessionPeriod(courses: readonly Course[]): number {
     if (course.deletedAt) continue;
     for (const session of course.sessions) {
       if (session.endPeriod > max) max = session.endPeriod;
+    }
+    /**
+     * 单次调课也可能把一节课挪到更靠后的节次（"这次调到第 11-12 节"），
+     * 那节课同样不能被"共几节"砍掉 —— 作息表短于它的话 `periodSpan` 取不到时刻，
+     * 这块就从网格里消失了，而且消失得毫无痕迹。
+     */
+    for (const change of course.changes ?? []) {
+      if (change.kind === 'moved' && change.endPeriod > max) max = change.endPeriod;
     }
   }
   return max;

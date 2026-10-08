@@ -34,6 +34,15 @@ export interface CourseSessionSheetProps {
   periodCount?: number;
   /** 编辑已有的一段；不传 = 新增 */
   initial?: CourseSession | null;
+  /**
+   * 改的范围：
+   * - `term`（默认）= 改整学期的那一段（新增也要它）；
+   * - `once` = **只改这一次**（单次调课）—— 这时**没有"周次"这一栏**，
+   *   因为单次调整管的就叫"这一天这一次"，问周次等于问了个不存在的概念。
+   *   两件事的输入只有这一点不同，所以合成一个面板而不是写两个 ——
+   *   写两份的下场是星期/节次的手感迟早跑偏。
+   */
+  scope?: 'term' | 'once';
   onSubmit: (session: CourseSession) => void;
   onClose: () => void;
 }
@@ -43,10 +52,12 @@ export function CourseSessionSheet({
   totalWeeks,
   periodCount = 12,
   initial,
+  scope = 'term',
   onSubmit,
   onClose,
 }: CourseSessionSheetProps) {
   const theme = useTheme();
+  const once = scope === 'once';
   const [weekday, setWeekday] = useState(() => initial?.weekday ?? new Date().getDay());
   const [startPeriod, setStartPeriod] = useState(initial?.startPeriod ?? 1);
   const [endPeriod, setEndPeriod] = useState(initial?.endPeriod ?? 2);
@@ -69,15 +80,19 @@ export function CourseSessionSheet({
   /**
    * 周次直接复用课表解析器 —— 用户能写"1-16周"、"1-16周(双)"、"1、3、5周"，
    * 全都认。空着就是整学期，也是默认值。
+   *
+   * 单次调课（`once`）不算周次：那一次就是那一天，周次从原安排上原样带过来
+   * （调用方只取星期/节次，这里保持形状合法即可）。
    */
   const weeks = useMemo(() => {
+    if (once) return initial?.weeks ?? [1];
     const parsed = parseWeeks(weeksText, { start: 1, end: totalWeeks });
     return parsed?.weeks ?? weeksFromRange(1, totalWeeks);
-  }, [weeksText, totalWeeks]);
+  }, [initial, once, weeksText, totalWeeks]);
 
   const maxPeriod = Math.min(Math.max(2, periodCount), 20);
   const periods = useMemo(() => Array.from({ length: maxPeriod }, (_, i) => i + 1), [maxPeriod]);
-  const weeksReady = weeks.length > 0;
+  const weeksReady = once || weeks.length > 0;
 
   const submit = () => {
     if (!weeksReady) return;
@@ -98,7 +113,7 @@ export function CourseSessionSheet({
           onPress={(event) => event.stopPropagation()}>
           <View style={[styles.handle, { backgroundColor: theme.backgroundSelected }]} />
           <ThemedText type="smallBold" style={styles.title}>
-            上课时间
+            {once ? '这次改到什么时候' : '上课时间'}
           </ThemedText>
 
           <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
@@ -154,23 +169,30 @@ export function CourseSessionSheet({
               </View>
             </View>
 
-            <ThemedText type="small" themeColor="textSecondary" style={styles.label}>
-              周次
-            </ThemedText>
-            <TextInput
-              value={weeksText}
-              onChangeText={setWeeksText}
-              placeholder={`1-${totalWeeks}周（不填就是整学期）`}
-              placeholderTextColor={theme.textSecondary}
-              style={[
-                styles.input,
-                { color: theme.text, backgroundColor: theme.backgroundElement, borderColor: theme.backgroundSelected },
-              ]}
-            />
+            {/* 单次调课没有"周次"这个概念 —— 问周次等于问了个不存在的东西 */}
+            {once ? null : (
+              <>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.label}>
+                  周次
+                </ThemedText>
+                <TextInput
+                  value={weeksText}
+                  onChangeText={setWeeksText}
+                  placeholder={`1-${totalWeeks}周（不填就是整学期）`}
+                  placeholderTextColor={theme.textSecondary}
+                  style={[
+                    styles.input,
+                    { color: theme.text, backgroundColor: theme.backgroundElement, borderColor: theme.backgroundSelected },
+                  ]}
+                />
+              </>
+            )}
             <ThemedText type="small" themeColor="textSecondary" style={styles.preview}>
-              {weeksReady
-                ? `${weekdayLabel(weekday)} 第 ${startPeriod}-${Math.max(startPeriod, endPeriod)} 节 · ${describeWeeks(weeks, totalWeeks)}`
-                : '这段周次没读懂，试试"1-16周"或"1-16周(双)"'}
+              {!weeksReady
+                ? '这段周次没读懂，试试"1-16周"或"1-16周(双)"'
+                : once
+                  ? `${weekdayLabel(weekday)} 第 ${startPeriod}-${Math.max(startPeriod, endPeriod)} 节 · 只改这一次`
+                  : `${weekdayLabel(weekday)} 第 ${startPeriod}-${Math.max(startPeriod, endPeriod)} 节 · ${describeWeeks(weeks, totalWeeks)}`}
             </ThemedText>
           </ScrollView>
 
@@ -184,7 +206,7 @@ export function CourseSessionSheet({
               { backgroundColor: theme.text, opacity: weeksReady ? 1 : 0.35 },
             ]}>
             <ThemedText type="smallBold" style={{ color: theme.background }}>
-              {initial ? '保存' : '加这一段'}
+              {once ? '这次改到这里' : initial ? '保存' : '加这一段'}
             </ThemedText>
           </Pressable>
           <Pressable

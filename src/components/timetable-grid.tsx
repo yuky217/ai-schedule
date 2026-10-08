@@ -12,7 +12,7 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { courseColor } from '@/constants/course-colors';
 import { Spacing } from '@/constants/theme';
-import { layoutSlots, weekdayLabel, type CourseSlot } from '@/domain/course';
+import { layoutSlots, readSessionKey, weekdayLabel, type CourseSlot } from '@/domain/course';
 import { describeClock, periodById, type ClassPeriod } from '@/domain/timetable';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useTheme } from '@/hooks/use-theme';
@@ -465,7 +465,16 @@ function CourseBlock({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
-        .enabled(!!onMove)
+        /**
+         * 被单次调整过的块不给拖。
+         *
+         * 拖拽在这个网格里的含义是"**整学期**这节课换时间"（见文件头第 4 条），
+         * 而单次调过来的那一块根本不属于整学期 —— 拖它既改不到那条调整
+         * （按 `sessionKey` 找原安排会找不到，`moveSession` 直接返回 null，
+         * 表现为**拖了没反应**），也说不清用户到底想改哪个。要改它就在
+         * 面板里改（点一下那块就出来了），那儿才有"这一次"的语境。
+         */
+        .enabled(!!onMove && !slot.change)
         // 长按拾起：单击照常进课程详情，短滑照常横向滚滚看后面几天
         .activateAfterLongPress(PICK_UP_DELAY)
         .shouldCancelWhenOutside(false)
@@ -518,6 +527,7 @@ function CourseBlock({
       originRow,
       pickUp,
       reportHover,
+      slot.change,
     ],
   );
 
@@ -526,6 +536,17 @@ function CourseBlock({
   }));
 
   const widthPct = 100 / lanes;
+
+  /**
+   * 单次调整过的块要看得出来，否则用户没法确认"我调的那节课生效了没有"，
+   * 也不知道哪儿能点回去：
+   * - **停课**：灰掉 + 划掉标题，副行直接写"这次不上"；
+   * - **调过来的**：副行改说从哪一天来的（地点这时让位 —— 这一块最要紧的
+   *   信息是"它本来不在这里"）。
+   */
+  const canceled = slot.change?.kind === 'canceled';
+  const movedFrom = slot.change?.kind === 'moved' ? readSessionKey(slot.change.fromKey) : null;
+  const meta = canceled ? '这次不上' : movedFrom ? `从${weekdayLabel(movedFrom.weekday)}调来` : place;
 
   return (
     <GestureDetector gesture={gesture}>
@@ -543,25 +564,25 @@ function CourseBlock({
         ]}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${slot.course.title}，${place ?? '地点待定'}`}
+          accessibilityLabel={`${slot.course.title}，${meta ?? '地点待定'}`}
           onPress={() => onSelect(slot)}
           style={({ pressed }) => [
             styles.block,
             {
               backgroundColor: color.background,
               borderColor: color.border,
-              opacity: pressed ? 0.72 : 1,
+              opacity: canceled ? 0.42 : pressed ? 0.72 : 1,
             },
             pickedUp ? styles.lifted : null,
           ]}>
           <ThemedText
             numberOfLines={span >= 2 ? 3 : 2}
-            style={[styles.blockTitle, { color: color.text }]}>
+            style={[styles.blockTitle, { color: color.text }, canceled ? styles.blockTitleCanceled : null]}>
             {slot.course.title}
           </ThemedText>
-          {place ? (
+          {meta ? (
             <ThemedText numberOfLines={1} style={[styles.blockMeta, { color: color.text }]}>
-              {place}
+              {meta}
             </ThemedText>
           ) : null}
         </Pressable>
@@ -626,5 +647,7 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
   },
   blockTitle: { fontSize: 11, lineHeight: 14, fontWeight: '600' },
+  /** 停课那一次的课名划掉 —— 光靠变淡容易被当成"课表没渲染完" */
+  blockTitleCanceled: { textDecorationLine: 'line-through' },
   blockMeta: { fontSize: 9, lineHeight: 12, marginTop: 1, opacity: 0.85 },
 });

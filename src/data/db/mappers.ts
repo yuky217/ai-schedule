@@ -4,8 +4,10 @@ import type { BaseEntity } from '@/domain/base';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark as MarkEntity, TaskChain } from '@/domain/container';
 import {
+  sanitizeChanges,
   sanitizeSessions,
   type Course,
+  type CourseChange,
   type CourseSession,
   type Term,
 } from '@/domain/course';
@@ -390,6 +392,7 @@ export interface CourseRow extends BaseRow {
   note: string | null;
   color_index: number;
   sessions_json: string;
+  changes_json?: string | null;
   reminder_minutes_before: number | null;
 }
 
@@ -404,6 +407,9 @@ export function courseFromRow(row: CourseRow): Course {
     // 读进来就过一道 sanitize：库里可能有历史/手工改坏的行，
     // 一个非法节次不该让整张课表画错位置
     sessions: sanitizeSessions(parseJson<CourseSession[]>(row.sessions_json, [])),
+    // 老库（v6 之前）里没有这一列 —— `parseJson` 对 null 返回空数组，
+    // 于是"没有单次调整"跟"这一列不存在"是同一个结果
+    changes: sanitizeChanges(parseJson<CourseChange[]>(row.changes_json, [])),
     reminderMinutesBefore: row.reminder_minutes_before,
   };
 }
@@ -417,6 +423,7 @@ export function courseColumns(course: Course): ColumnMap {
     note: course.note ?? null,
     color_index: course.colorIndex,
     sessions_json: JSON.stringify(sanitizeSessions(course.sessions)),
+    changes_json: JSON.stringify(sanitizeChanges(course.changes)),
     reminder_minutes_before: course.reminderMinutesBefore ?? null,
     ...writeBase(course),
   };
