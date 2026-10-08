@@ -69,24 +69,55 @@ npx expo export --platform web     --output-dir ../_verify/web
 git config user.email "你的邮箱"
 ```
 
-### 装成独立 App（EAS 云端构建，绕开本机没有 Android SDK 的现实）
+### 装成独立 App
 
-本机没有 Android SDK 且 C 盘满（Gradle 缓存写不下），本地 `expo run:android` 不可行。
-走 **EAS 云端构建**：不需要本机 SDK，云端出 `.apk`，手机浏览器打开链接直接装。
-配置已备齐：`app.json` 里有 `android.package` 与 `expo-notifications` 插件
-（**独立 APK 上没有它就不会声明 Android 13+ 通知权限，提醒会静默失败**），
-`eas.json` 的 `preview` 档就是"独立 APK + 自动递增版本号"。
+**两条路，本地已跑通**（2026-10-08 首次成功出包 82M debug APK）。
 
-首次构建（需要免费 Expo 账号，交互式登录一次）：
+#### A. 本地出包（当前走这条）
+
+⚠️ **前提：项目必须放在纯 ASCII 路径下。** 这条不是洁癖，是硬约束 ——
+`D:\艾粤希\...` 这种中文路径会在三个地方连环炸：
+
+| 阶段 | 报错 | 原因 |
+|---|---|---|
+| Gradle 配置 | `Your project path contains non-ASCII characters` | Gradle 自检；`android.overridePathCheck=true` 可过 |
+| prefab 生成脚本 | `'cli.AppKt' 不是内部或外部命令` | 生成的 `.bat` 含中文缓存路径，bat 按 **GBK** 读 UTF-8 → 命令被拆断 |
+| C++ 编译 | `cannot open file 'D:/<乱码>/...'` | ninja 传 UTF-8 路径给 clang，clang 按 GBK 读 → 找不到源文件 |
+
+⭐ **junction 救不了**（实测证伪）：给项目挂 `D:\ais` 指过去，Gradle 仍把路径
+**解析回真实路径**，报错里依旧是中文。只能真的把项目放在 ASCII 路径。
+
+当前约定：**项目主目录 `D:\dev\ai-schedule`**（源码 + 构建都在这）。
 
 ```bash
-npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest login   # 或 signup
-npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest build \
-  -p android --profile preview
+cd /d/dev/ai-schedule/android && bash ../run.sh apk
+# 或从项目根：bash run.sh apk（内部已带全套 env）
 ```
 
-构建完成后终端给出 apk 下载链接，手机上打开安装即可（允许"安装未知来源应用"）。
-之后的日常使用就不再经过 Expo Go。
+`run.sh apk` 里的环境变量**缺一不可**，逐条理由：
+- `PATH=/d/node:$PATH` —— PATH 里的 node 是 22.22.2，跑 prebuild 会 **0xC0000409 崩溃**，必须 24；
+- `GRADLE_USER_HOME=D:/gradle-home`、`TMP/TEMP=D:/tmp-build` —— 避开中文用户目录（见上表第 2 行）；
+- `ANDROID_HOME=D:/Android/Sdk`、`JAVA_HOME=D:/java_JDK` ——
+  ⚠️ `which java` 拿到的是 Oracle javapath shim，`dirname` 会得到错目录，**直接写死 D:/java_JDK**。
+
+其他两个坑：
+- 🔴 **`echo "x" >> gradle.properties` 是危险动作**：原文件末尾若没换行，新行会**粘到上一行**
+  （`...watchedDirectories=[]android.overridePathCheck=true`）→ Expo 拿垃圾值执行 node →
+  报 `Process 'command 'node'' finished with non-zero exit value 1`，**报错完全不提属性和换行**。
+  改这类文件用 node 脚本并检查末尾换行。
+- 🔴 **默认编 4 个 ABI**（`reactNativeArchitectures`）→ 每个都把 C++ 重编一遍，首次要 **1h20m**；
+  真机只要 `arm64-v8a`，改成单架构后降到 **15 分钟**。
+
+#### B. EAS 云端构建（备用）
+
+需要免费 Expo 账号，交互式登录一次；`eas.json` 的 `preview` 档 = 独立 APK + 自动递增版本号。
+
+```bash
+npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest login
+npm_config_cache="D:/艾粤希/.npm-cache" npx -y eas-cli@latest build -p android --profile preview
+```
+
+完成`.apk`链接在手机上打开安装即可（允许"安装未知来源应用"）。
 
 ### 本机踩过的坑
 
