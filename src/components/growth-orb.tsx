@@ -16,7 +16,8 @@ export interface GrowthOrbProps {
   /** 累计生长秒数 */
   seconds: number;
   size?: number;
-  caption?: string;
+  /** 传 null 不显示；不传默认显示生长时长（首页用默认，专注页大字计时器就在旁边，关掉免得说两遍） */
+  caption?: string | null;
 }
 
 export function GrowthOrb({ seconds, size = 96, caption }: GrowthOrbProps) {
@@ -51,9 +52,11 @@ export function GrowthOrb({ seconds, size = 96, caption }: GrowthOrbProps) {
           },
         ]}
       />
-      <ThemedText type="small" themeColor="textSecondary" style={styles.caption}>
-        {caption ?? `已生长 ${formatDuration(seconds)}`}
-      </ThemedText>
+      {caption === null ? null : (
+        <ThemedText type="small" themeColor="textSecondary" style={styles.caption}>
+          {caption ?? `已生长 ${formatDuration(seconds)}`}
+        </ThemedText>
+      )}
     </View>
   );
 }

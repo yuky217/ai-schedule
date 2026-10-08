@@ -67,9 +67,12 @@ export function describeFocusReceipt(facts: FocusReceiptFacts): string {
   const tooShort = seconds < MIN_FOCUS_SECONDS;
   const duration = describeFocusSeconds(seconds);
 
-  // ① 没绑任务、结束时起了名字 —— 这段专注自己成了一条记录
-  if (!boundTitle && intent && span) {
-    return `「${intent}」已经记到日历上：${formatTime(span.startAt)}–${formatTime(span.endAt)}，统计里也算这一段。`;
+  // ① 没绑任务 —— 这段专注自己成了一条日历记录（名字可选，没名字就叫「专注」）
+  if (!boundTitle && span) {
+    const where = `${formatTime(span.startAt)}–${formatTime(span.endAt)}`;
+    return intent
+      ? `「${intent}」已经记到日历上：${where}，统计里也算这一段。`
+      : `这段 ${duration} 记到了日历上：${where}，统计里也算这一段。`;
   }
 
   // ② 绑定的任务不见了（用户中途删了它，或者任务详情页那边刚把它删掉）
@@ -99,9 +102,10 @@ export function describeFocusReceipt(facts: FocusReceiptFacts): string {
     return message;
   }
 
-  // ⑤ 没绑任务、也没起名字（或太短）—— 只进统计，不往日历上塞东西
+  // ⑤ 太短 —— 什么都不记，明说
   if (tooShort) {
     return `只专注了 ${duration}，不到一分钟，没记进统计。`;
   }
-  return `这段 ${duration} 记进了统计。结束前给它起个名字，它就会出现在日历上。`;
+  // 兜底：时段没算出来（极少，比如起点时间读不出来）—— 统计里至少有这一段
+  return `这段 ${duration} 记进了统计。`;
 }

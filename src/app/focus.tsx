@@ -162,36 +162,32 @@ export default function FocusScreen() {
       </View>
 
       <View style={styles.orbBlock}>
-        <GrowthOrb
-          seconds={elapsed}
-          size={104}
-          caption={`这段生长了 ${formatDuration(elapsed)}`}
-        />
+        <GrowthOrb seconds={elapsed} size={104} caption={null} />
       </View>
 
+      {/* 名字与随手记：没有任何常驻说明 —— 输入框自己说得清。
+          没绑定任务才有"名字"：起了名用名字，没起名落日历时叫「专注」。
+          绑定了任务就没有这个框 —— 那个名字哪儿都不显示，是个只写不读的字段。 */}
+      {!boundTask ? (
+        <Card>
+          <TextInput
+            value={intent}
+            onChangeText={setIntent}
+            placeholder="这是什么事？可留空"
+            placeholderTextColor={theme.textSecondary}
+            style={[
+              styles.input,
+              { color: theme.text, backgroundColor: theme.background, borderColor: theme.backgroundSelected },
+            ]}
+          />
+        </Card>
+      ) : null}
+
       <Card>
-        <ThemedText type="small" themeColor="textSecondary">
-          {boundTask
-            ? '结束时给这段起个名字（也可以留空）'
-            : '给这段起个名字，它就会像别的事一样记到日历上；留空则只进统计'}
-        </ThemedText>
-        <TextInput
-          value={intent}
-          onChangeText={setIntent}
-          placeholder={boundTask ? boundTask.title : '这是什么事？'}
-          placeholderTextColor={theme.textSecondary}
-          style={[
-            styles.input,
-            { color: theme.text, backgroundColor: theme.background, borderColor: theme.backgroundSelected },
-          ]}
-        />
-        <ThemedText type="small" themeColor="textSecondary">
-          专注中记一笔（会绑定在这件事下，不影响全局随手记）
-        </ThemedText>
         <TextInput
           value={note}
           onChangeText={setNote}
-          placeholder="忽然想到的、卡住的地方…"
+          placeholder="顺手记一笔：忽然想到的、卡住的地方…"
           placeholderTextColor={theme.textSecondary}
           multiline
           style={[
@@ -207,16 +203,14 @@ export default function FocusScreen() {
           title="记到这件事上"
           hint={
             boundTask.time.attribute === TimeAttribute.None
-              ? '它还没安排过时间 —— 做完了才会用这一段落到日历上，没做完就只记时长'
-              : '这段时长会累加进它的进度，够目标就自动完成'
+              ? '这段会顺便当成它的时间'
+              : '时长累加进进度，够目标会自动完成'
           }>
           <View style={styles.switchRow}>
             <View style={styles.switchText}>
               <ThemedText type="smallBold">这段就算把它做完</ThemedText>
               <ThemedText type="small" themeColor="textSecondary" style={styles.switchHint}>
-                {alsoComplete
-                  ? '结束时会把它标成完成'
-                  : '默认不勾：干了多久、和这件事算不算做完，是两件事'}
+                {alsoComplete ? '结束时会把它标成完成' : '只记时长，不算做完'}
               </ThemedText>
             </View>
             <Switch value={alsoComplete} onValueChange={setAlsoComplete} />

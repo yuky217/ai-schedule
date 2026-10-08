@@ -704,16 +704,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     let feedback: FocusFeedback;
 
     /**
-     * ① 没绑定任务、但结束时给了名字 —— 这段专注本身就是一条记录。
+     * ① 没绑定任务 —— 这段专注本身就是一条记录。
      *
-     * 名字是唯一的凭据：没名字的专注只留在回顾页的统计里，不往日历上塞空白条目。
-     * 记成"已完成"是因为这段时间**已经发生了**，它是一条"做过什么"的日志，
-     * 不是一条待办。这与"不许替用户把已有的待办标完成"是两件事：
+     * 起了名字用名字，没起名就叫「专注」（2026-10-08 用户拍板：未命名的也进日历，
+     * 统计和日历不该是两个口径）。这段时间**已经发生过**，它是一条"做过什么"的日志，
+     * 记成"已完成" —— 这与"不许替用户把已有的待办标完成"是两件事：
      * 我们**新建**了一条记录，而没有改动用户已有的任何决定。
      */
-    if (!session.taskId && session.intent && span) {
+    if (!session.taskId && span) {
+      const title = session.intent?.trim() || '专注';
       const logged = createTask({
-        title: session.intent,
+        title,
         kind: TaskKind.Execution,
         time: focusSpanTime(span),
         source: CaptureSource.Focus,
@@ -727,7 +728,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         message: describeFocusReceipt({
           seconds,
           boundTitle: null,
-          intent: session.intent,
+          intent: session.intent ?? null,
           span,
         }),
       };
@@ -836,7 +837,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
     } else {
-      // ② 没绑定任务、也没起名字（或太短）—— 只进统计，不往日历上塞东西
+      // ② 没绑定任务、时段也没落成（不到一分钟）—— 日历上没有它，回执里要明说
       feedback = {
         taskId: null,
         seconds,

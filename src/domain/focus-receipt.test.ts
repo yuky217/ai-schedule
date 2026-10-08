@@ -145,7 +145,18 @@ describe('describeFocusReceipt', () => {
     expect(message).toContain('本周 2/3 次');
   });
 
-  it('没绑定、没起名：说清只进统计，并告诉他下次怎么让它上日历', () => {
+  it('没绑定、没起名：也叫「专注」落到日历上，时段说清楚', () => {
+    const message = describeFocusReceipt({
+      seconds: 900,
+      boundTitle: null,
+      intent: null,
+      span: { startAt: '2026-10-08T19:00:00+08:00', endAt: '2026-10-08T19:15:00+08:00' },
+    });
+    expect(message).toContain('15 分钟');
+    expect(message).toContain('日历上');
+  });
+
+  it('没绑定、时段没落成（兜底）：至少说清统计里有这段，不提日历', () => {
     const message = describeFocusReceipt({
       seconds: 900,
       boundTitle: null,
@@ -153,7 +164,8 @@ describe('describeFocusReceipt', () => {
       span: null,
     });
     expect(message).toContain('15 分钟');
-    expect(message).toContain('起个名字');
+    expect(message).toContain('统计');
+    expect(message).not.toContain('日历');
   });
 
   it('没绑定、起名了但太短：不建记录，也不假装建了', () => {
