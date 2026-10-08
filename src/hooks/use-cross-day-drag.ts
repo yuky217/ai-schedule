@@ -1,6 +1,5 @@
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RefObject } from 'react';
 import type { View, ViewStyle } from 'react-native';
 import { Gesture } from 'react-native-gesture-handler';
 import { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
@@ -36,8 +35,6 @@ const GHOST_WIDTH = 172;
 const HIT_TEST_STEP = 12;
 
 export interface CrossDayDragOptions {
-  /** 浮层所在容器：用于把窗口坐标换算成容器内坐标 */
-  containerRef: RefObject<View | null>;
   /** 松手且落在某个格子上时触发 */
   onDrop: (task: Task, cellKey: string) => void;
   /** 拾起时的触感反馈（默认轻震一下） */
@@ -59,11 +56,7 @@ export interface CrossDayDrag {
   ghostVisible: boolean;
 }
 
-export function useCrossDayDrag({
-  containerRef,
-  onDrop,
-  onPickUp,
-}: CrossDayDragOptions): CrossDayDrag {
+export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): CrossDayDrag {
   const [draggingTask, setDraggingTask] = useState<Task | null>(null);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
   const [ghostVisible, setGhostVisible] = useState(false);
@@ -81,35 +74,31 @@ export function useCrossDayDrag({
    */
   const tasksRef = useRef(new Map<string, Task>());
 
-  /* 手指的窗口坐标（UI 线程写）+ 容器的窗口偏移（JS 线程写） */
+  /* 手指的屏幕坐标（UI 线程写） */
   const fingerX = useSharedValue(0);
   const fingerY = useSharedValue(0);
-  const offsetX = useSharedValue(0);
-  const offsetY = useSharedValue(0);
   const opacity = useSharedValue(0);
   const lastHitX = useSharedValue(0);
   const lastHitY = useSharedValue(0);
 
+  /**
+   * 浮块位置用**屏幕坐标**（手指的 absoluteX/Y）而不是"容器内坐标"。
+   *
+   * 原来的写法要减掉容器在窗口里的偏移（offsetX/offsetY），前提是浮块挂在
+   * 那个容器里面。但拖拽源头现在可能落在容器之外 —— 日历页把收集箱抽屉
+   * 挪到了 Screen 的 bottomBar（滚动区的兄弟节点），它不在 containerRef 里。
+   * 这时"容器内坐标"算出来的位置是错的，浮块会飘到别处。
+   *
+   * 改成屏幕坐标后，浮块自身用 position:'fixed'（见调用方的 styles.ghost），
+   * 与源头在哪个容器无关 —— 手势层不再需要知道调用方的布局长什么样。
+   */
   const ghostStyle = useAnimatedStyle<ViewStyle>(() => ({
     opacity: opacity.value,
     transform: [
-      { translateX: fingerX.value - offsetX.value - GHOST_WIDTH / 2 },
-      { translateY: fingerY.value - offsetY.value - 22 },
+      { translateX: fingerX.value - GHOST_WIDTH / 2 },
+      { translateY: fingerY.value - 22 },
     ],
   }));
-
-  /** 容器在窗口里的位置：挂载时量一次，每次拾起前再量一次（键盘弹出、tab 切换都会变） */
-  const measureContainer = useCallback(() => {
-    containerRef.current?.measureInWindow((x, y) => {
-      offsetX.value = x;
-      offsetY.value = y;
-    });
-  }, [containerRef, offsetX, offsetY]);
-
-  useEffect(() => {
-    measureContainer();
-  }, [measureContainer]);
-
   // 页面被卸载时别把浮块留在屏幕上
   useEffect(() => () => { opacity.value = 0; }, [opacity]);
 
@@ -172,7 +161,6 @@ export function useCrossDayDrag({
       setDraggingTask(task);
       setDropTargetKey(null);
       setGhostVisible(true);
-      measureContainer();
       measureCells();
       if (onPickUp) {
         onPickUp(task);
@@ -180,7 +168,7 @@ export function useCrossDayDrag({
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
       }
     },
-    [fingerX, fingerY, measureCells, measureContainer, onPickUp, opacity],
+    [fingerX, fingerY, measureCells, onPickUp, opacity],
   );
 
   const move = useCallback(

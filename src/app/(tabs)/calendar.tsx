@@ -88,9 +88,13 @@ const VELOCITY_THRESHOLD = 350;
 const PAGE_OFFSET = 44;
 /**
  * 月视图里"收集箱抽屉"最多列出几行。
- * 再多一行，源头和日期格就凑不到同一屏里了 —— 而拖拽只能落到看得见的格子上。
+ *
+ * 抽屉贴在屏幕底部（Screen 的 bottomBar 槽位，不随页面滚动），
+ * 拖动期间页面滚动被锁，所以能拖到的只有屏幕上看得见的日期格 ——
+ * 限行是为了让抽屉自己别长高到把月历顶出屏幕：抽屉每多一行，
+ * 上方的月历就少一行可见空间。
  */
-const INBOX_DRAG_LIMIT = 5;
+const INBOX_DRAG_LIMIT = 4;
 
 const dayKey = (d: Date): string => format(d, 'yyyy-MM-dd');
 const keyToDate = (key: string): Date => {
@@ -441,7 +445,7 @@ export default function CalendarScreen() {
   );
 
   const { draggingTask, dropTargetKey, registerCell, gestureFor, ghostStyle, ghostVisible } =
-    useCrossDayDrag({ containerRef, onDrop: handleDrop });
+    useCrossDayDrag({ onDrop: handleDrop });
 
   /**
    * 拖拽起止都记时刻：拖得再久，松手后那次 click 也落在 500ms 窗口内。
@@ -641,7 +645,48 @@ export default function CalendarScreen() {
   const hasMuted = scheduled.some((task) => isMuted(taskDisplayState(task)));
 
   return (
-    <Screen title="日历" subtitle="有时间的事才会出现在这里" scrollEnabled={!busyDragging}>
+    <Screen
+      title="日历"
+      subtitle="有时间的事才会出现在这里"
+      scrollEnabled={!busyDragging}
+      /*
+        收集箱抽屉：贴在屏幕底部常驻，不随页面滚动。
+        它是这个页面的第二个拖拽源头，落点就是上方那些日期格。
+        为什么必须常驻：拖动期间页面滚动被锁死，源头一旦滚出屏幕就再也拖不到；
+        而月历自身高度固定（6 行不跳），抽屉贴底不会把它挤变形。
+        只在月视图出现 —— 周/日/课视图里没有"日期格"这个落点。
+      */
+      bottomBar={
+        mode === 'month' && inbox.length ? (
+          <View style={styles.drawer}>
+            <View style={styles.drawerHead}>
+              <ThemedText type="smallBold">收集箱 · {inbox.length} 件</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary" style={styles.drawerHint}>
+                长按一行，拖到上面的日期格
+              </ThemedText>
+            </View>
+            {inbox.slice(0, INBOX_DRAG_LIMIT).map((task) => (
+              <DraggableTaskRow
+                key={task.id}
+                task={task}
+                gestureFor={gestureFor}
+                onOpen={guardedOpen}
+                onComplete={guardedToggle}
+              />
+            ))}
+            {inbox.length > INBOX_DRAG_LIMIT ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.push('/inbox')}
+                style={({ pressed }) => [styles.moreRow, { opacity: pressed ? 0.6 : 1 }]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  还有 {inbox.length - INBOX_DRAG_LIMIT} 件 · 去收集箱
+                </ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : undefined
+      }>
       <View ref={containerRef} style={styles.container} collapsable={false}>
         <View style={styles.toolbar}>
           <View style={styles.nav}>
@@ -763,42 +808,11 @@ export default function CalendarScreen() {
                     )}
                   </Card>
                   {/*
-                    收集箱抽屉：这一页的第二个拖拽源头，落点就是上面那些日期格。
-                    为什么放在这一页：想"排到具体哪天"时，用户眼睛对照的是**月历本身**
-                    —— 哪天有课、哪天快到周末。在收集箱里拖只有一条两周的日期带，看不到这张月历。
-                    而跨 Tab 拖拽在手机上不成立（切页那一下手势就被系统掐断了），
-                    所以只能把源头搬进日历，不能让手指把条目拖过去。
-
-                    为什么放在最下面、而不是紧贴日期格：紧贴着会把"点一天看那天的事"
-                    整块挤下屏幕，而收集箱非空是常态。拖拽只要求源头和格子同屏 ——
-                    排期时目标那天通常本来就空，这时整页够短，两者都在屏幕上。
-                    显示上限 INBOX_DRAG_LIMIT 行也是同一个原因。
+                    收集箱抽屉已移到屏幕底部常驻（见页面外层 bottomBar）——
+                    它以前待在滚动流的最末尾，手机上一滚就跑到屏幕外，
+                    而拖动期间滚动是锁死的：源头看不见 = 拖不到。
+                    现在它是滚动区的兄弟节点，月历永远在它上方同屏可见。
                   */}
-                  {inbox.length ? (
-                    <Card
-                      title={`收集箱 · ${inbox.length} 件`}
-                      hint="长按一行，拖到上面的日期格就安排到那天">
-                      {inbox.slice(0, INBOX_DRAG_LIMIT).map((task) => (
-                        <DraggableTaskRow
-                          key={task.id}
-                          task={task}
-                          gestureFor={gestureFor}
-                          onOpen={guardedOpen}
-                          onComplete={guardedToggle}
-                        />
-                      ))}
-                      {inbox.length > INBOX_DRAG_LIMIT ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          onPress={() => router.push('/inbox')}
-                          style={({ pressed }) => [styles.moreRow, { opacity: pressed ? 0.6 : 1 }]}>
-                          <ThemedText type="small" themeColor="textSecondary">
-                            还有 {inbox.length - INBOX_DRAG_LIMIT} 件 · 去收集箱
-                          </ThemedText>
-                        </Pressable>
-                      ) : null}
-                    </Card>
-                  ) : null}
                 </>
               ) : null}
 
@@ -1076,6 +1090,18 @@ const styles = StyleSheet.create({
   legend: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.two },
   legendText: { fontSize: 12, lineHeight: 18, opacity: 0.75 },
   dragRow: { width: '100%' },
+  /**
+   * 贴底抽屉。刻意不画 Card 那种边框/底色 ——
+   * 它是"屏幕的一部分"，不是浮在内容上的一张卡；再有边框会看着像挡住了日历。
+   * 上方留一条细线把"屏幕下方这块是另一个区"讲清楚就够了。
+   */
+  drawer: {
+    gap: Spacing.one,
+    paddingTop: Spacing.two,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  drawerHead: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.two },
+  drawerHint: { flex: 1, textAlign: 'right' },
   /** 「还有 N 件 · 去收集箱」—— 居中的一行轻提示，不是主操作 */
   moreRow: { paddingTop: Spacing.two, alignItems: 'center' },
   examRow: {
@@ -1091,7 +1117,7 @@ const styles = StyleSheet.create({
   markCaption: { fontSize: 11, lineHeight: 14 },
   markTitle: { flex: 1 },
   ghost: {
-    position: 'absolute',
+    position: 'fixed',
     left: 0,
     top: 0,
     width: 172,
