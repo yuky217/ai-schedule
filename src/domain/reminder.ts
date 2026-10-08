@@ -3,6 +3,7 @@ import { zhCN } from 'date-fns/locale';
 
 import { TaskStatus, TimeAttribute } from './enums';
 import type { TaskKind } from './enums';
+import { nextOccurrence } from './repeat-next';
 import { taskAnchor, type RepeatRule, type Task } from './task';
 
 /**
@@ -25,18 +26,101 @@ import { taskAnchor, type RepeatRule, type Task } from './task';
 
 /** 下一次提醒的触发时刻；null = 这条任务不会响 */
 export function nextFireAt(task: Task, now: Date = new Date()): Date | null {
-  if (task.status === TaskStatus.Done) return null;
-  // 没设提醒 = 不打扰。先于"有没有时间"判：没设就不该响，跟时间无关
-  if (task.reminderMinutesBefore == null) return null;
-  const anchor = taskAnchor(task);
-  if (!anchor) return null;
-  const anchorAt = new Date(anchor);
-  if (Number.isNaN(anchorAt.getTime()) || anchorAt.getTime() <= now.getTime()) return null;
+  // 口径只有一处（reminderFireTimes），这里只是取"最早的那个" ——
+  // 界面说的"下一次几点响"与调度真正排出去的时刻必须是同一个答案。
+  return reminderFireTimes(task, { now })[0] ?? null;
+}
 
+/**
+ * 一条重复任务一次往后排几天。
+ *
+ * 与课表取同一个数（`syncCourseReminders` 的 days），理由也一样：
+ * 一次性通知在安卓上有数量上限，一次排太多会被系统**静默丢掉一部分**
+ * （最难查的那种 bug）；而那么远的提醒本来就该随任务改动重排 ——
+ * 每次启动把这个窗口补满即可。
+ */
+export const REMINDER_WINDOW_DAYS = 7;
+
+/**
+ * 这条任务接下来要在**哪几个时刻**响（按时间升序）。
+ *
+ * 这是调度的**唯一口径**：`nextFireAt`（界面显示）、`scheduleTaskReminder`
+ * （真正排通知）、启动补排三处都走它，所以"界面说的"和"手机会响的"必然一致。
+ *
+ * - 没设提醒（`null`）/ 已完成 / 没有时间 → `[]`，一条都不排；
+ * - **单次任务 → 0 或 1 个时刻**，且不受窗口限制（一周后的一次性安排也要响）；
+ * - **重复任务 → 未来 `days` 天内的每一期**，另外**无条件带上最近的一期** ——
+ *   "每月 25 号"的下一期可能落在 7 天之外，若被窗口裁掉，这条任务就**一条提醒都不会有**
+ *   （功能看着在、实际从不响，是最糟的一类 bug）。
+ *
+ * 提前量已过、但准点还没到时退回准点（与排程同一取舍：响得晚比不响好）。
+ */
+export function reminderFireTimes(
+  task: Task,
+  options: { days?: number; now?: Date } = {},
+): Date[] {
+  if (task.status === TaskStatus.Done) return [];
+  // 没设提醒 = 不打扰。先于"有没有时间"判：没设就不该响，跟时间无关
+  if (task.reminderMinutesBefore == null) return [];
+
+  const anchor = taskAnchor(task);
+  if (!anchor) return [];
+  const anchorAt = new Date(anchor);
+  if (Number.isNaN(anchorAt.getTime())) return [];
+
+  const now = options.now ?? new Date();
   const offset = task.reminderMinutesBefore;
-  const fireAt = new Date(anchorAt.getTime() - offset * 60_000);
-  // 提前量时刻已过 → 排程会退回准点，这里显示准点才与实际一致
-  return fireAt.getTime() > now.getTime() ? fireAt : anchorAt;
+  const days = options.days != null && options.days > 0 ? options.days : REMINDER_WINDOW_DAYS;
+
+  /** 某一期"该在什么时候响"；null = 这一期已经不值得排了 */
+  const fireOf = (occurrence: Date): Date | null => {
+    const fire = new Date(occurrence.getTime() - offset * 60_000);
+    if (fire.getTime() > now.getTime()) return fire;
+    // 提前量时刻已过、但准点还没到 → 退回准点（响得晚比不响好）
+    if (offset > 0 && occurrence.getTime() > now.getTime()) return occurrence;
+    return null;
+  };
+
+  const fires: Date[] = [];
+  const first = fireOf(anchorAt);
+  if (first) fires.push(first);
+
+  // 单次任务到此为止：它只有这一期
+  if (!task.repeat) return fires;
+
+  const rule = task.repeat;
+  // 锚点可能在过去（几天没完成，时间还停在上一期）—— 先滚到第一个还没到的期。
+  // 上限 3660 与 advanceRepeatingTask 取同一个数：十年日任务足够兜底，也不会转不完。
+  let occurrence = new Date(anchorAt);
+  let guard = 0;
+  const firstPending = () => {
+    while (occurrence.getTime() <= now.getTime() && guard < 3660) {
+      const next = nextOccurrence(rule, occurrence);
+      if (!next) return null;
+      occurrence = next;
+      guard += 1;
+    }
+    return occurrence.getTime() > now.getTime() ? occurrence : null;
+  };
+
+  const start = firstPending();
+  if (!start) return fires;
+
+  const startFire = fireOf(start);
+  // 锚点自身还在未来时，上面已经排过它了（first），这里别排重
+  if (startFire && !fires.some((d) => d.getTime() === startFire.getTime())) fires.push(startFire);
+
+  const windowEnd = now.getTime() + days * 86_400_000;
+  let cursor = start;
+  for (let i = 0; i < 366; i += 1) {
+    const next = nextOccurrence(rule, cursor);
+    if (!next || next.getTime() > windowEnd) break;
+    const fire = fireOf(next);
+    if (fire) fires.push(fire);
+    cursor = next;
+  }
+
+  return fires.sort((a, b) => a.getTime() - b.getTime());
 }
 
 /** 提醒状态的一句话说明（详情页「提醒」行下方的状态字） */

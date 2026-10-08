@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
+import { understandText } from '@/capabilities/client';
 import { ChoiceSheet, type ChoiceOption } from '@/components/choice-sheet';
 import {
   DateTimeSheet,
@@ -15,12 +16,13 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import type { Container } from '@/domain/container';
-import { parseSchedule } from '@/domain/parse-schedule';
+import { parseSchedule, type ParsedSchedule } from '@/domain/parse-schedule';
 import { describeReminder, describeRepeat, REMINDER_PRESETS, REPEAT_PRESETS } from '@/domain/repeat-next';
 import { resolveReminderMinutes } from '@/domain/reminder';
 import { decideRoute } from '@/domain/routing';
 import { timeAnchor, type RepeatRule, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
+import { selectCapabilityGate, useSettings } from '@/state/settings-store';
 
 /** ChoiceSheet 里「不提醒」那一项的 key */
 const REMINDER_OFF = '__off__';
@@ -49,6 +51,12 @@ export interface CaptureOptions {
   containerId?: string | null;
   repeat?: RepeatRule | null;
   reminderMinutesBefore?: number | null;
+  /**
+   * 能力层「理解」的结果（开了 AI 才有；没开、失败、答得不成形都是 null）。
+   * 拿到就**整份**交给落库那一步用，拿不到就走本地启发式 —— 两条路最终
+   * 都汇进 `quickCapture` 的同一套规则里，所以不会出现"AI 一套口径、本地一套"。
+   */
+  parsed?: ParsedSchedule | null;
 }
 
 export interface CaptureInputProps {
@@ -147,12 +155,27 @@ export function CaptureInput({
     if (!canSubmit) return;
     setBusy(true);
     try {
+      /*
+       * 开了「理解」能力，就先让模型读一遍 —— 它比本地正则更认得出
+       * "下周三下午的会改到周五了，提前半小时叫我"这种句子。
+       *
+       * 它**只是加分项**：没开、没配、网络不通、答得不成形，拿到的都是 null，
+       * 原样走本地识别。AI 挂掉不能让"记一件事"这件事挂掉。
+       *
+       * 读的是 `getState()` 而不是订阅 —— 提交是一次性动作，
+       * 没必要为它让整条输入条跟着设置重渲染（想法页/记录页都用着它）。
+       */
+      const recognized = asIdea
+        ? null
+        : await understandText(selectCapabilityGate(useSettings.getState()), text.trim());
+
       await onSubmit(text.trim(), {
         asIdea,
         time,
         containerId,
         repeat,
         reminderMinutesBefore: reminder,
+        parsed: recognized,
       });
       reset();
     } finally {

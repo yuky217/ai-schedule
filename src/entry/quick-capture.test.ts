@@ -35,7 +35,7 @@ vi.mock('@/data/repositories/idea-repository', () => ({
  */
 vi.mock('./notifications', () => ({
   scheduleTaskReminder: vi.fn(async (task: { reminderMinutesBefore?: number | null }) =>
-    task.reminderMinutesBefore == null ? null : 'notification-id',
+    task.reminderMinutesBefore == null ? [] : ['notification-id'],
   ),
 }));
 
@@ -137,5 +137,42 @@ describe('quickCapture：粘一整段通知', () => {
     const idea = written[0]!;
     expect(String(idea.content)).toContain('地点："一站式"学生社区211');
     expect(String(idea.content)).toContain('关于团委大会暨团委素质拓展活动开展通知');
+  });
+
+  /*
+   * AI 理解的结果递进来就直接用 —— 本地正则认不出的说法
+   * （"改到周五"、"下周三下午的会"没有具体日期），模型认得出。
+   * 这条用例锁的是「input.parsed 必须真的被消费」，不能只是个摆设参数。
+   */
+  it('界面传入了 AI 解析结果 → 用它，不再跑本地正则', async () => {
+    const r = await quickCapture({
+      text: '下次部门例会改到周五了，提前一小时叫我',
+      parsed: {
+        title: '部门例会',
+        note: null,
+        time: {
+          attribute: 'fixed' as const,
+          startAt: new Date(2026, 9, 9, 15, 0).toISOString(),
+          endAt: null,
+          dueAt: null,
+        },
+        location: '学生活动中心',
+        locationMatched: null,
+        repeat: null,
+        repeatLabel: null,
+        repeatMatched: null,
+        reminder: 60,
+        reminderUnspecified: false,
+        reminderLabel: '提前 1 小时',
+        reminderMatched: null,
+        label: '10月9日 15:00',
+        matched: null,
+      },
+    });
+    expect(r.title).toBe('部门例会');
+    expect(written[0]!.location).toBe('学生活动中心');
+    expect(written[0]!.reminderMinutesBefore).toBe(60);
+    const time = written[0]!.time as { startAt: string };
+    expect(new Date(time.startAt).getDate()).toBe(9);
   });
 });

@@ -73,12 +73,50 @@ export const defaultCapabilityFlags = (): Record<AiCapability, boolean> =>
   );
 
 export interface AiConfig {
-  /** 云端接口地址，为空表示还没配 */
+  /**
+   * 接口地址。可以是完整的 `https://…/chat/completions`，也可以是服务商的 base_url
+   * （如 `https://api.deepseek.com`）—— 由 `resolveChatEndpoint` 补全路径。
+   * 为空表示还没配。
+   */
   endpoint: string;
+  /** 密钥。**只存在这台设备上**（AsyncStorage），不上传任何地方 */
   apiKey: string;
+  /** 模型名。各家的叫法不同，用户自己填/从预设带过来（预设只是省一次键入，不是硬编码） */
+  model: string;
 }
 
-export const emptyAiConfig: AiConfig = { endpoint: '', apiKey: '' };
+export const emptyAiConfig: AiConfig = { endpoint: '', apiKey: '', model: '' };
+
+/**
+ * 服务商预设：**只为了少填两格**，不锁定任何一家。
+ * endpoint 与 model 都填进输入框、用户可改 —— 模型名半年一换，
+ * 写死在代码里等于给未来埋一个"点了没反应"的坑。
+ */
+export interface AiProviderPreset {
+  id: string;
+  name: string;
+  endpoint: string;
+  model: string;
+  /** 给用户看的补充（免费额度、注册门槛） */
+  hint: string;
+}
+
+export const AI_PROVIDER_PRESETS: readonly AiProviderPreset[] = [
+  {
+    id: 'zhipu',
+    name: '智谱 GLM',
+    endpoint: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4.7-flash',
+    hint: 'glm-4.7-flash 免费，手机号注册',
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    endpoint: 'https://api.deepseek.com',
+    model: 'deepseek-v4-flash',
+    hint: '便宜，需充值；模型名以控制台为准',
+  },
+];
 
 /**
  * 能力层的"闸门"：既要看单项开关，也要看接口有没有配。
@@ -94,4 +132,22 @@ export class AiDisabledError extends Error {
     super(`AI 能力「${capability}」未开启或未配置`);
     this.name = 'AiDisabledError';
   }
+}
+
+/**
+ * 一个能力的"接线说明"：怎么问模型、怎么认它的回答。
+ *
+ * 放这里而不是 client.ts，是为了让各能力文件 import 它时**不反向依赖 client**
+ * （否则 client ← understand ← client 成环）。
+ *
+ * `parse` 返回 null 的语义很重：**这份结果不能用**。调用方必须退回本地启发式，
+ * 而不是"凑合着用一半" —— 一条被 AI 理解错的日程，用户看不出来是错的。
+ */
+export interface CapabilitySpec<T = unknown> {
+  /** 系统提示词。把 `now` 交给它，模型才知道"明天"是哪一天 */
+  system: (now: Date) => string;
+  /** 用户消息（已脱敏的原文） */
+  user: (text: string, context?: Record<string, unknown>) => string;
+  /** 校验并映射成结构化结果；null = 不合格 */
+  parse: (raw: unknown, ctx: { text: string; now: Date }) => T | null;
 }

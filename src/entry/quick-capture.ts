@@ -4,7 +4,7 @@ import { CaptureSource } from '@/domain/enums';
 import type { TaskKind } from '@/domain/enums';
 import { createIdea, createTask } from '@/domain/factory';
 import { decideRoute, type CaptureRoute } from '@/domain/routing';
-import { parseSchedule } from '@/domain/parse-schedule';
+import { parseSchedule, type ParsedSchedule } from '@/domain/parse-schedule';
 import { resolveReminderMinutes } from '@/domain/reminder';
 import type { RepeatRule, TaskTime } from '@/domain/task';
 
@@ -24,6 +24,14 @@ export interface QuickCaptureInput {
   markedAsInspiration?: boolean;
   /** 已解析出的时间。能力层关闭时为 null，走本地启发式 */
   time?: TaskTime | null;
+  /**
+   * 能力层「理解」的结果（界面调 `understandText` 拿到的）。
+   *
+   * **不传或为 null 就本地识别** —— 两条路产出的结构完全同构（`ParsedSchedule`），
+   * 所以下游这一整套规则（分流、标题、提醒默认值）一个字都不用改：
+   * 谁来解析只是"谁更懂这段话"的区别，落库口径始终只有一份。
+   */
+  parsed?: ParsedSchedule | null;
   /**
    * 下面这些来自输入框的"快捷设置按钮"（借鉴滴答清单）：
    * 记的时候顺手把清单 / 重复 / 提醒定了，省得之后再点进详情页补。
@@ -60,13 +68,15 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   const source = input.source ?? CaptureSource.Manual;
 
   /*
-   * 先解析一次（本地启发式，能力层关闭也可用）。
+   * 解析只有一份入口：界面层已经调过 AI 理解（`understandText`）就把结果递进来 ——
+   * 失败/未配置时它返回 null，这里退回本地启发式。两条路产出的结构同构（ParsedSchedule），
+   * 下游规则（分流、提醒默认值）一个字都不用改：谁更懂这段话只影响解析质量，不影响落库口径。
    *
    * **不再"用户给了时间就跳过解析"**：解析出来的不只是时间，还有标题与备注 ——
    * 用户在 chip 里手选过时刻之后，粘进来的那一整段通知照样得提炼出名字，
    * 否则他得到的是一条标题两百字的日程。时间那一项仍然**手动的压过猜的**。
    */
-  const parsed = parseSchedule(text);
+  const parsed = input.parsed ?? parseSchedule(text);
   const time: TaskTime | null = input.time ?? parsed.time ?? null;
   const displayText = parsed.title.trim() ? parsed.title : text;
   /*
@@ -137,9 +147,10 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
   });
   await taskRepository.create(task);
 
-  // 只有落到日历（有明确时间）的才排提醒；没设提醒时 scheduleTaskReminder 直接返回 null
+  // 只有落到日历（有明确时间）的才排提醒；没设提醒时 scheduleTaskReminder 直接返回空数组。
+  // 重复任务会一次排上未来几期 —— "排上了没有"的判据是"排了几条 > 0"。
   const reminderScheduled =
-    decision.route === 'calendar' ? (await scheduleTaskReminder(task)) !== null : false;
+    decision.route === 'calendar' ? (await scheduleTaskReminder(task)).length > 0 : false;
 
   return {
     id: task.id,

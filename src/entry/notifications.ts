@@ -3,9 +3,11 @@ import { addDays } from 'date-fns';
 import { LogBox, Platform } from 'react-native';
 
 import { coursesOnDate, type Course, type Term } from '@/domain/course';
+import { TaskStatus } from '@/domain/enums';
 import type { CalEvent } from '@/domain/event';
 import { describeEventFire, eventFireAt, type EventFire } from '@/domain/event-reminder';
-import { taskAnchor, type Task } from '@/domain/task';
+import { reminderFireTimes, REMINDER_WINDOW_DAYS } from '@/domain/reminder';
+import type { Task } from '@/domain/task';
 
 /**
  * 提醒调度。
@@ -198,8 +200,15 @@ async function ensureAndroidChannel(mod: NotificationsModule): Promise<void> {
 }
 
 /**
- * 给任务排一条提醒。返回通知 id，失败返回 null。
- * 已经过期的任务不补排 —— 用户不需要被"昨天的会"打扰。
+ * 给任务排提醒，返回排上的通知 id（一条都没排上就是空数组）。
+ *
+ * **重复任务会排好几条**（2026-10-08）：以前一次只排"下一期"那一条，于是
+ * "每天 8 点吃药"只要用户哪天没打开 App，第二天就**不会响** ——
+ * 而习惯型提醒的全部意义恰恰是"我不打开它也得响"。现在按 `reminderFireTimes`
+ * 把未来 7 天的每一期都排上（"每月 25 号"这种远期期会无条件带上最近一期），
+ * 冷启动时再补满窗口（`syncRepeatingTaskReminders`）。
+ *
+ * 已经过期的期不补排 —— 用户不需要被"昨天的会"打扰。
  *
  * **没设提醒就不排**（`reminderMinutesBefore == null`，见 domain/reminder.ts 的三态说明）：
  * 以前 null 当准点用，于是"没点过提醒那一格"的人也会被提醒 ——
@@ -207,26 +216,15 @@ async function ensureAndroidChannel(mod: NotificationsModule): Promise<void> {
  *
  * 提前量：> 0 时在开始/截止前 N 分钟触发；0 = 准点；
  * 若提前量时刻已过但准点还没到，退回准点提醒（比不提醒好）。
+ *
+ * 返回数组而不是单个 id：调用方（记录入口）只关心"排上了没有"，
+ * 但"排了几条"是重复提醒可验证的证据，藏起来会让这条链路又变成一个黑盒。
  */
-export async function scheduleTaskReminder(task: Task): Promise<string | null> {
-  if (task.reminderMinutesBefore == null) return null;
+export async function scheduleTaskReminder(task: Task): Promise<string[]> {
+  const fires = reminderFireTimes(task);
+  if (!fires.length) return [];
 
-  const anchor = taskAnchor(task);
-  if (!anchor) return null;
-
-  const anchorDate = new Date(anchor);
-  if (Number.isNaN(anchorDate.getTime())) return null;
-
-  const offsetMinutes = task.reminderMinutesBefore;
-  let fireAt = new Date(anchorDate.getTime() - offsetMinutes * 60_000);
-  if (fireAt.getTime() <= Date.now()) {
-    if (offsetMinutes > 0 && anchorDate.getTime() > Date.now()) {
-      fireAt = anchorDate; // 提前量已过，退回准点
-    } else {
-      return null;
-    }
-  }
-
+  const offsetMinutes = task.reminderMinutesBefore!;
   const isDeadline = task.time.attribute === 'deadline';
   const when =
     offsetMinutes > 0
@@ -245,22 +243,97 @@ export async function scheduleTaskReminder(task: Task): Promise<string | null> {
 
   try {
     const Notifications = await loadNotifications();
-    if (!Notifications) return null;
+    if (!Notifications) return [];
 
     registerHandler(Notifications);
-    if (!(await ensureNotificationPermission())) return null;
+    if (!(await ensureNotificationPermission())) return [];
     await ensureAndroidChannel(Notifications);
-    return await Notifications.scheduleNotificationAsync({
-      content: {
-        title: task.title,
-        body,
-        data: { taskId: task.id },
-      },
-      trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireAt },
-    });
+
+    const ids: string[] = [];
+    for (const fireAt of fires) {
+      try {
+        ids.push(
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: task.title,
+              body,
+              // 同一条任务的每期都带同一个 taskId —— 全撤重排按它一把撤干净
+              data: { taskId: task.id },
+            },
+            trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireAt },
+          }),
+        );
+      } catch {
+        // 单条排不上不影响其余期
+      }
+    }
+    return ids;
   } catch {
-    return null;
+    return [];
   }
+}
+
+/**
+ * 把**重复任务**的提醒窗口补满（启动时调，也可由别处手动调），返回排上的条数。
+ *
+ * 为什么要"补满"而不是只在任务变动时排：窗口是 7 天，用户隔了 8 天再打开 App，
+ * 第 8 天的通知压根没排过 —— 那条提醒就凭空消失了，而用户完全无从察觉。
+ * 冷启动补一次，把"未来 7 天"重新撑开。
+ *
+ * **只动重复任务的通知**（按 taskId 认），单次任务、课程、考试的通知一律不碰 ——
+ * 它们各有各的重排时机，一起撤会让"我什么都没改，提醒却被推迟了"。
+ *
+ * 不弹权限框（与启动补排考试的取舍一致）：没授权就静默不排，等用户下次主动
+ * 记录/导入时自然会问。重复任务量不大（通常个位数），条数是 任务数 × 期数。
+ */
+export async function syncRepeatingTaskReminders(
+  tasks: readonly Task[],
+  days = REMINDER_WINDOW_DAYS,
+): Promise<number> {
+  const repeating = tasks.filter(
+    (task) => task.repeat && task.status !== TaskStatus.Done && task.reminderMinutesBefore != null,
+  );
+  if (!repeating.length) return 0;
+
+  const Notifications = await loadNotifications();
+  if (!Notifications) return 0;
+
+  const ids = new Set(repeating.map((task) => task.id));
+  try {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    for (const item of scheduled) {
+      const taskId = (item.content.data as { taskId?: string } | undefined)?.taskId;
+      if (taskId && ids.has(taskId)) {
+        await Notifications.cancelScheduledNotificationAsync(item.identifier);
+      }
+    }
+  } catch {
+    // 撤不干净就别往下排 —— 硬排的后果是同一天弹出两个提醒
+    return 0;
+  }
+
+  if (!(await hasNotificationPermission(Notifications))) return 0;
+  await ensureAndroidChannel(Notifications);
+
+  let count = 0;
+  for (const task of repeating) {
+    for (const fireAt of reminderFireTimes(task, { days })) {
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: task.title,
+            body: task.location ? `到点了 · ${task.location}` : '到点了',
+            data: { taskId: task.id },
+          },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireAt },
+        });
+        count += 1;
+      } catch {
+        // 单条排不上不影响其余
+      }
+    }
+  }
+  return count;
 }
 
 /**

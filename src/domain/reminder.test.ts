@@ -8,6 +8,7 @@ import {
   defaultReminderMinutes,
   describeNextFire,
   nextFireAt,
+  reminderFireTimes,
   resolveReminderMinutes,
 } from './reminder';
 import type { Task } from './task';
@@ -202,5 +203,127 @@ describe('resolveReminderMinutes', () => {
 
   it('用户点过具体值 → 压过文字里写的', () => {
     expect(resolveReminderMinutes({ ...base, manual: 5, parsed: 30 })).toBe(5);
+  });
+});
+
+/**
+ * 「这条任务接下来要在哪几个时刻响」—— 单次与重复的**唯一口径**
+ * （界面显示、真正排程、启动补排三处都走它）。
+ *
+ * 2026-10-08 新增，修的是一个很难被发现的问题：重复任务以前只排"下一期"那一条，
+ * 于是"每天 8 点吃药"只要哪天没打开 App，第二天就**不会响** ——
+ * 而习惯型提醒的全部意义恰恰是"我不打开它也得响"。
+ */
+describe('reminderFireTimes', () => {
+  /** 周三中午。用显式的 now 而不是系统时间，星期几才是确定的 */
+  const now = new Date(2026, 9, 7, 12, 0);
+
+  /** 读起来像人话的时间戳，失败信息里能一眼看出错在哪一期 */
+  const stamp = (d: Date) =>
+    `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(
+      d.getMinutes(),
+    ).padStart(2, '0')}`;
+  const stamps = (task: Task, options: { days?: number } = {}) =>
+    reminderFireTimes(task, { now, ...options }).map(stamp);
+
+  const repeating = (start: Date, rule: Task['repeat'], extra: Partial<Task> = {}) =>
+    timedTask(start, { reminderMinutesBefore: 0, repeat: rule, ...extra });
+  const DAILY = { freq: RepeatFreq.Daily, interval: 1 } as const;
+
+  it('没设提醒 / 已完成 / 没有时间 → 一条都不排', () => {
+    const start = new Date(2026, 9, 7, 20, 0);
+    expect(stamps(timedTask(start, { repeat: DAILY }))).toEqual([]);
+    expect(stamps(repeating(start, DAILY, { status: TaskStatus.Done }))).toEqual([]);
+    expect(
+      stamps(
+        timedTask(start, {
+          reminderMinutesBefore: 0,
+          time: { attribute: TimeAttribute.None, startAt: null, endAt: null, dueAt: null },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('单次任务：只有一条，而且**不受 7 天窗口限制**（两周后的安排也得响）', () => {
+    expect(stamps(timedTask(new Date(2026, 9, 20, 14, 0), { reminderMinutesBefore: 10 }))).toEqual([
+      '10/20 13:50',
+    ]);
+  });
+
+  it('单次任务：时刻已过 → 一条都不排（不打扰用户"昨天的会"）', () => {
+    expect(
+      stamps(timedTask(new Date(2026, 9, 7, 9, 0), { reminderMinutesBefore: 0 })),
+    ).toEqual([]);
+  });
+
+  it('每天：窗口内**每一期**都排上（这是"不打开 App 也会响"的全部依据）', () => {
+    expect(stamps(repeating(new Date(2026, 9, 7, 20, 0), DAILY))).toEqual([
+      '10/7 20:00',
+      '10/8 20:00',
+      '10/9 20:00',
+      '10/10 20:00',
+      '10/11 20:00',
+      '10/12 20:00',
+      '10/13 20:00',
+    ]);
+  });
+
+  it('每天：锚点停在过去（几天没打勾）→ 先滚到未来，不含已经过去的时刻', () => {
+    // 10/4 早上 8 点起每天，今天 10/7 中午才打开 App
+    expect(stamps(repeating(new Date(2026, 9, 4, 8, 0), DAILY))).toEqual([
+      '10/8 08:00',
+      '10/9 08:00',
+      '10/10 08:00',
+      '10/11 08:00',
+      '10/12 08:00',
+      '10/13 08:00',
+      '10/14 08:00',
+    ]);
+  });
+
+  it('每周一三五：只落在周一/三/五，且按时间升序', () => {
+    const fires = reminderFireTimes(
+      repeating(new Date(2026, 9, 7, 18, 0), {
+        freq: RepeatFreq.Weekly,
+        interval: 1,
+        byWeekday: [1, 3, 5],
+      }),
+      { now },
+    );
+    expect(fires.map((d) => d.getDay())).toEqual([3, 5, 1]);
+    expect(fires.map(stamp)).toEqual(['10/7 18:00', '10/9 18:00', '10/12 18:00']);
+  });
+
+  it('每月 25 号：最近一期在窗口之外也**必须带上**（否则这条任务一条提醒都不会有）', () => {
+    expect(
+      stamps(
+        repeating(
+          new Date(2026, 9, 25, 9, 0),
+          { freq: RepeatFreq.Monthly, interval: 1 },
+          { time: { attribute: TimeAttribute.Deadline, startAt: null, endAt: null, dueAt: new Date(2026, 9, 25, 9, 0).toISOString() } },
+        ),
+      ),
+    ).toEqual(['10/25 09:00']);
+  });
+
+  it('提前量已过、准点还没到 → 退回准点（每一期各自判断）', () => {
+    expect(
+      stamps(repeating(new Date(2026, 9, 7, 12, 30), DAILY, { reminderMinutesBefore: 60 })),
+    ).toEqual([
+      '10/7 12:30',
+      '10/8 11:30',
+      '10/9 11:30',
+      '10/10 11:30',
+      '10/11 11:30',
+      '10/12 11:30',
+      '10/13 11:30',
+    ]);
+  });
+
+  it('窗口天数可覆盖（排几期由调用方说了算）', () => {
+    expect(stamps(repeating(new Date(2026, 9, 7, 20, 0), DAILY), { days: 2 })).toEqual([
+      '10/7 20:00',
+      '10/8 20:00',
+    ]);
   });
 });

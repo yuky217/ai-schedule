@@ -99,8 +99,13 @@ export default function CaptureScreen() {
                 const captured = await capture({
                   text,
                   markedAsInspiration: options.asIdea,
-                  // 用户在时间面板设过就按他的；没设（undefined）就交给文本自动识别
-                  time: options.asIdea ? null : options.time,
+                  // 输入条快捷按钮（清单/重复/提醒）和 AI 解析结果全部透传，
+                  // 落库口径收口在 quickCapture 一处；想法不需要这些，传了也不会用
+                  time: options.time,
+                  containerId: options.containerId,
+                  repeat: options.repeat,
+                  reminderMinutesBefore: options.reminderMinutesBefore,
+                  parsed: options.parsed,
                 });
                 setResult(captured);
               } catch (err) {

@@ -17,6 +17,7 @@ import {
   scheduleTaskReminder,
   syncCourseReminders,
   syncEventReminders,
+  syncRepeatingTaskReminders,
 } from '@/entry/notifications';
 import type { Checkin } from '@/domain/checkins';
 import type { Container, Mark } from '@/domain/container';
@@ -306,6 +307,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 已授权就排上，没授权等用户下次主动导入/记录时自然会问。
       // 也**不 await**：它跟"App 能打开"没关系 —— 这正是把提醒从主流程里摘出去的意义。
       void syncEventReminders(get().events, { requestPermission: false });
+      // 重复任务（"每天 8 点吃药"）一次只排 7 天，隔了 8 天再打开 App，
+      // 后面那几天的通知压根没排过 —— 那条提醒会**凭空消失**且无从察觉。
+      // 冷启动补满窗口，把"我不打开它也得响"这件事兜住。同样不请求权限、不 await。
+      void syncRepeatingTaskReminders(get().tasks);
     } catch (err) {
       set({
         initializing: false,
