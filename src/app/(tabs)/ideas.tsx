@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Card } from '@/components/card';
 import { CaptureInput } from '@/components/capture-input';
 import { EmptyState } from '@/components/empty-state';
+import { IdeaBreakdownSheet } from '@/components/idea-breakdown-sheet';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -35,6 +36,8 @@ export default function IdeasScreen() {
   const ideas = useAppStore((state) => state.ideas);
   const dataVersion = useAppStore((state) => state.dataVersion);
   const capture = useAppStore((state) => state.capture);
+  const tasks = useAppStore((state) => state.tasks);
+  const breakdownIdea = useAppStore((state) => state.breakdownIdea);
   const archiveIdea = useAppStore((state) => state.archiveIdea);
   const loadArchivedIdeas = useAppStore((state) => state.loadArchivedIdeas);
   const unarchiveIdea = useAppStore((state) => state.unarchiveIdea);
@@ -44,6 +47,44 @@ export default function IdeasScreen() {
   const semanticSearchOn = useSettings((state) => state.capabilities[AiCapability.SemanticSearch]);
 
   const [keyword, setKeyword] = useState('');
+  /** 正在拆的那条想法（null = 面板没开） */
+  const [breaking, setBreaking] = useState<Idea | null>(null);
+
+  /**
+   * 每条任务底下有几个子任务 —— 想法行要说"我拆成了几步"。
+   *
+   * 现算而不是存在想法上：步数是子任务表的实时事实，
+   * 用户去任务详情页删掉一步，存下来的数字就开始骗人了。
+   */
+  const subtaskCount = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const task of tasks) {
+      if (!task.parentId) continue;
+      map.set(task.parentId, (map.get(task.parentId) ?? 0) + 1);
+    }
+    return map;
+  }, [tasks]);
+
+  /** 已拆出来的那条父任务。父任务被删掉时当作"没拆过"—— 否则点进去是一片空白 */
+  const parentOf = useCallback(
+    (idea: Idea) => (idea.breakdownTaskId ? tasks.find((t) => t.id === idea.breakdownTaskId) : undefined),
+    [tasks],
+  );
+
+  /**
+   * 点一行：没拆过 → 打开拆解面板；拆过 → 去看那条任务。
+   *
+   * 拆过之后**不再让拆第二次**：追加步骤走任务详情页已有的子任务能力，
+   * 那才是唯一入口。同一件事开两条路，最后一定会出现"从这边加的和从那边加的对不上"。
+   */
+  const openIdea = (idea: Idea) => {
+    const parent = parentOf(idea);
+    if (parent) {
+      router.push(`/task/${parent.id}`);
+      return;
+    }
+    setBreaking(idea);
+  };
 
   /**
    * 归档箱：默认收起，翻的时候才拉数据。
@@ -114,9 +155,18 @@ export default function IdeasScreen() {
 
       {visible.length ? (
         <View style={styles.list}>
-          {visible.map((idea) => (
-            <IdeaRow key={idea.id} idea={idea} onArchive={(id) => void archiveIdea(id)} />
-          ))}
+          {visible.map((idea) => {
+            const parent = parentOf(idea);
+            return (
+              <IdeaRow
+                key={idea.id}
+                idea={idea}
+                stepCount={parent ? (subtaskCount.get(parent.id) ?? 0) : 0}
+                onOpen={() => openIdea(idea)}
+                onArchive={(id) => void archiveIdea(id)}
+              />
+            );
+          })}
         </View>
       ) : (
         <EmptyState
@@ -181,28 +231,71 @@ export default function IdeasScreen() {
           )}
         </Card>
       ) : null}
+
+      {/*
+        拆解面板。交出去之后**不跳走** —— 行上立刻多出「已拆成 N 步」，
+        那行本身就是回执；跳进任务详情会把"接着拆下一条想法"打断。
+      */}
+      <IdeaBreakdownSheet
+        visible={breaking !== null}
+        idea={breaking}
+        onClose={() => setBreaking(null)}
+        onSubmit={(steps) => {
+          const target = breaking;
+          setBreaking(null);
+          if (target) void breakdownIdea(target.id, steps);
+        }}
+      />
     </Screen>
   );
 }
 
-function IdeaRow({ idea, onArchive }: { idea: Idea; onArchive: (id: string) => void }) {
+function IdeaRow({
+  idea,
+  stepCount,
+  onOpen,
+  onArchive,
+}: {
+  idea: Idea;
+  /** 已经拆出来的步数（0 = 还没拆） */
+  stepCount: number;
+  onOpen: () => void;
+  onArchive: (id: string) => void;
+}) {
   const theme = useTheme();
   return (
-    <View style={[styles.ideaRow, { backgroundColor: theme.backgroundElement }]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={
+        stepCount ? `去看「${idea.content}」拆出来的任务` : `把「${idea.content}」拆成能动手的几步`
+      }
+      onPress={onOpen}
+      style={({ pressed }) => [
+        styles.ideaRow,
+        { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+      ]}>
       <View style={styles.ideaBody}>
         <ThemedText numberOfLines={5}>{idea.content}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.ideaMeta}>
           {formatMonthDay(new Date(idea.createdAt))} 记下
+          {stepCount ? ` · 已拆成 ${stepCount} 步` : ''}
         </ThemedText>
       </View>
+      {/*
+        归档按钮在内层。web 上 click 会冒泡，不拦一下的话点归档会顺带把拆解面板打开
+        （原生上内层本来就赢得手势，这一句是两端的统一保险）。
+      */}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="归档这条想法（可以在下面的归档箱里找回来）"
         hitSlop={8}
-        onPress={() => onArchive(idea.id)}>
+        onPress={(event) => {
+          event.stopPropagation();
+          onArchive(idea.id);
+        }}>
         <Ionicons name="archive-outline" size={18} color={theme.textSecondary} />
       </Pressable>
-    </View>
+    </Pressable>
   );
 }
 

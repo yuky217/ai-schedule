@@ -188,6 +188,7 @@ export interface IdeaRow extends BaseRow {
   tags_json: string;
   source: string;
   archived_at: string | null;
+  breakdown_task_id: string | null;
 }
 
 export function ideaFromRow(row: IdeaRow): Idea {
@@ -197,6 +198,7 @@ export function ideaFromRow(row: IdeaRow): Idea {
     tags: parseJson<string[]>(row.tags_json, []),
     source: row.source as CaptureSource,
     archivedAt: row.archived_at,
+    breakdownTaskId: row.breakdown_task_id ?? null,
   };
 }
 
@@ -207,6 +209,7 @@ export function ideaColumns(idea: Idea): ColumnMap {
     tags_json: JSON.stringify(idea.tags ?? []),
     source: idea.source,
     archived_at: idea.archivedAt ?? null,
+    breakdown_task_id: idea.breakdownTaskId ?? null,
     ...writeBase(idea),
   };
 }

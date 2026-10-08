@@ -42,7 +42,7 @@ import { taskAnchor, type Task } from './task';
  * 纯函数，零依赖（除 date-fns），全部可单测。
  */
 
-export type ReviewPreset = 'week' | 'month' | 'last7' | 'last30';
+export type ReviewPreset = 'today' | 'week' | 'month' | 'last7' | 'last30';
 
 export interface ReviewRange {
   preset: ReviewPreset;
@@ -56,7 +56,16 @@ export interface ReviewRange {
   days: number;
 }
 
+/**
+ * 预设区间。
+ *
+ * 「今天」排在最前面：它是**日报** —— 每天看一眼"我今天做到了什么"。
+ * 日粒度在别处都没有落脚点（首页只说"下一步做什么"，日历只说"几点有安排"），
+ * 而它恰恰是最常被问的那个问题。
+ * 默认仍停在「本周」：默认值回答的是"我最近怎么样"，那才是进来时的真问题。
+ */
 export const REVIEW_PRESETS: ReadonlyArray<{ key: ReviewPreset; label: string }> = [
+  { key: 'today', label: '今天' },
   { key: 'week', label: '本周' },
   { key: 'month', label: '本月' },
   { key: 'last7', label: '近 7 天' },
@@ -75,6 +84,9 @@ export function resolveRange(preset: ReviewPreset, today: Date = new Date()): Re
 
   let from: Date;
   switch (preset) {
+    case 'today':
+      from = day;
+      break;
     case 'week':
       from = startOfWeek(day, { weekStartsOn: 1 });
       break;
@@ -102,9 +114,10 @@ export function previousRange(range: ReviewRange): ReviewRange {
   return { ...range, from, to };
 }
 
-/** "10月1日 - 10月6日 · 共 6 天" */
+/** "10月1日 - 10月6日 · 共 6 天"；只有一天时就只说那一天（"共 1 天"是废话） */
 export function describeRange(range: ReviewRange): string {
   const from = formatMonthDay(range.from);
+  if (range.days <= 1) return from;
   const to = formatMonthDay(range.to);
   return `${from === to ? from : `${from} - ${to}`} · 共 ${range.days} 天`;
 }

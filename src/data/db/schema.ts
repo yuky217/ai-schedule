@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS ${TABLES.ideas} (
   tags_json   TEXT NOT NULL DEFAULT '[]',
   source      TEXT NOT NULL DEFAULT 'manual',
   archived_at TEXT,
+  -- 拆解出来的那条父任务（见 domain/idea-breakdown.ts）。
+  -- 想法库原本是条死路：只能归档、变不成"要做的"。这一列就是那条出口的凭据，
+  -- 有了它，一条想法才能说出"我已经被拆成 N 步了"。
+  breakdown_task_id TEXT,
   ${COMMON_COLUMNS}
 );
 
@@ -269,5 +273,15 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
    */
   6: [
     `ALTER TABLE ${TABLES.courses} ADD COLUMN changes_json TEXT NOT NULL DEFAULT '[]'`,
+  ],
+  /**
+   * v7 = ideas 加 breakdown_task_id（想法拆解成任务）。
+   *
+   * 加列而不是开新表：它只是想法上的一个指针（"我说出去的那件事在哪"），
+   * 永远跟着想法一起读出来，没有单独查询的需要。
+   * **可空**，于是老数据不用回填 —— 没拆过的想法读出来跟以前完全一样。
+   */
+  7: [
+    `ALTER TABLE ${TABLES.ideas} ADD COLUMN breakdown_task_id TEXT`,
   ],
 };

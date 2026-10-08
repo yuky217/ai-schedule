@@ -47,6 +47,7 @@ import {
   occurrencesInPeriod,
 } from '@/domain/habit-period';
 import type { Idea } from '@/domain/idea';
+import { planBreakdown } from '@/domain/idea-breakdown';
 import { advanceRepeatingTask } from '@/domain/repeat-next';
 import { desiredParentStatus } from '@/domain/subtask-progress';
 import { CaptureSource, CompletionRule, TaskKind, TaskStatus } from '@/domain/enums';
@@ -153,6 +154,16 @@ interface AppState {
   unarchiveIdea: (id: string) => Promise<void>;
   /** 真删一条想法（软删除）。只在归档箱里露出来：主列表上给"删除"太容易手滑。 */
   removeIdea: (id: string) => Promise<void>;
+  /**
+   * 把一条想法拆成"一条父任务 + N 条子任务"，返回父任务 id。
+   *
+   * 产出挂在同一条父任务下，而不是 N 条并列的任务：步骤离开那件事就没有意义
+   * （"查资料"是谁在查？），散进收集箱只会把箱子搅浑。挂在父任务下还白拿一条规则 ——
+   * 子任务全部完成时父任务自动完成，这正是"这件事做完了"的定义。
+   *
+   * `planBreakdown` 判为"这次什么都不该做"（没写步骤 / 想法是空的）时返回 null。
+   */
+  breakdownIdea: (ideaId: string, steps: readonly string[]) => Promise<string | null>;
 
   /**
    * 在某个容器下**直接新建**一条任务（容器页的「新建」）。
@@ -474,6 +485,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   removeIdea: async (id) => {
     await ideaRepository.softDelete(id);
     await get().refresh();
+  },
+
+  breakdownIdea: async (ideaId, steps) => {
+    // 想法从库里现读一份：界面手上的那份可能是翻页前拿到的旧对象
+    const idea = await ideaRepository.getById(ideaId);
+    if (!idea) return null;
+
+    const plan = planBreakdown(idea.content, steps);
+    if (!plan) return null;
+
+    // 父任务**刻意不给时间**。拆出来的是一份"要做哪些事"的清单，不是排期；
+    // 没时间 = 待规划，它会自动落到收集箱 —— 那正是拆解产物该去的地方。
+    // 给每一步自动派一份时间是排程算法该做的事，这里做等于替用户排了一遍程。
+    const parent = createTask({
+      title: plan.title,
+      note: plan.note,
+      kind: TaskKind.Execution,
+      source: CaptureSource.Manual,
+    });
+    await taskRepository.create(parent);
+
+    for (const title of plan.steps) {
+      await taskRepository.create(createSubtask(parent.id, title));
+    }
+
+    // 指针回写到想法上：这是"拆过"的唯一凭据（步数不存，问子任务表要）
+    await ideaRepository.setBreakdownTaskId(ideaId, parent.id);
+
+    await get().refresh();
+    return parent.id;
   },
 
   addTaskToContainer: async (containerId, title) => {

@@ -93,6 +93,14 @@ const TODAY = new Date(2026, 9, 7, 15, 30);
 /* ------------------------------- 区间 ------------------------------- */
 
 describe('resolveRange', () => {
+  it('「今天」就是今天这一天：零点到 23:59，且只有一天', () => {
+    const range = resolveRange('today', TODAY);
+    expect(range.days).toBe(1);
+    expect(range.label).toBe('今天');
+    expect(range.from.getTime()).toBe(new Date(2026, 9, 7, 0, 0, 0, 0).getTime());
+    expect(range.to.getTime()).toBe(new Date(2026, 9, 7, 23, 59, 59, 999).getTime());
+  });
+
   it('近 7 天恰好 7 天，起点是今天往前推 6 天', () => {
     const range = resolveRange('last7', TODAY);
     expect(range.days).toBe(7);
@@ -332,6 +340,36 @@ describe('describeRange', () => {
     const text = describeRange(resolveRange('last7', TODAY));
     expect(text).toContain('共 7 天');
     expect(text).toContain('10月1日');
+  });
+
+  it('只有一天时只说那一天 —— "共 1 天"是废话', () => {
+    expect(describeRange(resolveRange('today', TODAY))).toBe('10月7日');
+  });
+});
+
+/* ------------------------------- 日报 ------------------------------- */
+
+describe('describeSummary 的日粒度', () => {
+  it('第一句说的是"今天"，且只报做到了什么', () => {
+    const range = resolveRange('today', TODAY);
+    const finished = makeTask({
+      status: TaskStatus.Done,
+      completedAt: iso(2026, 10, 7, 11, 0),
+    });
+
+    const snapshot = buildReview({
+      tasks: [finished],
+      sessions: [],
+      checkins: [],
+      habits: [],
+      range,
+      today: TODAY,
+    });
+
+    const lines = describeSummary(snapshot);
+    expect(lines[0]).toBe('今天完成了 1 件');
+    // 基调是"做到了什么"：这一天没有任何一句是在盘点没做到的
+    expect(lines.join('')).not.toContain('逾期');
   });
 });
 

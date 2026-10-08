@@ -140,6 +140,7 @@ export function createIdea(content: string, source: CaptureSource = CaptureSourc
     tags: [],
     source,
     archivedAt: null,
+    breakdownTaskId: null,
   };
 }
 
