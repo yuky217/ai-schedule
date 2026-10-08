@@ -12,6 +12,7 @@ import Animated, {
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { BLOCK_BAR_WIDTH, COURSE_BORDER_STYLE, COURSE_OPACITY, SHAPE_RADIUS } from '@/domain/calendar-shape';
 import type { CourseSlot } from '@/domain/course';
 import { layoutLanes } from '@/domain/lane-layout';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
@@ -62,6 +63,12 @@ export interface CalendarDayProps {
   tasks: Task[];
   /** 当天的课（背景带）：只说"这段时间有课"，不占日程、不可点 */
   courseSlots?: readonly CourseSlot[];
+  /**
+   * 当天的考试。**它和任务一样是"实心块"**（见 domain/calendar-shape）——
+   * 混进任务行会被当成可勾选的一条，所以单独一个 prop、单独渲染，
+   * 但形状语言与任务一致：能分清"这是要面对的硬事"就够了。
+   */
+  examSlots?: readonly EventSlot[];
   onSelectTask: (task: Task) => void;
   onCompleteTask?: (task: Task) => void;
   /** 拖动改时刻（当天第几分钟）。返回 Promise 时会被 await，等数据落库后再收尾 */
@@ -70,6 +77,17 @@ export interface CalendarDayProps {
   onResize?: (task: Task, startMinutes: number, endMinutes: number) => Promise<void> | void;
   /** 拖拽开始 / 结束：父层用它临时关掉页面滚动 */
   onDraggingChange?: (dragging: boolean) => void;
+}
+
+/** 考试画进时间轴需要的三个数（父层已经从 CalEvent 换算好） */
+export interface EventSlot {
+  id: string;
+  title: string;
+  /** 当天分钟数 */
+  start: number;
+  end: number;
+  /** 考场 */
+  location?: string | null;
 }
 
 const minutesOfDay = (iso: string): number => {
@@ -115,6 +133,7 @@ export function CalendarDay({
   date,
   tasks,
   courseSlots,
+  examSlots,
   onSelectTask,
   onCompleteTask,
   onRetime,
@@ -271,6 +290,41 @@ export function CalendarDay({
                 </View>
               );
             })}
+            {/*
+              考试：与"截止"区那条不同，这里画进时间轴 —— 它**有明确的起止**，
+              本来就是一整段时间（9:00–11:00 坐在考场里）。此前日视图只在轴外
+              单列一行说"今天有考试"，时间轴上完全看不到它占着哪两节课。
+
+              块的样子和任务块一致（实心 + 左侧色条）—— 见 domain/calendar-shape：
+              它们都是"要面对的硬事"，差别在于考试勾不了、拖不动。
+            */}
+            {examSlots?.map((slot) => {
+              const top = Math.max(0, topForMinutes(slot.start));
+              const height = Math.max(26, ((slot.end - slot.start) / 60) * HOUR_HEIGHT);
+              return (
+                <View
+                  key={`exam-${slot.id}`}
+                  pointerEvents="none"
+                  style={[styles.block, { top, height, left: 0, right: 0 }]}>
+                  <View style={[styles.blockInner, { backgroundColor: theme.backgroundSelected }]}>
+                    <View style={[styles.blockBar, { backgroundColor: theme.text }]} />
+                    <View style={styles.blockBody}>
+                      <ThemedText type="small" numberOfLines={2}>
+                        {slot.title}
+                      </ThemedText>
+                      <ThemedText
+                        type="small"
+                        themeColor="textSecondary"
+                        numberOfLines={1}
+                        style={styles.blockTime}>
+                        {formatMinutes(slot.start)}–{formatMinutes(slot.end)}
+                        {slot.location && height >= HOUR_HEIGHT ? ` · ${slot.location}` : ''}
+                      </ThemedText>
+                    </View>
+                  </View>
+                </View>
+              );
+            })}
             {blocks.map((block) => (
               <TimedBlock
                 key={block.task.id}
@@ -294,7 +348,7 @@ export function CalendarDay({
         </View>
       </ScrollView>
 
-      {!timed.length && !deadlines.length && !courseSlots?.length ? (
+      {!timed.length && !deadlines.length && !courseSlots?.length && !examSlots?.length ? (
         <View style={styles.empty} pointerEvents="none">
           <ThemedText type="small" themeColor="textSecondary">
             {today ? '今天还没有安排' : '这一天没有安排'}
@@ -776,23 +830,24 @@ const styles = StyleSheet.create({
   /**
    * 课的背景带：虚线、透明底、不显眼 —— 一眼就知道"这段被占着"，
    * 但绝不会被误认成一件待办（实心块 = 任务，这是全 App 的约定）。
+   * 三个值都来自 `domain/calendar-shape`：形状口径只在那儿定义一次。
    */
   courseBand: {
     position: 'absolute',
     left: 0,
     right: 0,
     borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: Spacing.two,
-    opacity: 0.55,
+    borderStyle: COURSE_BORDER_STYLE,
+    borderRadius: SHAPE_RADIUS,
+    opacity: COURSE_OPACITY,
     justifyContent: 'flex-start',
     paddingHorizontal: Spacing.two,
     paddingVertical: 1,
   },
   courseBandText: { fontSize: 11, lineHeight: 15 },
   block: { position: 'absolute' },
-  blockInner: { flex: 1, flexDirection: 'row', borderRadius: Spacing.two, overflow: 'hidden' },
-  blockBar: { width: 3 },
+  blockInner: { flex: 1, flexDirection: 'row', borderRadius: SHAPE_RADIUS, overflow: 'hidden' },
+  blockBar: { width: BLOCK_BAR_WIDTH },
   lifted: {
     elevation: 8,
     shadowColor: '#000',

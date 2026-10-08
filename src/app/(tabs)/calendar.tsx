@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { addDays, addMonths, format, isSameDay, startOfWeek } from 'date-fns';
+import { addDays, addMonths, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
 import { useRouter } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
@@ -12,7 +12,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { CalendarDay } from '@/components/calendar-day';
+import { CalendarDay, type EventSlot } from '@/components/calendar-day';
 import { CalendarMonth } from '@/components/calendar-month';
 import { CalendarWeek } from '@/components/calendar-week';
 import { Card } from '@/components/card';
@@ -25,7 +25,8 @@ import { ThemedText } from '@/components/themed-text';
 import { TimetableView } from '@/components/timetable-view';
 import { TodoView } from '@/components/todo-view';
 import { Spacing } from '@/constants/theme';
-import { calendarWindow, windowKey } from '@/domain/calendar-window';
+import type { DayMarks } from '@/domain/calendar-shape';
+import { calendarWindow, monthGridDays, windowKey } from '@/domain/calendar-window';
 import {
   applyCourseChange,
   changeAnchor,
@@ -593,6 +594,76 @@ export default function CalendarScreen() {
     return map;
   }, [courses, term, timetableOn, weekDays]);
 
+  /**
+   * 月历整张网格上，每天有几节课。
+   *
+   * **和 `courseSlotsByDay` 不是一回事**：那个只覆盖当前这一周（周视图用），
+   * 而月历要的是看得见的整张 6×7 格。只算一周的代价是"月历上只有一格那一周
+   * 有空心点"，别的日子明明满课却画成实心 —— 看起来就是 bug。
+   *
+   * `coursesOnDate` 是纯内存查表（学期周次 + 作息表都在里面，不碰库），
+   * 42 天 × 十几门课的开销远小于一次渲染，所以这儿值得多算一遍。
+   */
+  const courseCountByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!timetableOn || !term) return map;
+    for (const day of monthGridDays(cursor)) {
+      const count = coursesOnDate(courses, day, term).length;
+      if (count) map.set(dayKey(day), count);
+    }
+    return map;
+  }, [courses, cursor, term, timetableOn]);
+
+  /**
+   * 月历圆点的**形状**依据：那天各有多少课、多少场考试。
+   *
+   * `monthCounts` 只说"有几个点"，说不出这 3 个点里哪些是不用动手的课 ——
+   * 一整天满课和一篇要交的论文在格子上长得一模一样，而用户扫月历要回答的
+   * 恰恰是"哪天真的重"。所以这里按形状再分一次桶（形状口径与截断规则
+   * 都在 `domain/calendar-shape.dayShapes`）。
+   *
+   * 课数取的是**整张月历网格**（`courseCountByDay`），考试是全量分桶 ——
+   * 两边覆盖范围一致，否则会出现"这格有考试方块，旁边那格的课却不算"。
+   */
+  const dayMarks = useMemo(() => {
+    const map = new Map<string, DayMarks>();
+    for (const [key, count] of courseCountByDay) {
+      map.set(key, { courses: count, exams: 0 });
+    }
+    for (const [key, list] of examsByDay) {
+      const current = map.get(key) ?? { courses: 0, exams: 0 };
+      map.set(key, { courses: current.courses, exams: list.length });
+    }
+    return map;
+  }, [courseCountByDay, examsByDay]);
+
+  /**
+   * 当天的考试 → 时间轴上的实心块。
+   *
+   * 考试本来就有明确起止（"9:00–11:00 坐在考场里"），此前日视图只在轴外
+   * 单列一行说"今天有考试"，时间轴上完全看不到它占着哪两节课。
+   * 换算与课一样不在页面里做：`minutesOfDay` 只取当天的时分，
+   * 跨天的（不会发生在考试上）按当天末尾截断。
+   */
+  const examSlotsForDay = useMemo<EventSlot[]>(() => {
+    const dayStart = startOfDay(selected).getTime();
+    const slots: EventSlot[] = [];
+    for (const event of selectedExams) {
+      const start = new Date(event.startAt);
+      const end = event.endAt ? new Date(event.endAt) : null;
+      // 没结束时刻的不画：一条没有长度的块在时间轴上什么也说明不了
+      if (!end || end.getTime() <= start.getTime()) continue;
+      slots.push({
+        id: event.id,
+        title: event.title,
+        start: Math.round((start.getTime() - dayStart) / 60000),
+        end: Math.round((end.getTime() - dayStart) / 60000),
+        location: event.location,
+      });
+    }
+    return slots.sort((a, b) => a.start - b.start);
+  }, [selectedExams, selected]);
+
   /** 课表里长按拖课块：改的是被抓住的那一次安排（换星期/节次，跨度与周次不动） */
   const handleMoveSlot = useCallback(
     async (slot: CourseSlot, weekday: number, startPeriod: number) => {
@@ -659,6 +730,18 @@ export default function CalendarScreen() {
             ? // 待办里没有任何手势要教：点行进详情、点圈勾完成，都是看得见的
               ''
             : '长按块拖动改时刻 · 拽上下边改时长';
+
+  /**
+   * 月历圆点的三种形状，只有**月视图且这张月历上真出现过课或考试**时才解释。
+   *
+   * 为什么不常驻：绝大多数人不看说明，一句常驻的形状对照表只会把图例区撑成两行。
+   * 而"格子上出现了空心点"这件事本身会让人愣一下 —— 那时候说明才有人读。
+   * 课表关掉时「空心点＝课」这句也就没意义了（那天根本不会有空心点）。
+   */
+  const shapeLegend =
+    timetableOn && (courseCountByDay.size || examsByDay.size)
+      ? '圆点：实心＝任务 · 空心＝课 · 方块＝考试'
+      : null;
 
   /**
    * 灰掉的是"已经结束"的两类：做完的、以及已经过去的时间段（上周的会）。
@@ -752,6 +835,7 @@ export default function CalendarScreen() {
                     selected={selected}
                     onSelectDay={setSelected}
                     countsByDay={monthCounts}
+                    marksByDay={dayMarks}
                     registerCell={registerCell}
                     dropTargetKey={dropTargetKey}
                   />
@@ -887,6 +971,7 @@ export default function CalendarScreen() {
                     date={selected}
                     tasks={selectedTasks}
                     courseSlots={courseSlotsForDay}
+                    examSlots={examSlotsForDay}
                     onSelectTask={guardedOpen}
                     onCompleteTask={guardedToggle}
                     onRetime={handleRetime}
@@ -940,6 +1025,11 @@ export default function CalendarScreen() {
                     : legend
                   : '这个范围内还没有安排 —— 换个月份看看，或者记一条带时间的事，它会自动出现在这里并按时提醒你'}
             </ThemedText>
+            {mode === 'month' && shapeLegend ? (
+              <ThemedText type="small" themeColor="textSecondary" style={styles.legendText}>
+                {shapeLegend}
+              </ThemedText>
+            ) : null}
           </View>
         )}
 
@@ -1151,7 +1241,12 @@ const styles = StyleSheet.create({
   segmentActive: { fontWeight: '700' },
   viewport: { flex: 1 },
   viewportInner: { gap: Spacing.four },
-  legend: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.two },
+  legend: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: Spacing.two,
+    // 形状说明是第二行，和手势那句之间留一口气；只有一行时 gap 不起作用
+    gap: 2,
+  },
   legendText: { fontSize: 12, lineHeight: 18, opacity: 0.75 },
   dragRow: { width: '100%' },
   /**

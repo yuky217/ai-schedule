@@ -1,7 +1,7 @@
 import { addDays, endOfDay, startOfMonth, startOfWeek } from 'date-fns';
 import { describe, expect, it } from 'vitest';
 
-import { calendarWindow, MONTH_GRID_ROWS, WINDOW_PAD_DAYS, windowKey } from './calendar-window';
+import { calendarWindow, MONTH_GRID_ROWS, monthGridDays, WINDOW_PAD_DAYS, windowKey } from './calendar-window';
 
 /**
  * 日历数据窗口。
@@ -111,6 +111,56 @@ describe('calendarWindow', () => {
     calendarWindow('month', cursor, selected);
     expect(cursor.getTime()).toBe(cursorTime);
     expect(selected.getTime()).toBe(selectedTime);
+  });
+});
+
+describe('monthGridDays', () => {
+  /**
+   * 这个函数是"月历上到底有哪几格"的唯一出处：组件渲染、圆点分桶、
+   * 拖拽命中检测三处都从它拿日期。三处一旦各算一份，就会出现
+   * "格子在屏幕上、数据却没算它"（或反过来）—— 而这种 bug 只在个别月份露头。
+   */
+  it('整张网格：从本月 1 号所在那周的周一算起，固定 MONTH_GRID_ROWS×7 天', () => {
+    // 2026 年 10 月：1 号是周四 → 首格 9 月 28 日（周一）
+    const days = monthGridDays(new Date(2026, 9, 15));
+    expect(days).toHaveLength(MONTH_GRID_ROWS * 7);
+    expect(days[0].getDay()).toBe(1);
+    expect(days[0].getMonth()).toBe(8);
+    expect(days[0].getDate()).toBe(28);
+    // 最后一格是周日，且正好是首格 + (行数×7-1) 天
+    expect(days[days.length - 1].getDay()).toBe(0);
+    expect(daysBetween(days[0], days[days.length - 1])).toBe(MONTH_GRID_ROWS * 7 - 1);
+  });
+
+  it('每天都不同、且严格连续（不会漏一天或多一天）', () => {
+    const days = monthGridDays(new Date(2026, 1, 15));
+    for (let i = 1; i < days.length; i += 1) {
+      expect(daysBetween(days[i - 1], days[i])).toBe(1);
+    }
+  });
+
+  it('和 calendarWindow 盖的是同一段：网格每一格都落在窗口里', () => {
+    for (let month = 1; month <= 12; month += 1) {
+      const cursor = d(2026, month, 15);
+      const window = calendarWindow('month', cursor, cursor, 0);
+      for (const day of monthGridDays(cursor)) {
+        const t = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+        expect(t).toBeGreaterThanOrEqual(window.from.getTime());
+        expect(t).toBeLessThanOrEqual(window.to.getTime());
+      }
+    }
+  });
+
+  it('任何一个月都至少覆盖本月 1 号到最后一天', () => {
+    for (let month = 1; month <= 12; month += 1) {
+      const cursor = d(2026, month, 15);
+      const days = monthGridDays(cursor);
+      const keys = new Set(days.map((x) => `${x.getFullYear()}-${x.getMonth()}-${x.getDate()}`));
+      const last = new Date(2026, month, 0);
+      for (let day = 1; day <= last.getDate(); day += 1) {
+        expect(keys.has(`2026-${month - 1}-${day}`)).toBe(true);
+      }
+    }
   });
 });
 

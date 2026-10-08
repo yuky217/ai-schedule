@@ -11,6 +11,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { dayShapes, type CalendarShape, type DayMarks } from '@/domain/calendar-shape';
 import { MONTH_GRID_ROWS } from '@/domain/calendar-window';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -27,7 +28,12 @@ import { useTheme } from '@/hooks/use-theme';
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as const;
 const WEEK_ROWS = MONTH_GRID_ROWS;
-const MAX_DOTS = 3;
+
+/**
+ * 一格上到底有哪几种东西 —— 顺序（先课 → 再考试 → 最后任务）与截断规则
+ * 都在 `domain/calendar-shape.dayShapes` 里定死，这个组件只负责画。
+ */
+export type DayMarkKind = CalendarShape;
 
 export interface CalendarMonthProps {
   /** 任意一个落在目标月份的日期 */
@@ -36,6 +42,11 @@ export interface CalendarMonthProps {
   onSelectDay: (date: Date) => void;
   /** key = yyyy-MM-dd，value = 该日任务数 */
   countsByDay: Map<string, number>;
+  /**
+   * key = yyyy-MM-dd，value = 那天的课与考试数（可选）。
+   * 不传就退回"全是实心点"的老行为 —— 月历本身不该被这两个数绑架。
+   */
+  marksByDay?: Map<string, DayMarks>;
   /** 把日期格注册给拖拽层（命中检测用） */
   registerCell?: (key: string) => (view: View | null) => void;
   /** 当前拖拽悬停的日期格 key，该格高亮 */
@@ -49,6 +60,7 @@ export function CalendarMonth({
   selected,
   onSelectDay,
   countsByDay,
+  marksByDay,
   registerCell,
   dropTargetKey,
 }: CalendarMonthProps) {
@@ -76,6 +88,7 @@ export function CalendarMonth({
           {days.slice(row * 7, row * 7 + 7).map((day) => {
             const key = dayKey(day);
             const count = countsByDay.get(key) ?? 0;
+            const shapes = dayShapes(count, marksByDay?.get(key));
             const selectedDay = isSameDay(day, selected);
             const today = isSameDay(day, new Date());
             const outside = !isSameMonth(day, month);
@@ -112,18 +125,24 @@ export function CalendarMonth({
                   </ThemedText>
                 </View>
                 <View style={styles.dots}>
-                  {Array.from({ length: Math.min(count, MAX_DOTS) }, (_, i) => (
-                    <View
-                      key={i}
-                      style={[
-                        styles.dot,
-                        {
-                          backgroundColor: selectedDay ? theme.background : theme.textSecondary,
-                          opacity: outside ? 0.4 : 1,
-                        },
-                      ]}
-                    />
-                  ))}
+                  {shapes.map((shape, i) => {
+                    const tint = selectedDay ? theme.background : theme.textSecondary;
+                    return (
+                      <View
+                        key={i}
+                        style={[
+                          styles.dot,
+                          // 课：空心（背景，不用你动手）· 考试：方块（硬边界）· 其余：实心点
+                          shape === 'course'
+                            ? [styles.dotHollow, { borderColor: tint }]
+                            : shape === 'exam'
+                              ? [styles.dotSquare, { backgroundColor: tint }]
+                              : { backgroundColor: tint, borderRadius: 2 },
+                          { opacity: outside ? 0.4 : 1 },
+                        ]}
+                      />
+                    );
+                  })}
                 </View>
               </Pressable>
             );
@@ -155,4 +174,17 @@ const styles = StyleSheet.create({
   outside: { opacity: 0.4 },
   dots: { flexDirection: 'row', gap: 3, minHeight: 4 },
   dot: { width: 4, height: 4, borderRadius: 2 },
+  /**
+   * 课的空心点。边框宽度必须写在样式里（颜色由调用方按选中态给）：
+   * 只给 borderColor 不给 borderWidth，Web 上就是一个没边、没底色的空气泡。
+   */
+  dotHollow: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    backgroundColor: 'transparent',
+  },
+  /** 考试的方块：和圆点同样是 4pt，靠直角而不是靠大小区分 */
+  dotSquare: { width: 4, height: 4, borderRadius: 0 },
 });

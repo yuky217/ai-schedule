@@ -39,6 +39,18 @@ export interface CalendarWindow {
  */
 export const MONTH_GRID_ROWS = 6;
 
+/**
+ * 月历网格上实际渲染的那些日期（整张 6×7）。
+ *
+ * 月历渲染、圆点分桶、拖拽命中检测三处必须拿**同一份**日期，
+ * 否则会出现"格子在屏幕上、数据却没算它"。行数固定 `MONTH_GRID_ROWS`
+ * 是为了月与月之间高度稳定 —— 这里不按"装得下几行"去省一行。
+ */
+export function monthGridDays(month: Date): Date[] {
+  const first = startOfWeek(startOfMonth(month), WEEK_OPTIONS);
+  return Array.from({ length: MONTH_GRID_ROWS * 7 }, (_, i) => addDays(first, i));
+}
+
 /** 两端各多留的天数 */
 export const WINDOW_PAD_DAYS = 7;
 
