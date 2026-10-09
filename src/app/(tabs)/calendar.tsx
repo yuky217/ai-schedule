@@ -19,6 +19,7 @@ import { Card } from '@/components/card';
 import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
+import { MonthPlan } from '@/components/month-plan';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
@@ -43,7 +44,15 @@ import {
 } from '@/domain/course';
 import { describeEvent, type CalEvent } from '@/domain/event';
 import { TaskStatus } from '@/domain/enums';
-import { describeMark, nextMarkDate, pickUpcoming, sortMarkViews, type MarkView } from '@/domain/marks';
+import {
+  describeMark,
+  markLine,
+  nextMarkDate,
+  pickUpcoming,
+  sortMarkViews,
+  type MarkView,
+} from '@/domain/marks';
+import { buildMonthPlan } from '@/domain/month-plan';
 import { buildPlacedTime, buildRetimedSpanTime, buildRetimedTime, buildTimeOnDay } from '@/domain/schedule-presets';
 import { taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
@@ -105,13 +114,19 @@ const keyToDate = (key: string): Date => {
   return new Date(y, m - 1, d);
 };
 
-/** 日卡里的纪念日行：把 describeMark 的大字小字拼成一句话（"3 天后 · 第 2 周年"） */
-const markLine = (view: MarkView): string =>
-  view.headline === '今天'
-    ? view.caption === '就是这天'
-      ? '就是今天'
-      : `今天 · ${view.caption}`
-    : `${view.headline} ${view.caption}`;
+/**
+ * 月历下拉展开：竖直位移超过多少开始跟手（px）。
+ *
+ * 取值刻意比翻页手势的 failOffsetY（20）小 —— 手指稍微一竖，这一层就先接管，
+ * 翻页手势随即被取消，不会出现"想拉清单却翻了页"。
+ */
+const PULL_ACTIVATE = 12;
+/** 从全合到全开要拉多远（px）：一指头的距离，别让人拉两次 */
+const PULL_OPEN = 160;
+/** 甩得够快也算（px/s），用于"轻轻一甩就开/关" */
+const PULL_VELOCITY = 500;
+/** 面板展开/收起的弹簧，与页面翻页那一档手感一致 */
+const PULL_SPRING = { damping: 22, stiffness: 220 } as const;
 
 export default function CalendarScreen() {
   const theme = useTheme();
@@ -158,6 +173,10 @@ export default function CalendarScreen() {
   const [selected, setSelected] = useState<Date>(new Date());
   /** 日视图拖块改时刻期间，也要锁住页面滚动 */
   const [timelineDragging, setTimelineDragging] = useState(false);
+  /** 月历下方那张"这个月每天都有什么"的清单是否展开 */
+  const [monthOpen, setMonthOpenState] = useState(false);
+  /** 下拉手势正在跟手（期间锁页面滚动，否则手指一竖页面跟着滚） */
+  const [monthPulling, setMonthPulling] = useState(false);
 
   const containerRef = useRef<View>(null);
 
@@ -638,6 +657,30 @@ export default function CalendarScreen() {
   }, [courseCountByDay, examsByDay]);
 
   /**
+   * 月历下拉展开的那张清单：这个月每天都有什么。
+   *
+   * 组装在 `domain/month-plan` —— 只收属于这个月的日子、每天最多三件事，
+   * 页面只负责把上面已经分好桶的三类数据（任务 / 考试 / 纪念日）递进去，
+   * 课则在里面按天现算（调课、停课都算得进去）。
+   */
+  const monthPlan = useMemo(
+    // 别的视图里没有月历可拉，别为一张看不见的清单去算 42 天的课
+    () =>
+      mode === 'month'
+        ? buildMonthPlan({
+            month: cursor,
+            tasksByDay,
+            examsByDay,
+            marksByDay,
+            courses,
+            term,
+            timetableOn,
+          })
+        : [],
+    [courses, cursor, examsByDay, marksByDay, mode, tasksByDay, term, timetableOn],
+  );
+
+  /**
    * 当天的考试 → 时间轴上的实心块。
    *
    * 考试本来就有明确起止（"9:00–11:00 坐在考场里"），此前日视图只在轴外
@@ -692,6 +735,99 @@ export default function CalendarScreen() {
   );
 
   const busyDragging = draggingTask !== null || timelineDragging;
+
+  /* ---------------- 月历下拉展开「这个月的安排」 ---------------- */
+
+  /**
+   * 展开进度 0..1。面板高度 = 内容自然高 × 它，跑在 UI 线程，所以跟手不掉帧。
+   */
+  const monthPull = useSharedValue(0);
+  /**
+   * 展开态的**镜像**：手势回调是 worklet，读不到最新的 React state，
+   * 而"现在是开着还是关着"决定跟手该从 0 往上还是从 1 往下。
+   */
+  const monthOpenFlag = useSharedValue(0);
+  /** 这次手势有没有走到 onEnd（用来区分"松手"与"被系统打断"） */
+  const monthSettled = useSharedValue(1);
+
+  const applyMonthOpen = useCallback(
+    (open: boolean) => {
+      monthOpenFlag.value = open ? 1 : 0;
+      setMonthOpenState(open);
+    },
+    [monthOpenFlag],
+  );
+
+  /** 点把手：与下拉共用同一条动画，只是少了跟手那一段 */
+  const toggleMonthPlan = useCallback(() => {
+    const open = !monthOpen;
+    applyMonthOpen(open);
+    monthPull.value = withSpring(open ? 1 : 0, PULL_SPRING);
+  }, [applyMonthOpen, monthOpen, monthPull]);
+
+  /**
+   * 切到别的视图就收起来 —— 这张清单挂在月历下面，别的视图里没有月历可拉。
+   * 翻月**不收**：翻月看的是同一个视角的下一个月，收起来等于逼他再拉一次。
+   */
+  useEffect(() => {
+    if (mode === 'month') return;
+    monthPull.value = 0;
+    if (monthOpenFlag.value) applyMonthOpen(false);
+  }, [applyMonthOpen, mode, monthOpenFlag, monthPull]);
+
+  const canPullMonth = mode === 'month' && monthPlan.length > 0 && !busyDragging;
+
+  /**
+   * 下拉（收起时）/ 上推（展开时）跟手拉开清单。
+   *
+   * 方向语义刻意**不对称**：
+   * - 收起态只有下拉能激活 —— 收起时上滑是"往下滚页面看卡片"，
+   *   被这个手势吃掉就等于页面在月历上滚不动了；
+   * - 展开态只有上推能激活 —— 展开后下拉就是"接着往下看清单"，
+   *   那本来就是页面滚动的活。
+   *
+   * 横向让给翻页（failOffsetX 14 < pager 的 activeOffsetX 16）：
+   * 手指一横，这一层先放手，翻页随即接管。
+   */
+  const monthPullGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(canPullMonth)
+        .activeOffsetY(monthOpen ? -PULL_ACTIVATE : PULL_ACTIVATE)
+        .failOffsetX([-14, 14])
+        .onStart(() => {
+          'worklet';
+          monthSettled.value = 0;
+          runOnJS(setMonthPulling)(true);
+        })
+        .onUpdate((event) => {
+          'worklet';
+          const progress = event.translationY / PULL_OPEN;
+          const value = monthOpenFlag.value ? 1 + progress : progress;
+          monthPull.value = Math.min(1, Math.max(0, value));
+        })
+        .onEnd((event) => {
+          'worklet';
+          monthSettled.value = 1;
+          const progress = monthPull.value;
+          // 展开态：推过一半才算收（轻轻碰一下不该把它关掉）
+          // 收起态：拉过一小段，或者甩得快，都算开
+          const open = monthOpenFlag.value
+            ? progress > 0.65 && event.velocityY > -PULL_VELOCITY
+            : progress > 0.35 || event.velocityY > PULL_VELOCITY;
+          monthPull.value = withSpring(open ? 1 : 0, PULL_SPRING);
+          runOnJS(applyMonthOpen)(open);
+        })
+        .onFinalize(() => {
+          'worklet';
+          // 被系统打断（来电、切后台）时没有 onEnd —— 自己弹回原状态，别停在半开
+          if (monthSettled.value === 0) {
+            monthPull.value = withSpring(monthOpenFlag.value ? 1 : 0, PULL_SPRING);
+          }
+          runOnJS(setMonthPulling)(false);
+        }),
+    [applyMonthOpen, canPullMonth, monthOpen, monthOpenFlag, monthPull, monthSettled],
+  );
 
   const now = new Date();
   /** 课表视图里，光标那一周是第几周（没有学期或还没开学 → null） */
@@ -758,7 +894,8 @@ export default function CalendarScreen() {
         —— 那一栏存在的意义就是"没时间的事也在"。副标题说错话比不写更糟。
       */
       subtitle={mode === 'todo' ? '跟时间无关，欠着你的都在这儿' : '有时间的事才会出现在这里'}
-      scrollEnabled={!busyDragging}
+      // 拉清单期间也不能滚：手指一竖页面跟着跑，跟手的面板就抖了
+      scrollEnabled={!busyDragging && !monthPulling}
       /*
         收集箱抽屉：贴在屏幕底部常驻，不随页面滚动。
         它是这个页面的第二个拖拽源头，落点就是上方那些日期格。
@@ -830,15 +967,34 @@ export default function CalendarScreen() {
             <Animated.View style={[styles.viewportInner, contentStyle]}>
               {mode === 'month' ? (
                 <>
-                  <CalendarMonth
-                    month={cursor}
-                    selected={selected}
-                    onSelectDay={setSelected}
-                    countsByDay={monthCounts}
-                    marksByDay={dayMarks}
-                    registerCell={registerCell}
-                    dropTargetKey={dropTargetKey}
-                  />
+                  {/*
+                    月历 + 它下面那张可拉开的「本月安排」清单。
+                    两者包在同一个手势里：在月历上（或把手上）往下拉，
+                    清单就跟着手指长出来 —— 月历本身不变形。
+                  */}
+                  <GestureDetector gesture={monthPullGesture}>
+                    <View style={styles.monthBlock}>
+                      <CalendarMonth
+                        month={cursor}
+                        selected={selected}
+                        onSelectDay={setSelected}
+                        countsByDay={monthCounts}
+                        marksByDay={dayMarks}
+                        registerCell={registerCell}
+                        dropTargetKey={dropTargetKey}
+                      />
+                      <MonthPlan
+                        days={monthPlan}
+                        monthLabel={format(cursor, 'M月')}
+                        open={monthOpen}
+                        pull={monthPull}
+                        onToggle={toggleMonthPlan}
+                        onFocusDay={focusDay}
+                        onOpenTask={guardedOpen}
+                        onCompleteTask={guardedToggle}
+                      />
+                    </View>
+                  </GestureDetector>
                   <Card
                     title={`${isSameDay(selected, now) ? '今天' : format(selected, 'M月d日')} · ${selectedTasks.length + selectedExams.length} 件`}
                     hint={selectedTasks.length ? '长按任一行，拖到上面的日期格即可改期' : undefined}>
@@ -1241,6 +1397,11 @@ const styles = StyleSheet.create({
   segmentActive: { fontWeight: '700' },
   viewport: { flex: 1 },
   viewportInner: { gap: Spacing.four },
+  /**
+   * 月历 + 它下面那块「本月安排」清单。
+   * 间距比页面默认（four）紧，两者看着是同一个东西 —— 清单是从月历里拉出来的。
+   */
+  monthBlock: { gap: Spacing.two },
   legend: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: Spacing.two,

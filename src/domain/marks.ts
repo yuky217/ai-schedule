@@ -88,6 +88,19 @@ export function describeMark(mark: Mark, now: Date = new Date()): MarkView {
 }
 
 /**
+ * 把大字小字拼成一句能放进一行的话（"3 天后 · 第 2 周年"）。
+ *
+ * 界面上有两处要它（日历日卡里的一行、月历下拉清单里的一行），
+ * 两边必须说同一句话 —— 各写一份迟早会有一边少掉"就是今天"。
+ */
+export function markLine(view: MarkView): string {
+  if (view.headline === '今天') {
+    return view.caption === '就是这天' ? '就是今天' : `今天 · ${view.caption}`;
+  }
+  return `${view.headline} ${view.caption}`;
+}
+
+/**
  * 列表顺序：倒数日在前（越近越靠前），正数日在后（天数越多越靠前）。
  * 这样"最近要发生的事"永远在视野顶部。
  */

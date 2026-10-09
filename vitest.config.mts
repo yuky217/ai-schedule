@@ -21,5 +21,13 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    /**
+     * 把 transform 结果写进磁盘缓存。
+     *
+     * 未开时每次 `vitest run` 都要重编译一遍全部模块（实测冷启动 7 分钟，
+     * 其中 95% 是 transform）—— 改一行代码等一轮编译，回归就被拖成稀罕事。
+     * 缓存按文件内容失效，不会测到旧代码。
+     */
+    fsModuleCache: true,
   },
 });
