@@ -224,6 +224,8 @@ interface AppState {
   updateContainer: (id: string, patch: Partial<Container>) => Promise<void>;
   /** 删容器不删任务：任务退回"不属于任何容器"，避免误删一堆工作 */
   removeContainer: (id: string) => Promise<void>;
+  /** 删项目，并把它名下的成员任务一起软删（子任务 / 打卡 / 提醒级联，复用 removeTask） */
+  removeContainerDeep: (id: string) => Promise<void>;
 
   createMark: (input: CreateMarkInput) => Promise<Mark>;
   updateMark: (id: string, patch: Partial<Mark>) => Promise<void>;
@@ -708,6 +710,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 先把成员任务摘出来，再删容器 —— 顺序反了会留下指向空容器的任务
     const members = get().tasks.filter((task) => task.containerId === id);
     await Promise.all(members.map((task) => taskRepository.update(task.id, { containerId: null })));
+    await containerRepository.softDelete(id);
+    await get().refresh();
+  },
+
+  removeContainerDeep: async (id) => {
+    // 连同成员任务一起删：逐条走 removeTask（它负责子任务/打卡/提醒的级联软删），
+    // 再软删容器本身。先删任务后删容器，避免留下指向已删容器的任务。
+    const members = get().tasks.filter((task) => task.containerId === id);
+    await Promise.all(members.map((task) => get().removeTask(task.id)));
     await containerRepository.softDelete(id);
     await get().refresh();
   },

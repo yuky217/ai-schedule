@@ -1,17 +1,19 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { ChoiceSheet } from '@/components/choice-sheet';
 import { ContainerRow } from '@/components/container-row';
+import type { Container } from '@/domain/container';
 import { EmptyState } from '@/components/empty-state';
 import { GanttChart } from '@/components/gantt-chart';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { CONTAINER_KIND_LABEL, containerStats, DEFAULT_CONTAINER_KIND, type ContainerStats } from '@/domain/container-stats';
-import { ContainerKind } from '@/domain/enums';
+import { ContainerKind, ContainerStatus } from '@/domain/enums';
 import type { GanttItem } from '@/domain/gantt';
 import type { Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
@@ -37,6 +39,9 @@ export default function ProjectsScreen() {
   const containers = useAppStore((state) => state.containers);
   const tasks = useAppStore((state) => state.tasks);
   const createContainer = useAppStore((state) => state.createContainer);
+  const removeContainer = useAppStore((state) => state.removeContainer);
+  const removeContainerDeep = useAppStore((state) => state.removeContainerDeep);
+  const updateContainer = useAppStore((state) => state.updateContainer);
   const shiftTaskByDays = useAppStore((state) => state.shiftTaskByDays);
 
   const [creating, setCreating] = useState(false);
@@ -44,6 +49,39 @@ export default function ProjectsScreen() {
   const [kind, setKind] = useState<ContainerKind>(DEFAULT_CONTAINER_KIND);
   /** 甘特图拖拽期间锁住页面滚动 */
   const [ganttDragging, setGanttDragging] = useState(false);
+  /** 长按某行弹出的操作菜单：指向被按的那一行 */
+  const [menuFor, setMenuFor] = useState<Container | null>(null);
+  /** 改名弹窗 */
+  const [renaming, setRenaming] = useState<Container | null>(null);
+  const [renameText, setRenameText] = useState('');
+  /** 删除确认弹窗 */
+  const [deleting, setDeleting] = useState<Container | null>(null);
+
+  /** 长按菜单的选项：改名 / 标记完成或重开 / 删除（删项目只解绑任务） */
+  const menuOptions = useMemo(() => {
+    if (!menuFor) return [];
+    const done = menuFor.status === ContainerStatus.Done;
+    return [
+      { key: 'rename', label: '改名' },
+      { key: 'toggle', label: done ? '重新开始' : '标记完成' },
+      { key: 'delete', label: '删除', hint: '项目会被删掉' },
+    ];
+  }, [menuFor]);
+
+  const onMenuSelect = (key: string) => {
+    const target = menuFor;
+    setMenuFor(null);
+    if (!target) return;
+    if (key === 'rename') {
+      setRenameText(target.title);
+      setRenaming(target);
+    } else if (key === 'toggle') {
+      const done = target.status === ContainerStatus.Done;
+      void updateContainer(target.id, { status: done ? ContainerStatus.Active : ContainerStatus.Done });
+    } else if (key === 'delete') {
+      setDeleting(target);
+    }
+  };
 
   /** 每个容器的进度：直属任务算，不递归子容器（见 domain/container-stats.ts） */
   const statsByContainer = useMemo(() => {
@@ -121,73 +159,64 @@ export default function ProjectsScreen() {
           </Pressable>
         </View>
       }>
-      {creating || containers.length ? (
-        <Card title={creating ? '新建' : '新建一个'}>
-          {creating ? (
-            <>
-              <TextInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="给它起个名字"
-                placeholderTextColor={theme.textSecondary}
-                autoFocus
-                onSubmitEditing={() => void submit()}
-                style={[
-                  styles.input,
-                  {
-                    color: theme.text,
-                    backgroundColor: theme.background,
-                    borderColor: theme.backgroundSelected,
-                  },
-                ]}
-              />
-              <View style={styles.chips}>
-                {KIND_ORDER.map((option) => {
-                  const active = kind === option;
-                  return (
-                    <Pressable
-                      key={option}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                      onPress={() => setKind(option)}
-                      style={[
-                        styles.chip,
-                        {
-                          backgroundColor: active ? theme.text : theme.background,
-                          borderColor: active ? theme.text : theme.backgroundSelected,
-                        },
-                      ]}>
-                      <ThemedText
-                        type="small"
-                        style={{ color: active ? theme.background : theme.text }}>
-                        {CONTAINER_KIND_LABEL[option]}
-                      </ThemedText>
-                    </Pressable>
-                  );
-                })}
+      {creating ? (
+        <Card title="新建">
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            placeholder="给它起个名字"
+            placeholderTextColor={theme.textSecondary}
+            autoFocus
+            onSubmitEditing={() => void submit()}
+            style={[
+              styles.input,
+              {
+                color: theme.text,
+                backgroundColor: theme.background,
+                borderColor: theme.backgroundSelected,
+              },
+            ]}
+          />
+          <View style={styles.chips}>
+            {KIND_ORDER.map((option) => {
+              const active = kind === option;
+              return (
                 <Pressable
+                  key={option}
                   accessibilityRole="button"
-                  onPress={() => void submit()}
-                  style={[styles.chip, { backgroundColor: theme.text, borderColor: theme.text }]}>
-                  <ThemedText type="small" style={{ color: theme.background }}>
-                    建好
+                  accessibilityState={{ selected: active }}
+                  onPress={() => setKind(option)}
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: active ? theme.text : theme.background,
+                      borderColor: active ? theme.text : theme.backgroundSelected,
+                    },
+                  ]}>
+                  <ThemedText
+                    type="small"
+                    style={{ color: active ? theme.background : theme.text }}>
+                    {CONTAINER_KIND_LABEL[option]}
                   </ThemedText>
                 </Pressable>
-              </View>
-              <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-                目标看方向、项目看进度、文件夹只管分类
+              );
+            })}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void submit()}
+              style={[styles.chip, { backgroundColor: theme.text, borderColor: theme.text }]}>
+              <ThemedText type="small" style={{ color: theme.background }}>
+                建好
               </ThemedText>
-            </>
-          ) : (
-            <Pressable accessibilityRole="button" onPress={() => setCreating(true)} style={styles.linkRow}>
-              <ThemedText type="small" themeColor="textSecondary">
-                新建一个目标 / 项目 / 文件夹
-              </ThemedText>
-              <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
             </Pressable>
-          )}
+          </View>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
+            目标看方向、项目看进度、文件夹只管分类
+          </ThemedText>
         </Card>
-      ) : (
+      ) : null}
+
+      {!creating && !containers.length ? (
         <Card>
           <EmptyState
             icon="albums-outline"
@@ -195,7 +224,7 @@ export default function ProjectsScreen() {
             hint="点右上角的加号建一个，把散着的任务收进去，进度就看得见了"
           />
         </Card>
-      )}
+      ) : null}
 
       {KIND_ORDER.map((groupKind) => {
         const group = containers.filter((container) => container.kind === groupKind && !container.parentId);
@@ -209,6 +238,7 @@ export default function ProjectsScreen() {
                 stats={statsByContainer.get(container.id) ?? containerStats([])}
                 childCount={childCountByContainer.get(container.id) ?? 0}
                 onPress={(target) => router.push(`/container/${target.id}`)}
+                onLongPress={(target) => setMenuFor(target)}
               />
             ))}
           </Card>
@@ -228,6 +258,117 @@ export default function ProjectsScreen() {
           />
         </Card>
       ) : null}
+
+      {/* 长按行弹出的操作菜单：改名 / 标记完成 / 删除，都不用点进详情页 */}
+      <ChoiceSheet
+        visible={menuFor !== null}
+        title={menuFor ? menuFor.title : ''}
+        options={menuOptions}
+        onSelect={onMenuSelect}
+        onClose={() => setMenuFor(null)}
+      />
+
+      {/* 改名弹窗 */}
+      <Modal visible={renaming !== null} transparent animationType="fade" onRequestClose={() => setRenaming(null)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setRenaming(null)}>
+          <Pressable
+            style={[styles.sheetBox, { backgroundColor: theme.background }]}
+            onPress={(e) => e.stopPropagation()}>
+            <ThemedText type="smallBold" style={styles.sheetTitle}>
+              改名
+            </ThemedText>
+            <TextInput
+              value={renameText}
+              onChangeText={setRenameText}
+              autoFocus
+              placeholder="名字"
+              placeholderTextColor={theme.textSecondary}
+              returnKeyType="done"
+              onSubmitEditing={() => {
+                if (renaming && renameText.trim()) {
+                  void updateContainer(renaming.id, { title: renameText.trim() });
+                  setRenaming(null);
+                }
+              }}
+              style={[
+                styles.sheetInput,
+                { color: theme.text, backgroundColor: theme.background, borderColor: theme.backgroundSelected },
+              ]}
+            />
+            <View style={styles.sheetActions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setRenaming(null)}
+                style={[styles.sheetBtn, { backgroundColor: theme.backgroundSelected }]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  取消
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (renaming && renameText.trim()) {
+                    void updateContainer(renaming.id, { title: renameText.trim() });
+                    setRenaming(null);
+                  }
+                }}
+                style={[styles.sheetBtn, { backgroundColor: theme.text }]}>
+                <ThemedText type="small" style={{ color: theme.background }}>
+                  保存
+                </ThemedText>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* 删除确认弹窗：这一步才决定「只解绑」还是「连任务一起删」—— 不替用户下结论 */}
+      <Modal visible={deleting !== null} transparent animationType="fade" onRequestClose={() => setDeleting(null)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setDeleting(null)}>
+          <Pressable
+            style={[styles.sheetBox, { backgroundColor: theme.background }]}
+            onPress={(e) => e.stopPropagation()}>
+            <ThemedText type="smallBold" style={styles.sheetTitle}>
+              删除「{deleting?.title}」？
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.sheetHint}>
+              两种删法，任务不会凭空消失——只是要不要一起带走
+            </ThemedText>
+            <View style={styles.sheetActions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (deleting) void removeContainer(deleting.id);
+                  setDeleting(null);
+                }}
+                style={[styles.sheetBtn, { backgroundColor: theme.backgroundSelected }]}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  只删项目 · 任务保留
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  if (deleting) void removeContainerDeep(deleting.id);
+                  setDeleting(null);
+                }}
+                style={[styles.sheetBtn, { backgroundColor: '#c0392b' }]}>
+                <ThemedText type="small" style={{ color: '#ffffff' }}>
+                  连任务一起删
+                </ThemedText>
+              </Pressable>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setDeleting(null)}
+              style={[styles.sheetBtn, { backgroundColor: theme.backgroundSelected, marginTop: Spacing.two }]}>
+              <ThemedText type="small" themeColor="textSecondary">
+                取消
+              </ThemedText>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
@@ -249,5 +390,17 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   footnote: { fontSize: 12, lineHeight: 16, opacity: 0.8 },
-  linkRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.three,
+  },
+  sheetBox: { width: '100%', maxWidth: 360, borderRadius: Spacing.four, padding: Spacing.three, gap: Spacing.two },
+  sheetTitle: { marginBottom: Spacing.one },
+  sheetHint: { lineHeight: 18 },
+  sheetInput: { borderRadius: Spacing.two, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, fontSize: 15 },
+  sheetActions: { flexDirection: 'row', gap: Spacing.two, marginTop: Spacing.one },
+  sheetBtn: { flex: 1, alignItems: 'center', paddingVertical: Spacing.two, borderRadius: Spacing.three },
 });

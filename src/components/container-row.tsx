@@ -19,9 +19,11 @@ export interface ContainerRowProps {
   /** 子容器数量（文件夹、大项目会有） */
   childCount?: number;
   onPress: (container: Container) => void;
+  /** 长按：列表页用来弹出「改名 / 标记完成 / 删除」菜单，不进详情页 */
+  onLongPress?: (container: Container) => void;
 }
 
-export function ContainerRow({ container, stats, childCount = 0, onPress }: ContainerRowProps) {
+export function ContainerRow({ container, stats, childCount = 0, onPress, onLongPress }: ContainerRowProps) {
   const theme = useTheme();
   const span = describeContainerSpan(container);
   const settled = container.status !== 'active';
@@ -31,6 +33,8 @@ export function ContainerRow({ container, stats, childCount = 0, onPress }: Cont
       accessibilityRole="button"
       accessibilityLabel={container.title}
       onPress={() => onPress(container)}
+      onLongPress={onLongPress ? () => onLongPress(container) : undefined}
+      delayLongPress={400}
       style={({ pressed }) => [
         styles.row,
         { backgroundColor: pressed ? theme.backgroundSelected : theme.backgroundElement },
