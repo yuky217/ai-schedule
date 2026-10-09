@@ -1,6 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -34,6 +39,24 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
   // 行上显示的是"期限"（优先截止），不是"什么时候发生" —— 两者不同，见 taskDue 的注释
   const anchor = taskDue(task);
 
+  // 「未完成 → 完成」那一刻给勾选圈一个弹出反馈：勾从 0 弹到 1（spring 带轻微过冲），
+  // 让"完成了"这件事有正反馈，而不是静默变灰。已完成的行初次渲染不播（prevDone 守住），
+  // 撤销再勾回也不重播残影。
+  const prevDone = useRef(done);
+  const pop = useSharedValue(done ? 1 : 0);
+  useEffect(() => {
+    if (!prevDone.current && done) {
+      pop.value = 0;
+      pop.value = withSpring(1, { stiffness: 360, damping: 16, mass: 0.6 });
+    }
+    prevDone.current = done;
+  }, [done, pop]);
+
+  const iconStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pop.value }],
+    opacity: pop.value,
+  }));
+
   return (
     <Pressable
       onPress={() => onPress?.(task)}
@@ -56,7 +79,11 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
             backgroundColor: done ? theme.text : 'transparent',
           },
         ]}>
-        {done ? <Ionicons name="checkmark" size={15} color={theme.background} /> : null}
+        {done ? (
+          <Animated.View style={iconStyle} pointerEvents="none">
+            <Ionicons name="checkmark" size={15} color={theme.background} />
+          </Animated.View>
+        ) : null}
       </Pressable>
 
       <View style={styles.body}>
