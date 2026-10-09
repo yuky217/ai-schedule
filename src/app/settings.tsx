@@ -242,6 +242,17 @@ export default function SettingsScreen() {
             />
           }
         />
+
+        {/*
+          简约模式：关掉界面上所有"替自己解释"的句子 —— 页面副标题、
+          卡片上那行说明小字、日历底部的形状图例、想法页的开通提示。
+          它摆在基础区而不是"高级功能"后面：它不是进阶能力，反而是**少看一点**。
+        */}
+        <Row
+          title="简约模式"
+          hint="只留内容：不显示副标题、说明小字和图例"
+          right={<Switch value={settings.simpleMode} onValueChange={settings.setSimpleMode} />}
+        />
       </Card>
 
       {/* ---------------- 提醒 ---------------- */}

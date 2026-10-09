@@ -145,7 +145,15 @@ export function buildPlacedTime(
 }
 
 /** 有 endAt 时按原时长平移到新开始时刻；没有就保持 null（时长本来就没定） */
-function shiftEndAt(task: Task, oldStartIso: string, newStartIso: string): string | null {
+/**
+ * 这几个"改期"函数只关心任务的**时间**，所以用 `Pick<Task, 'time'>` 收参数，
+ * 而不是整个 Task。
+ *
+ * 这样"手上只有一段时间、还没有任务"的情形（在日历某天新建一件，
+ * 先解析出文字里的时刻）也能走同一个口径 —— 否则就得为它另写一个
+ * "无任务版"，两份口径迟早算出不同的日子。
+ */
+function shiftEndAt(task: Pick<Task, 'time'>, oldStartIso: string, newStartIso: string): string | null {
   if (!task.time.endAt) return null;
   const oldEnd = new Date(task.time.endAt);
   const oldStart = new Date(oldStartIso);
@@ -185,7 +193,7 @@ export function buildCustomTime(
  * 日程型挪 startAt，截止型挪 dueAt；无时间任务返回 null（不该出现在日历上）。
  * 有 endAt 的同样按时长平移（同 buildPlacedTime：挪位置不挪长度）。
  */
-export function buildRescheduledTime(task: Task, date: Date): TaskTime | null {
+export function buildRescheduledTime(task: Pick<Task, 'time'>, date: Date): TaskTime | null {
   const anchor = taskAnchor(task);
   if (!anchor) return null;
   const old = new Date(anchor);
@@ -281,11 +289,13 @@ export function semanticTargetDate(
  * 23:59 的截止仍然算"那天有安排"：`timeAnchor` 是 startAt ?? dueAt，
  * 所以这条照样出现在日历那一天，不会凭空消失。
  */
-export function buildTimeOnDay(task: Task, date: Date): TaskTime | null {
+export function buildTimeOnDay(task: Pick<Task, 'time'>, date: Date): TaskTime | null {
   if (Number.isNaN(date.getTime())) return null;
 
-  // 已经有时间 → 保留时刻与属性，只换日期
-  if (taskAnchor(task)) return buildRescheduledTime(task, date);
+  // 已经有时间 → 保留时刻与属性，只换日期。
+  // `task.time` 可能是 null（手上只有一段"还没落库的时间"时就是），
+  // 直接问 taskAnchor 会在它内部炸（那里假定 time 是个对象），所以先看一眼。
+  if (task.time && taskAnchor(task)) return buildRescheduledTime(task, date);
 
   const d = new Date(date);
   d.setHours(23, 59, 0, 0);

@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { addDays, addMonths, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
 import { useRouter } from 'expo-router';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Pressable, StyleSheet, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -21,6 +21,7 @@ import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
 import { MonthPlan } from '@/components/month-plan';
 import { Screen } from '@/components/screen';
+import { SideDrawer } from '@/components/side-drawer';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
 import { TimetableView } from '@/components/timetable-view';
@@ -53,8 +54,9 @@ import {
   type MarkView,
 } from '@/domain/marks';
 import { buildMonthPlan } from '@/domain/month-plan';
+import { parseSchedule } from '@/domain/parse-schedule';
 import { buildPlacedTime, buildRetimedSpanTime, buildRetimedTime, buildTimeOnDay } from '@/domain/schedule-presets';
-import { taskAnchor, type Task } from '@/domain/task';
+import { NO_TIME, taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { groupTodos } from '@/domain/todo';
 import { useCrossDayDrag } from '@/hooks/use-cross-day-drag';
@@ -160,6 +162,7 @@ export default function CalendarScreen() {
   const saveCourse = useAppStore((state) => state.saveCourse);
   /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
   const timetableOn = useSettings((state) => state.timetableEnabled);
+  const simpleMode = useSettings((state) => state.simpleMode);
 
   const segments = useMemo(
     () => SEGMENTS.filter((segment) => segment.key !== 'timetable' || timetableOn),
@@ -175,6 +178,16 @@ export default function CalendarScreen() {
   const [timelineDragging, setTimelineDragging] = useState(false);
   /** 月历下方那张"这个月每天都有什么"的清单是否展开 */
   const [monthOpen, setMonthOpenState] = useState(false);
+  /**
+   * 右侧收集箱抽屉开没开。
+   * 它跟底部那条收集箱是**两回事**：底部的是拖拽源头（把待办扔到某天），
+   * 这一层是"看看我还欠着什么" + 直接勾掉 / 点开 —— 而且它在每个视图都在，
+   * 不只是月视图。
+   */
+  const [inboxOpen, setInboxOpen] = useState(false);
+  /** 选中那天那张卡里的"加到这天"草稿 */
+  const [dayDraft, setDayDraft] = useState('');
+  const [addingToDay, setAddingToDay] = useState(false);
   /** 下拉手势正在跟手（期间锁页面滚动，否则手指一竖页面跟着滚） */
   const [monthPulling, setMonthPulling] = useState(false);
 
@@ -224,6 +237,35 @@ export default function CalendarScreen() {
   }, [loadScheduledBetween, rangeKey, dataVersion]);
 
   const openTask = useCallback((task: Task) => router.push(`/task/${task.id}`), [router]);
+  const capture = useAppStore((state) => state.capture);
+
+  /**
+   * 在**选中的那天**加一件（月视图下方那张卡里的输入框）。
+   *
+   * 为什么要有这个入口：月历上点一天、看到"这天有空"，下一个念头就是"那安排点什么"。
+   * 以前只能绕到别处去记（首页「＋」→ 记完还要再回来排期），
+   * 而记完不带时间的会落进收集箱 —— **在月历上根本不出现**，
+   * 于是"我明明记了，日历却没反应"。这里记下来的就直接属于这天。
+   *
+   * 时间怎么定：文字里写了时刻（"下午三点开会"）就留那个时刻、只把日子换到这天；
+   * 没写就落到这天 23:59 作为截止 —— 与收集箱拖到日期格是同一份口径
+   * （`buildTimeOnDay`），不在这里另写一个数。
+   */
+  const addToSelectedDay = useCallback(async () => {
+    const text = dayDraft.trim();
+    if (!text || addingToDay) return;
+    setAddingToDay(true);
+    try {
+      const parsed = parseSchedule(text);
+      const time = buildTimeOnDay({ time: parsed.time ?? NO_TIME }, selected);
+      // 兜底到 undefined（= "我没指定时间"）而不是硬塞一个 null：
+      // 落库那边 time 的缺席用的是 undefined，不是 null（null 在别处有别的含义）
+      await capture({ text, time: time ?? undefined });
+      setDayDraft('');
+    } finally {
+      setAddingToDay(false);
+    }
+  }, [dayDraft, addingToDay, selected, capture]);
   const toggleTaskDone = useAppStore((state) => state.toggleTaskDone);
   const toggleById = useCallback(
     (task: Task) => {
@@ -933,6 +975,44 @@ export default function CalendarScreen() {
             ) : null}
           </View>
         ) : undefined
+      }
+      /*
+        右侧那一层收集箱：**每个视图都能拉出来**。
+        底部那条只在月视图有（它是拖拽源头，非月视图没有"日期格"这个落点），
+        而"我还欠着什么"这件事在任何视图都成立，所以另开这一层 ——
+        平时只露一条把手，不占版面。
+      */
+      overlay={
+        <SideDrawer open={inboxOpen} onOpenChange={setInboxOpen}>
+          <View style={styles.sideHead}>
+            <ThemedText type="smallBold">收集箱 · {inbox.length} 件</ThemedText>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setInboxOpen(false);
+                router.push('/inbox');
+              }}
+              style={({ pressed }) => [styles.sideLink, { opacity: pressed ? 0.7 : 1 }]}>
+              <ThemedText type="small" themeColor="textSecondary">
+                去收集箱 ›
+              </ThemedText>
+            </Pressable>
+          </View>
+          {inbox.length ? (
+            inbox.map((task) => (
+              <TaskRow
+                key={task.id}
+                task={task}
+                onPress={guardedOpen}
+                onComplete={guardedToggle}
+              />
+            ))
+          ) : (
+            <ThemedText type="small" themeColor="textSecondary">
+              收集箱是空的 —— 记东西时不写时间，就先落在这儿
+            </ThemedText>
+          )}
+        </SideDrawer>
       }>
       <View ref={containerRef} style={styles.container} collapsable={false}>
         <View style={styles.toolbar}>
@@ -1039,6 +1119,43 @@ export default function CalendarScreen() {
                         这一天没有安排
                       </ThemedText>
                     )}
+
+                    {/*
+                      「加到这天」：记下来的就直接属于这天，月历上立刻有点。
+                      常驻一行（不用先点「＋」再展开）—— 用户走到这一步已经决定了
+                      "这天要加一件"，再让他点一次只是多一次操作。
+                    */}
+                    <View
+                      style={[
+                        styles.dayAdd,
+                        { borderColor: theme.backgroundSelected, backgroundColor: theme.background },
+                      ]}>
+                      <Ionicons name="add" size={16} color={theme.textSecondary} />
+                      <TextInput
+                        value={dayDraft}
+                        onChangeText={setDayDraft}
+                        onSubmitEditing={() => void addToSelectedDay()}
+                        placeholder={`加到 ${format(selected, 'M月d日')}`}
+                        placeholderTextColor={theme.textSecondary}
+                        returnKeyType="done"
+                        style={[styles.dayAddInput, { color: theme.text }]}
+                      />
+                      {dayDraft.trim() ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`加到 ${format(selected, 'M月d日')}`}
+                          disabled={addingToDay}
+                          onPress={() => void addToSelectedDay()}
+                          style={({ pressed }) => [
+                            styles.dayAddButton,
+                            { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
+                          ]}>
+                          <ThemedText type="smallBold" style={{ color: theme.background }}>
+                            加
+                          </ThemedText>
+                        </Pressable>
+                      ) : null}
+                    </View>
                   </Card>
 
                   {/*
@@ -1169,8 +1286,9 @@ export default function CalendarScreen() {
           图例区。待办视图整个不渲染它 —— 那一栏的 legend 是空串，
           而这段逻辑还会因为"今天没有已排的事"补一句"这个范围内还没有安排"，
           在待办里就是错的话（待办的存在意义正是"没时间的也在"）。
+          简约模式下也整块不渲染：图例是说明书，开简约的人已经不需要它了。
         */}
-        {mode === 'todo' ? null : (
+        {mode === 'todo' || simpleMode ? null : (
           <View style={[styles.legend, { borderColor: theme.backgroundSelected }]}>
             <ThemedText type="small" themeColor="textSecondary" style={styles.legendText}>
               {mode === 'timetable'
@@ -1424,6 +1542,25 @@ const styles = StyleSheet.create({
   drawerHint: { flex: 1, textAlign: 'right' },
   /** 「还有 N 件 · 去收集箱」—— 居中的一行轻提示，不是主操作 */
   moreRow: { paddingTop: Spacing.two, alignItems: 'center' },
+  sideHead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+    paddingBottom: Spacing.one,
+  },
+  sideLink: { paddingVertical: 2 },
+  dayAdd: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 3,
+  },
+  dayAddInput: { flex: 1, fontSize: 14, lineHeight: 20, paddingVertical: 2 },
+  dayAddButton: { paddingHorizontal: Spacing.two, paddingVertical: 3, borderRadius: Spacing.two },
   examRow: {
     flexDirection: 'row',
     alignItems: 'center',

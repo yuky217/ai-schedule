@@ -11,7 +11,7 @@ import {
   type CourseSession,
   type Term,
 } from '@/domain/course';
-import type { CaptureSource, Priority, SyncState } from '@/domain/enums';
+import { ContainerKind, type CaptureSource, type Priority, type SyncState } from '@/domain/enums';
 import type { CalEvent } from '@/domain/event';
 import type { FocusSession } from '@/domain/focus';
 import type { Idea } from '@/domain/idea';
@@ -231,10 +231,19 @@ export interface ContainerRow extends BaseRow {
   status: string;
 }
 
+/**
+ * 容器类型归一：库里还可能躺着 `kind='folder'` 的老行（「文件夹」这个类型已撤），
+ * 它们一律当项目读出来 —— 东西还在、位置不变，只是那个多余的类型没了。
+ * 兜底也是这个方向：认不出的 kind 全归项目，绝不返回 undefined 让界面开天窗。
+ */
+export function normalizeContainerKind(value: string): Container['kind'] {
+  return value === ContainerKind.Goal ? ContainerKind.Goal : ContainerKind.Project;
+}
+
 export function containerFromRow(row: ContainerRow): Container {
   return {
     ...readBase(row),
-    kind: row.kind as Container['kind'],
+    kind: normalizeContainerKind(row.kind),
     title: row.title,
     note: row.note,
     parentId: row.parent_id,

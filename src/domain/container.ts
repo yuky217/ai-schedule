@@ -2,11 +2,13 @@ import type { BaseEntity } from './base';
 import type { ChainKind, ContainerKind, ContainerStatus, TaskKind } from './enums';
 
 /**
- * 容器：目标 / 项目 / 文件夹（主文档 5.3）。
+ * 容器：目标 / 项目（主文档 5.3）。
  *
  * 注意：甘特图只是容器的**一种视图**，不是新实体；
  * 排序、分组、进度汇总都基于 containerId 做，避免模型膨胀。
- * 支持 parentId 自嵌套 —— 文件夹可以套文件夹，项目可以挂在目标下。
+ * 支持 parentId 自嵌套 —— 项目可以挂在目标下，项目里也能再套项目。
+ * （曾经还有「文件夹」这一类，2026-10-10 撤掉：它跟项目在界面上没有区别，
+ *   多出来的只有一次"该选哪个"的犹豫。）
  */
 export interface Container extends BaseEntity {
   kind: ContainerKind;

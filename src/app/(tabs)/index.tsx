@@ -324,8 +324,13 @@ export default function HomeScreen() {
         </Card>
       ) : null}
 
-      {/* 专注启动：指针固定、左右滑选 —— 不用瞄准，停在哪件就是哪件 */}
-      <Card>
+      {/*
+        专注启动：指针固定、左右滑选 —— 不用瞄准，停在哪件就是哪件。
+        这张卡**没有背景框**（bare）：它是页面的重心，不是"又一张卡"。
+        上面下面那些有框的（下一节课、习惯）都是"顺便看一眼"的东西，
+        靠材质把这两类分开 —— 别让它们排成一串同样重的方块。
+      */}
+      <Card bare>
         {/* 没有标题没有提示语，orb 自己站一行；padding 是留给 orb 下面那行字（caption）的，它绝对定位、不占布局 */}
         <View style={styles.focusOrbRow}>
           <GrowthOrb seconds={growthSeconds} size={72} />

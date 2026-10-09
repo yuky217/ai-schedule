@@ -45,6 +45,7 @@ export default function IdeasScreen() {
 
   const aiEnabled = useSettings((state) => state.aiEnabled);
   const semanticSearchOn = useSettings((state) => state.capabilities[AiCapability.SemanticSearch]);
+  const simpleMode = useSettings((state) => state.simpleMode);
 
   const [keyword, setKeyword] = useState('');
   /** 正在拆的那条想法（null = 面板没开） */
@@ -119,9 +120,13 @@ export default function IdeasScreen() {
           <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
         </Pressable>
       }>
+      {/*
+        想法页这一格就是为灵感生的（ideaOnly）：不给时间/清单/重复/提醒 ——
+        想法不排期也不催办，摆着那四个键只能让人以为"灵感也得定个时间"。
+      */}
       <CaptureInput
         placeholder="记一个念头、一点灵感…"
-        showIdeaToggle={false}
+        ideaOnly
         onSubmit={async (text) => {
           await capture({ text, markedAsInspiration: true });
         }}
@@ -142,7 +147,8 @@ export default function IdeasScreen() {
         />
       </View>
 
-      {!semanticReady ? (
+      {/* 「去开语义检索」这句也是说明书 —— 简约模式下不念给用户听 */}
+      {!semanticReady && !simpleMode ? (
         <Card>
           <View style={styles.tipRow}>
             <Ionicons name="bulb-outline" size={16} color={theme.textSecondary} />

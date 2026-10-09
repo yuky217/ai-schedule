@@ -28,7 +28,7 @@ import { useAppStore } from '@/state/app-store';
  * 甘特图在这里是**视图**而不是新实体：它读的就是容器的 startAt/endAt
  * 加上成员任务的时间，没有自己的表、自己的状态。
  */
-const KIND_ORDER: ContainerKind[] = [ContainerKind.Goal, ContainerKind.Project, ContainerKind.Folder];
+const KIND_ORDER: ContainerKind[] = [ContainerKind.Goal, ContainerKind.Project];
 
 export default function ProjectsScreen() {
   const theme = useTheme();

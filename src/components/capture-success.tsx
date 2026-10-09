@@ -8,13 +8,18 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
- * 记完的轻反馈：大勾一跳 + 归属一行，1.6 秒自动关页，点一下立即关。
+ * 记完的轻反馈：大勾一跳 + 归属一行，0.8 秒自动关页，点一下立即关。
  *
  * 为什么不是整张结果卡：记完的那页唯一的职责是"告诉用户成了"，
  * 为这个信号让用户再按一次关闭是纯负担。通行的做法是**成功态动效 + 自动消失**
  * （支付完成页的大勾、Gmail 的 snackbar、iOS 的触觉反馈都是同一个思路：
  * 动作已成功，反馈要自己退场，不能变成一道新工序）。
+ *
+ * 0.8 秒是"看得清"和"别挡路"的折中：勾跳到位约 0.3 秒，剩下半秒够瞄一眼
+ * 「已归入收集箱」那行字。再短就变成"闪了一下没看清"，再长（早先是 1.6 秒）
+ * 每次记东西都要干等 —— 记录是要一口气连记好几条的，等待会打断节奏。
  */
+const AUTO_DISMISS_MS = 800;
 export function CaptureSuccess({
   label,
   title,
@@ -39,19 +44,21 @@ export function CaptureSuccess({
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     }
     Animated.parallel([
+      // 比原先硬一点（friction 5→7、tension 160→220）：勾要更快跳到位，
+      // 否则动效还没站稳页面就关了，看着像没播完
       Animated.spring(scale, {
         toValue: 1,
-        friction: 5,
-        tension: 160,
+        friction: 7,
+        tension: 220,
         useNativeDriver: Platform.OS !== 'web',
       }),
       Animated.timing(fade, {
         toValue: 1,
-        duration: 180,
+        duration: 120,
         useNativeDriver: Platform.OS !== 'web',
       }),
     ]).start();
-    const timer = setTimeout(onDone, 1600);
+    const timer = setTimeout(onDone, AUTO_DISMISS_MS);
     return () => clearTimeout(timer);
   }, [onDone, scale, fade]);
 

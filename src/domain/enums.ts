@@ -50,11 +50,21 @@ export const CompletionRule = {
 } as const;
 export type CompletionRule = (typeof CompletionRule)[keyof typeof CompletionRule];
 
-/** 容器类型（主文档 5.3）：甘特图只是视图，不是新实体 */
+/**
+ * 容器类型（主文档 5.3）：甘特图只是视图，不是新实体。
+ *
+ * 只有「目标」和「项目」两种 —— **「文件夹」已经撤掉**（2026-10-10）：
+ * 它在界面上跟项目长得一样（都能装任务、都能套娃、都出现在同一个列表里），
+ * 唯一的区别是名字。多一个类型，就多一次"建的时候该选哪个"的判断，
+ * 和一处永远要跟着维护的文案，换来的却是"这俩到底有什么不一样"的困惑。
+ *
+ * 库里历史数据可能还有 kind='folder' 的行。**不写迁移改它们** ——
+ * 读库时统一归成项目（见 `db/mappers.containerFromRow`）：
+ * 存量数据一个不丢，而写迁移要动整张表，收益为零。
+ */
 export const ContainerKind = {
   Goal: 'goal',
   Project: 'project',
-  Folder: 'folder',
 } as const;
 export type ContainerKind = (typeof ContainerKind)[keyof typeof ContainerKind];
 

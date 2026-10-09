@@ -171,10 +171,18 @@ interface AppState {
    * 刻意不给时间：没时间就是"待规划"（收集箱的定义），想排期再去任务详情页或日历拖。
    */
   addTaskToContainer: (containerId: string, title: string) => Promise<Task>;
+  /** 一口气加好几条：一行一条写好，一次全建（只刷新一次） */
+  addTasksToContainer: (containerId: string, titles: readonly string[]) => Promise<Task[]>;
 
   /** 子任务：读取 / 新增 / 勾选 / 删除。父任务完成态由子任务自动推导 */
   loadSubtasks: (parentId: string) => Promise<Task[]>;
   addSubtask: (parentId: string, title: string) => Promise<Task>;
+  /**
+   * 一口气加好几条（一行一步地写完之后一次提交）。
+   * 与 addSubtask 的区别不只是"循环调几次"：它**只 refresh 一次** ——
+   * 十条子项刷十次页面，会看到列表一条条蹦出来，像是卡了。
+   */
+  addSubtasks: (parentId: string, titles: readonly string[]) => Promise<Task[]>;
   setSubtaskDone: (subtaskId: string, done: boolean) => Promise<void>;
   removeSubtask: (subtaskId: string) => Promise<void>;
 
@@ -533,7 +541,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     await taskRepository.create(task);
     await get().refresh();
+
     return task;
+  },
+
+  /**
+   * 一口气加好几条（项目页里一行一条写好，一次全建）。
+   * 与子项批量同理：只 refresh 一次，条子才不会一条条往外蹦。
+   */
+  addTasksToContainer: async (containerId, titles) => {
+    if (!titles.length) return [];
+    const created = titles.map((title) =>
+      createTask({
+        title,
+        kind: TaskKind.Execution,
+        containerId,
+        source: CaptureSource.Manual,
+      }),
+    );
+    for (const task of created) {
+      await taskRepository.create(task);
+    }
+    await get().refresh();
+    return created;
   },
 
   loadSubtasks: async (parentId) => taskRepository.listSubtasks(parentId),
@@ -543,6 +573,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     await taskRepository.create(subtask);
     await get().refresh();
     return subtask;
+  },
+
+  addSubtasks: async (parentId, titles) => {
+    if (!titles.length) return [];
+    const created = titles.map((title) => createSubtask(parentId, title));
+    for (const subtask of created) {
+      await taskRepository.create(subtask);
+    }
+    await get().refresh();
+    return created;
   },
 
   setSubtaskDone: async (subtaskId, done) => {

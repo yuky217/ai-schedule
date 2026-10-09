@@ -37,6 +37,7 @@ import { describePastWindow, planEventShift, toLooseTodo } from '@/domain/past-e
 import { describeNextFire } from '@/domain/reminder';
 import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
+import { splitSubtaskLines } from '@/domain/subtask-lines';
 import { subtaskProgress } from '@/domain/subtask-progress';
 import { taskDisplayState } from '@/domain/task-state';
 import { taskAnchor, type RepeatRule, type Task, type TaskTime } from '@/domain/task';
@@ -60,6 +61,9 @@ const STATUS_OPTIONS: TaskStatusValue[] = [
   TaskStatus.Doing,
   TaskStatus.Waiting,
 ];
+
+/** 打字停下多久就自动存一次。比这短会一个字写一次库，比这长就不叫"自动"了 */
+const AUTOSAVE_DELAY_MS = 600;
 
 /**
  * 可切换的任务类型。
@@ -103,7 +107,7 @@ export default function TaskDetailScreen() {
   const checkInAction = useAppStore((state) => state.checkIn);
   const undoCheckInAction = useAppStore((state) => state.undoCheckIn);
   const loadSubtasksAction = useAppStore((state) => state.loadSubtasks);
-  const addSubtaskAction = useAppStore((state) => state.addSubtask);
+  const addSubtasksAction = useAppStore((state) => state.addSubtasks);
   const toggleSubtaskAction = useAppStore((state) => state.setSubtaskDone);
   const deleteSubtaskAction = useAppStore((state) => state.removeSubtask);
 
@@ -207,13 +211,24 @@ export default function TaskDetailScreen() {
     if (fresh) setTask(fresh);
   }, [id, loadSubtasksAction, loadTask]);
 
+  /**
+   * 一次提交**好几条**：输入框里一行一步，写完点「加」全部建成。
+   *
+   * 拆一件事本来就是一口气想完的（"查资料 / 写提纲 / 发给小王"），
+   * 建一条、点一次、再建一条，是把一次思考切成三次操作。
+   * 只写一行时行为跟以前一样 —— 老用法不会被打破。
+   */
+  /** 输入框里真的有东西可加（空行、纯符号不算） */
+  const canAddSubtask = splitSubtaskLines(newSubtask).length > 0;
+
   const addSubtaskNow = useCallback(async () => {
-    const text = newSubtask.trim();
-    if (!id || !text) return;
+    const lines = splitSubtaskLines(newSubtask);
+    if (!id || !lines.length) return;
     setNewSubtask('');
-    await addSubtaskAction(id, text);
+    // 只写一行也走批量那条路：它本来就是"建 N 条 + 刷一次"，N=1 时行为完全一致
+    await addSubtasksAction(id, lines);
     await reloadAfterSubtaskChange();
-  }, [id, newSubtask, addSubtaskAction, reloadAfterSubtaskChange]);
+  }, [id, newSubtask, addSubtasksAction, reloadAfterSubtaskChange]);
 
   const setSubtaskDone = useCallback(
     async (childId: string, done: boolean) => {
@@ -292,6 +307,49 @@ export default function TaskDetailScreen() {
     }
     await patch(patchGoals);
   }, [task, patch]);
+
+  /**
+   * 输入即存（2026-10-10）。
+   *
+   * 以前这几个框只在失焦（onBlur）时存：手点一下别处确实会存，但**直接返回**
+   * —— 手势返回、安卓返回键、点下面 Tab 走 —— 压根不触发失焦，那一屏字就这么没了。
+   * 而备注恰恰是"想到什么赶紧记一句"的地方，丢一次就再也想不起来。
+   *
+   * 现在打字停下来 `AUTOSAVE_DELAY_MS` 就自己写一次库；
+   * 失焦、以及离开页面时立刻补一次（下面 flushPending）。
+   */
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+
+  const scheduleSave = useCallback((key: string, run: () => void) => {
+    const timers = saveTimers.current;
+    if (timers[key]) clearTimeout(timers[key]);
+    timers[key] = setTimeout(() => {
+      delete timers[key];
+      void run();
+    }, AUTOSAVE_DELAY_MS);
+  }, []);
+
+  /** 把还挂着的改动立刻写下去：失焦时用，离开页面时也要用 */
+  const flushPending = useCallback(() => {
+    const timers = saveTimers.current;
+    for (const key of Object.keys(timers)) {
+      if (timers[key]) clearTimeout(timers[key]);
+      delete timers[key];
+    }
+    // 全存一遍，而不是只存"刚动过的那个"：
+    // 用户可能在标题框改了字、又在备注框改了字，然后直接返回 ——
+    // 只存一个等于另一处还是丢。
+    void saveTitle();
+    void saveNote();
+    void saveLocation();
+    void saveWaiting();
+    void saveGoals();
+  }, [saveTitle, saveNote, saveLocation, saveWaiting, saveGoals]);
+
+  /** 离开页面时补一次。返回键 / 手势返回都不经过失焦，只有这里拦得住 */
+  const flushRef = useRef(flushPending);
+  flushRef.current = flushPending;
+  useEffect(() => () => flushRef.current(), []);
 
   /**
    * 打卡 / 撤销今天。
@@ -671,8 +729,9 @@ export default function TaskDetailScreen() {
           onChangeText={(value) => {
             setNote(value);
             noteRef.current = value;
+            scheduleSave('note', saveNote);
           }}
-          onBlur={() => void saveNote()}
+          onBlur={flushPending}
           multiline
           placeholder="备注（自动保存）"
           placeholderTextColor={theme.textSecondary}
@@ -844,7 +903,7 @@ export default function TaskDetailScreen() {
             ? `${subtaskProgress(subtasks).done}/${subtasks.length} 完成${
                 subtaskProgress(subtasks).allDone ? ' · 已全部完成' : ''
               }`
-            : '把这件事拆成几步，做起来更容易开始'
+            : '一行一步，一次可以写好几步'
         }>
         {subtasks.map((child) => (
           <View key={child.id} style={styles.subtaskRow}>
@@ -887,17 +946,37 @@ export default function TaskDetailScreen() {
           </View>
         ))}
 
+        {/*
+          一行一步：写好几步再点「加」，一次全建成（splitSubtaskLines 定怎么切）。
+          **必须有多行**：拆一件事是连着想出来的，一个一个加会把一次思考切成好几次操作。
+          也留了 onSubmitEditing —— 键盘上有「完成」键的人不用挪手去找按钮。
+        */}
         <View style={[styles.subtaskAdd, { borderColor: theme.backgroundSelected }]}>
           <Ionicons name="add" size={16} color={theme.textSecondary} />
           <TextInput
             value={newSubtask}
             onChangeText={setNewSubtask}
             onSubmitEditing={() => void addSubtaskNow()}
-            placeholder="加一步，点键盘上的「完成」"
+            placeholder="一行一步，可以写好几步"
             placeholderTextColor={theme.textSecondary}
             returnKeyType="done"
+            multiline
             style={[styles.subtaskInput, { color: theme.text }]}
           />
+          {canAddSubtask ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="加上这几步"
+              onPress={() => void addSubtaskNow()}
+              style={({ pressed }) => [
+                styles.subtaskAddButton,
+                { backgroundColor: theme.text, opacity: pressed ? 0.8 : 1 },
+              ]}>
+              <ThemedText type="smallBold" style={{ color: theme.background }}>
+                加
+              </ThemedText>
+            </Pressable>
+          ) : null}
         </View>
       </Card>
 
@@ -1291,13 +1370,20 @@ const styles = StyleSheet.create({
   subtaskDone: { textDecorationLine: 'line-through' },
   subtaskAdd: {
     flexDirection: 'row',
-    alignItems: 'center',
+    // 输入框现在是多行的：`center` 会让「加」按钮跟着往下跑，贴到中间去
+    alignItems: 'flex-start',
     gap: Spacing.one,
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: Spacing.two,
     marginTop: Spacing.one,
   },
-  subtaskInput: { flex: 1, fontSize: 14, lineHeight: 20, paddingVertical: 2 },
+  subtaskInput: { flex: 1, fontSize: 14, lineHeight: 20, paddingVertical: 2, maxHeight: 120 },
+  subtaskAddButton: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 3,
+    borderRadius: Spacing.two,
+    marginTop: -2,
+  },
   goalRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   goalLabel: { width: 72 },
   goalInput: {

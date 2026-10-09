@@ -1,4 +1,5 @@
 import type { BaseEntity } from './base';
+import { TimeAttribute } from './enums';
 import type {
   CaptureSource,
   CompletionRule,
@@ -6,7 +7,6 @@ import type {
   RepeatFreq,
   TaskKind,
   TaskStatus,
-  TimeAttribute,
 } from './enums';
 
 /** 重复规则（时长 / 习惯型）："每天"、"每周 3 次" */
@@ -31,6 +31,20 @@ export interface TaskTime {
   /** 截止时间（ddl） */
   dueAt?: string | null;
 }
+
+/**
+ * "没有时间"这个值。
+ *
+ * 凡是"手上还没有时间、但要走一遍时间口径"的地方（比如在日历某天新建一件，
+ * 先拿文字里解析出来的时间去问 `buildTimeOnDay`）都用它当空值 ——
+ * 不要各写一份 `{ attribute: 'none' }` 字面量，那样改口径时会漏掉一处。
+ */
+export const NO_TIME: TaskTime = {
+  attribute: TimeAttribute.None,
+  startAt: null,
+  endAt: null,
+  dueAt: null,
+};
 
 /**
  * 进度：支撑"够时长 / 够频率自动完成"。

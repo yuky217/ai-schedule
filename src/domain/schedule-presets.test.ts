@@ -274,6 +274,28 @@ describe('buildTimeOnDay', () => {
     expect(at.getMinutes()).toBe(15);
   });
 
+  it('还没有任务、手上只有一段时间时也能用（在日历某天新建一件走这条路）', () => {
+    // 什么都没解析出来 → 就是那天的 23:59 截止
+    expect(buildTimeOnDay({ time: noTime().time }, tomorrow)).toEqual(
+      buildTimeOnDay(noTime(), tomorrow),
+    );
+    // 文字里写了时刻 → 时刻留着，只把日子换到这天
+    const withTime = buildTimeOnDay(
+      {
+        time: {
+          attribute: TimeAttribute.Fixed,
+          startAt: new Date(2026, 9, 3, 15, 0).toISOString(),
+          endAt: null,
+          dueAt: null,
+        },
+      },
+      new Date(2026, 9, 20),
+    )!;
+    const at = new Date(withTime.startAt!);
+    expect(at.getDate()).toBe(20);
+    expect(at.getHours()).toBe(15);
+  });
+
   it('⭐ 与词片同一口径：点「明天」与拖到明天那一格，结果必须一模一样', () => {
     expect(buildTimeOnDay(noTime(), tomorrow)).toEqual(
       buildSemanticTime(noTime(), 'tomorrow', wed),

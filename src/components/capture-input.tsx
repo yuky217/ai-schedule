@@ -64,6 +64,14 @@ export interface CaptureInputProps {
   autoFocus?: boolean;
   submitLabel?: string;
   showIdeaToggle?: boolean;
+  /**
+   * 整条就是"记灵感"用的（想法页）。
+   *
+   * 想法**不排期、不提醒、不归清单**，所以那四个快捷设置在这儿一个都不该出现 ——
+   * 摆着就是误导：用户会去点「时间」，点了才发现"灵感"根本用不上，
+   * 于是怀疑是自己哪儿没弄对。既然这一格只有一种归属，界面就只给一种可能。
+   */
+  ideaOnly?: boolean;
   /** 可选的归属清单（来自 store 的容器） */
   containers?: Container[];
   /** 时间面板顶部的快捷预设（如"今天 18:00"）。不传就只有手选 */
@@ -78,14 +86,19 @@ export function CaptureInput({
   autoFocus,
   submitLabel = '记下',
   showIdeaToggle = true,
+  ideaOnly = false,
   containers,
   timePresets,
   onSubmit,
 }: CaptureInputProps) {
   const theme = useTheme();
   const [text, setText] = useState('');
-  const [asIdea, setAsIdea] = useState(false);
+  /** 用户在记录页自己勾的「这是灵感」；想法页不用它（那边 ideaOnly 恒真） */
+  const [ideaToggled, setIdeaToggled] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  /** 想法态：整条就是为灵感生的，或者用户当场勾了 */
+  const asIdea = ideaOnly || ideaToggled;
 
   /* 快捷设置的草稿：都留到提交那一刻才写库 */
   const [sheet, setSheet] = useState<Sheet>(null);
@@ -147,7 +160,7 @@ export function CaptureInput({
 
   const reset = () => {
     setText('');
-    setAsIdea(false);
+    setIdeaToggled(false);
     setTime(null);
     setContainerId(null);
     setRepeat(null);
@@ -192,7 +205,7 @@ export function CaptureInput({
     ...(containers ?? []).map((c) => ({
       key: c.id,
       label: c.title,
-      hint: c.kind === 'goal' ? '目标' : c.kind === 'folder' ? '文件夹' : '项目',
+      hint: c.kind === 'goal' ? '目标' : '项目',
     })),
   ];
   const currentContainer = (containers ?? []).find((c) => c.id === containerId) ?? null;
@@ -208,6 +221,49 @@ export function CaptureInput({
     { key: REMINDER_OFF, label: '不提醒' },
     ...REMINDER_PRESETS.map((p) => ({ key: String(p.minutes), label: p.label })),
   ];
+
+  /**
+   * 快捷设置那一排。想法态下为 null —— 想法不排期、不提醒、也不归清单，
+   * 这四个键摆在那儿只会让人以为"灵感也得定个时间"。
+   *
+   * 提成变量而不是在 JSX 里写三目：这一排要么整排在、要么整排不在，
+   * 塞进三目里会把它下面那几行的缩进全带歪。
+   */
+  const quickRow = asIdea ? null : (
+    <View style={styles.quickRow}>
+      <QuickButton
+        icon="time-outline"
+        label={timeChipLabel}
+        active={Boolean(timeChipTime)}
+        onPress={() => {
+          setDraft(timeChipTime ? draftFromTask({ time: timeChipTime }) : defaultDraft());
+          setSheet('time');
+        }}
+        onClear={time ? () => setTime(null) : undefined}
+      />
+      <QuickButton
+        icon="folder-outline"
+        label={currentContainer ? currentContainer.title : '清单'}
+        active={Boolean(currentContainer)}
+        onPress={() => setSheet('list')}
+        onClear={currentContainer ? () => setContainerId(null) : undefined}
+      />
+      <QuickButton
+        icon="repeat-outline"
+        label={repeat ? describeRepeat(repeat) : '重复'}
+        active={Boolean(repeat)}
+        onPress={() => setSheet('repeat')}
+        onClear={repeat ? () => setRepeat(null) : undefined}
+      />
+      <QuickButton
+        icon="notifications-outline"
+        label={reminderLabel}
+        active={reminderValue != null}
+        onPress={() => setSheet('reminder')}
+        onClear={reminder !== undefined ? () => setReminder(undefined) : undefined}
+      />
+    </View>
+  );
 
   return (
     <View
@@ -245,45 +301,16 @@ export function CaptureInput({
         </Pressable>
       </View>
 
-      {/* 快捷设置：默认是灰的，设过之后亮起来并显示当前值。
-          时间那一格同时承担"自动识别的结果"—— 所以它亮不代表用户设过，
-          只代表"这条有时间了"。想改就点它，想清掉长按（只有手动值可清）。 */}
-      <View style={styles.quickRow}>
-        <QuickButton
-          icon="time-outline"
-          label={timeChipLabel}
-          active={Boolean(timeChipTime)}
-          onPress={() => {
-            setDraft(timeChipTime ? draftFromTask({ time: timeChipTime }) : defaultDraft());
-            setSheet('time');
-          }}
-          onClear={time ? () => setTime(null) : undefined}
-        />
-        <QuickButton
-          icon="folder-outline"
-          label={currentContainer ? currentContainer.title : '清单'}
-          active={Boolean(currentContainer)}
-          onPress={() => setSheet('list')}
-          onClear={currentContainer ? () => setContainerId(null) : undefined}
-        />
-        <QuickButton
-          icon="repeat-outline"
-          label={repeat ? describeRepeat(repeat) : '重复'}
-          active={Boolean(repeat)}
-          onPress={() => setSheet('repeat')}
-          onClear={repeat ? () => setRepeat(null) : undefined}
-        />
-        <QuickButton
-          icon="notifications-outline"
-          label={reminderLabel}
-          active={reminderValue != null}
-          onPress={() => setSheet('reminder')}
-          onClear={reminder !== undefined ? () => setReminder(undefined) : undefined}
-        />
-      </View>
+      {/*
+        快捷设置：默认是灰的，设过之后亮起来并显示当前值。
+        时间那一格同时承担"自动识别的结果"—— 所以它亮不代表用户设过，
+        只代表"这条有时间了"。想改就点它，想清掉长按（只有手动值可清）。
+        想法态下整排都不出现（见 quickRow 的定义）。
+      */}
+      {quickRow}
 
-      {showIdeaToggle ? (
-        <Pressable style={styles.toggleRow} onPress={() => setAsIdea((v) => !v)}>
+      {showIdeaToggle && !ideaOnly ? (
+        <Pressable style={styles.toggleRow} onPress={() => setIdeaToggled((v) => !v)}>
           <View
             style={[
               styles.miniCheckbox,

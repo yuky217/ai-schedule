@@ -46,6 +46,18 @@ export interface SettingsState {
    * 关掉不只是藏起「课」那一栏：日/周视图里的课程背景带也一起不画。
    */
   timetableEnabled: boolean;
+  /**
+   * 简约模式：关掉界面上所有"替自己解释"的文字 ——
+   * 页面副标题、卡片上那行小字（hint）、日历底部的形状图例、记录页的提示行。
+   *
+   * **只关说明书，不关数据**：任务上的时间、提醒几点是内容，把它们关掉
+   * App 就没法用了。关的是那些"长按可以拖到…""考试不带完成态…"这类句子 ——
+   * 用熟之后它们只剩噪音，而且它们一多，界面就在跟人说话，而不是让人看内容。
+   *
+   * 默认**关**：第一次来的人还不知道那些圆点是什么意思，图例这时候有用。
+   * 它是个开关而不是直接删掉，正因为"有没有用"取决于用户用多久。
+   */
+  simpleMode: boolean;
 
   setAdvancedEnabled: (value: boolean) => void;
   setAiEnabled: (value: boolean) => void;
@@ -55,6 +67,7 @@ export interface SettingsState {
   setHapticsEnabled: (value: boolean) => void;
   setOverlayEnabled: (value: boolean) => void;
   setTimetableEnabled: (value: boolean) => void;
+  setSimpleMode: (value: boolean) => void;
   reset: () => void;
 }
 
@@ -67,6 +80,7 @@ const initial = {
   hapticsEnabled: true,
   overlayEnabled: false,
   timetableEnabled: true,
+  simpleMode: false,
 };
 
 export const useSettings = create<SettingsState>()(
@@ -98,6 +112,8 @@ export const useSettings = create<SettingsState>()(
       setOverlayEnabled: (value) => set({ overlayEnabled: value }),
 
       setTimetableEnabled: (value) => set({ timetableEnabled: value }),
+
+      setSimpleMode: (value) => set({ simpleMode: value }),
 
       reset: () => set({ ...initial, capabilities: defaultCapabilityFlags() }),
     }),

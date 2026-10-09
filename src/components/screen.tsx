@@ -5,12 +5,17 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ThemedText } from '@/components/themed-text';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { useSettings } from '@/state/settings-store';
 
 /**
  * 页面外壳：统一安全区、页头、最大宽度与底部留白。
  *
  * 所有页面都用它，是为了让"门面最简单"这条原则有个物理落点 ——
  * 页面之间只差中间那块内容，标题字号、间距、留白不会各写各的。
+ *
+ * **简约模式在这里落地**（副标题那一行）：它是"全局显示偏好"，
+ * 由外壳统一执行，比让每个页面各写一遍 `simple ? null : subtitle` 靠谱 ——
+ * 后者一定会漏掉某几个页面，而且漏掉的地方没人会发现。
  */
 export interface ScreenProps {
   title?: string;
@@ -34,6 +39,14 @@ export interface ScreenProps {
    * 底部该留多少 padding"，两处数字永远对得上。
    */
   bottomBar?: ReactNode;
+  /**
+   * 盖在整页之上的一层（日历页从右侧拉出的收集箱抽屉）。
+   *
+   * 它排在最后 = 在最上面，连底栏和悬浮按钮都盖得住 ——
+   * 拉出来的这层是"临时的一层"，那时候用户眼里只有它。
+   * 容器本身 pointerEvents 是 box-none，空白处的点击照旧穿透到页面。
+   */
+  overlay?: ReactNode;
 }
 
 export function Screen({
@@ -46,9 +59,11 @@ export function Screen({
   contentStyle,
   floating,
   bottomBar,
+  overlay,
 }: ScreenProps) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const simpleMode = useSettings((state) => state.simpleMode);
 
   const body = (
     <View style={[styles.content, contentStyle]}>
@@ -56,7 +71,7 @@ export function Screen({
         <View style={styles.header}>
           <View style={styles.headerText}>
             {title ? <ThemedText type="subtitle">{title}</ThemedText> : null}
-            {subtitle ? (
+            {subtitle && !simpleMode ? (
               <ThemedText type="small" themeColor="textSecondary">
                 {subtitle}
               </ThemedText>
@@ -109,6 +124,11 @@ export function Screen({
             </View>
           </View>
         ) : null}
+        {overlay ? (
+          <View style={styles.overlayLayer} pointerEvents="box-none">
+            {overlay}
+          </View>
+        ) : null}
       </SafeAreaView>
     </View>
   );
@@ -152,6 +172,7 @@ const styles = StyleSheet.create({
   },
   // 四边手写：RN 0.86 的类型里没有 absoluteFillObject
   floatingLayer: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
+  overlayLayer: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
   floatingInner: {
     flex: 1,
     width: '100%',

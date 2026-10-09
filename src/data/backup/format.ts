@@ -8,6 +8,12 @@ import { SCHEMA_VERSION, TABLES } from '@/data/db/schema';
  * 可以写迁移逻辑读旧备份。
  */
 
+/**
+ * 备份文件的"我是谁"标记。**这个值不跟着应用名改** ——
+ * 改了它，改名之前导出的备份就 recognized 不出来，用户手里那份旧备份直接废掉。
+ * 应用名换成 JUST 之后，`buildBackupFileName` 出的文件名会变，
+ * 但文件里这个标记必须还是老样子：能读旧备份比名字一致重要。
+ */
 export const BACKUP_FORMAT = 'ai-schedule-backup';
 
 /**
@@ -52,7 +58,7 @@ export function isBackupEnvelope(value: unknown): value is BackupEnvelope {
 export const buildBackupFileName = (date: Date = new Date()): string => {
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
-  return `ai-schedule-${stamp}.json`;
+  return `just-${stamp}.json`;
 };
 
 export const currentSchemaVersion = SCHEMA_VERSION;

@@ -26,10 +26,9 @@ export function containerStats(tasks: Pick<Task, 'status'>[]): ContainerStats {
 export const CONTAINER_KIND_LABEL: Record<ContainerKind, string> = {
   [ContainerKind.Goal]: '目标',
   [ContainerKind.Project]: '项目',
-  [ContainerKind.Folder]: '文件夹',
 };
 
-/** 新建时的默认类型：绝大多数人建的是项目，另外两个要显式选 */
+/** 新建时的默认类型：绝大多数人建的是项目，目标要显式选 */
 export const DEFAULT_CONTAINER_KIND: ContainerKind = ContainerKind.Project;
 
 /** 容器的时间跨度文案，甘特图旁边那行小字用 */

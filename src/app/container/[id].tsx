@@ -15,6 +15,7 @@ import type { Container } from '@/domain/container';
 import { CONTAINER_KIND_LABEL, containerStats } from '@/domain/container-stats';
 import { ContainerKind, ContainerStatus } from '@/domain/enums';
 import type { GanttItem } from '@/domain/gantt';
+import { splitSubtaskLines } from '@/domain/subtask-lines';
 import { taskDue } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -48,7 +49,7 @@ export default function ContainerDetailScreen() {
   const updateTask = useAppStore((state) => state.updateTask);
   const toggleTaskDone = useAppStore((state) => state.toggleTaskDone);
   const shiftTaskByDays = useAppStore((state) => state.shiftTaskByDays);
-  const addTaskToContainer = useAppStore((state) => state.addTaskToContainer);
+  const addTasksToContainer = useAppStore((state) => state.addTasksToContainer);
 
   const [container, setContainer] = useState<Container | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,7 +62,6 @@ export default function ContainerDetailScreen() {
   const [childTitle, setChildTitle] = useState('');
   const [pickingTasks, setPickingTasks] = useState(false);
   /** 「新建任务」的内联输入：一个项目往往要连着录好几条，所以建完不收输入框 */
-  const [addingTask, setAddingTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   /** 甘特图拖拽期间锁住页面滚动，否则手指一竖页面就跟着滚 */
@@ -107,13 +107,16 @@ export default function ContainerDetailScreen() {
     [patch],
   );
 
-  /** 新建一条任务挂在这个容器下（建完保留输入框，方便连着录） */
-  const createTaskNow = useCallback(async () => {
-    const next = newTaskTitle.trim();
-    if (!id || !next) return;
+  /** 输入框里真的有东西可加（空行不算） */
+  const canAddTasks = splitSubtaskLines(newTaskTitle).length > 0;
+
+  /** 一次建好几条（一行一条）。只写一行时跟以前的行为一致 */
+  const createTasksNow = useCallback(async () => {
+    const lines = splitSubtaskLines(newTaskTitle);
+    if (!id || !lines.length) return;
     setNewTaskTitle('');
-    await addTaskToContainer(id, next);
-  }, [addTaskToContainer, id, newTaskTitle]);
+    await addTasksToContainer(id, lines);
+  }, [addTasksToContainer, id, newTaskTitle]);
 
   const children = useMemo(
     () => (id ? containers.filter((c) => c.parentId === id) : []),
@@ -245,10 +248,117 @@ export default function ContainerDetailScreen() {
         />
       </Card>
 
+      {/*
+        任务**紧挨着名字**：一个项目刚起完名，下一步就是往里丢几条 ——
+        把它排在"类型 / 状态 / 起止时间 / 甘特图"那堆设置后面，
+        等于让人先做一轮配置才碰正事（而那些设置是可以之后再来的）。
+      */}
+      <Card
+        title="任务"
+        hint={members.length ? `${members.length} 件` : '一行一条，可以一次写好几条'}
+        right={
+          candidates.length ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setPickingTasks((value) => !value)}>
+              <ThemedText type="small" themeColor="textSecondary">
+                {pickingTasks ? '收起' : '加入已有'}
+              </ThemedText>
+            </Pressable>
+          ) : null
+        }>
+        {/*
+          输入框**常驻**，不再藏在「＋ 新建」后面：走到这一步的人已经决定要加任务了，
+          再让他点一次只是多一次操作。
+          **一行一条**，写完点「加上」一次全建 —— 往一个项目里丢任务也是连着想出来的
+          （"查资料 / 写提纲 / 发给小王"），一个一个加是把一次思考切成好几次操作。
+        */}
+        <View style={styles.addRow}>
+          <TextInput
+            value={newTaskTitle}
+            onChangeText={setNewTaskTitle}
+            placeholder="一行一条，可以一次写好几条"
+            placeholderTextColor={theme.textSecondary}
+            returnKeyType="done"
+            onSubmitEditing={() => void createTasksNow()}
+            multiline
+            style={[
+              styles.inlineInput,
+              {
+                color: theme.text,
+                backgroundColor: theme.background,
+                borderColor: theme.backgroundSelected,
+              },
+            ]}
+          />
+          {canAddTasks ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="加上这几条"
+              onPress={() => void createTasksNow()}
+              style={[styles.smallAction, { backgroundColor: theme.text }]}>
+              <ThemedText type="small" style={{ color: theme.background }}>
+                加上
+              </ThemedText>
+            </Pressable>
+          ) : null}
+        </View>
+
+        {members.length ? (
+          members.map((task) => (
+            <TaskRow
+              key={task.id}
+              task={task}
+              onPress={(t) => router.push(`/task/${t.id}`)}
+              onComplete={(t) => void toggleTaskDone(t.id)}
+              onDelete={(t) => void updateTask(t.id, { containerId: null })}
+            />
+          ))
+        ) : (
+          <ThemedText type="small" themeColor="textSecondary">
+            还没有任务。用右上角「＋ 新建」加一条。
+          </ThemedText>
+        )}
+
+        {pickingTasks ? (
+          <View style={styles.pickList}>
+            <ThemedText type="small" themeColor="textSecondary">
+              以下任务还没有归属（点一下挂进来）
+            </ThemedText>
+            {candidates.length ? (
+              candidates.map((task) => (
+                <Pressable
+                  key={task.id}
+                  accessibilityRole="button"
+                  onPress={() => void updateTask(task.id, { containerId: container.id })}
+                  style={({ pressed }) => [
+                    styles.pickRow,
+                    { backgroundColor: pressed ? theme.backgroundSelected : theme.background },
+                  ]}>
+                  <Ionicons name="add-circle-outline" size={16} color={theme.textSecondary} />
+                  <ThemedText type="small" numberOfLines={1} style={styles.pickText}>
+                    {task.title}
+                  </ThemedText>
+                  {taskDue(task) ? (
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {describeDue(taskDue(task))}
+                    </ThemedText>
+                  ) : null}
+                </Pressable>
+              ))
+            ) : (
+              <ThemedText type="small" themeColor="textSecondary">
+                所有任务都有归属了。
+              </ThemedText>
+            )}
+          </View>
+        ) : null}
+      </Card>
+
       {/* 类型与状态 */}
-      <Card title="类型" hint="目标看方向、项目看进度、文件夹只管分类">
+      <Card title="类型" hint="目标看方向、项目看进度">
         <View style={styles.chips}>
-          {[ContainerKind.Goal, ContainerKind.Project, ContainerKind.Folder].map((option) => (
+          {[ContainerKind.Goal, ContainerKind.Project].map((option) => (
             <Chip
               key={option}
               label={CONTAINER_KIND_LABEL[option]}
@@ -324,150 +434,42 @@ export default function ContainerDetailScreen() {
         </ThemedText>
       </Card>
 
-      {/* 进度 */}
-      <Card title="进度" hint={stats.total ? `${stats.open} 件还没做完` : '挂几个任务进来看进度'}>
-        <View style={[styles.track, { backgroundColor: theme.backgroundSelected }]}>
-          <View
-            style={[
-              styles.fill,
-              { width: `${Math.round(stats.ratio * 100)}%`, backgroundColor: theme.text },
-            ]}
-          />
-        </View>
-        <ThemedText type="small" themeColor="textSecondary">
-          {stats.total
-            ? `${stats.done} / ${stats.total} 件（${Math.round(stats.ratio * 100)}%）`
-            : '这个容器下还没有任务'}
-        </ThemedText>
-      </Card>
-
-      {/* 甘特图 */}
-      <Card title="甘特图" hint="它自己和成员任务排在同一条时间轴上">
-        <GanttChart
-          items={ganttItems}
-          emptyHint="给它定个起止时间，或者把带时间的任务挂进来，就能看到条子"
-          onDragStateChange={setGanttDragging}
-          onReschedule={(item, days) => void shiftTaskByDays(item.id, days)}
-          onSelect={(item) => {
-            if (item.kind === 'container') return;
-            router.push(`/task/${item.id}`);
-          }}
-        />
-      </Card>
-
-      {/* 成员任务 */}
-      <Card
-        title="任务"
-        hint={members.length ? `${members.length} 件` : '还没挂任务'}
-        right={
-          <View style={styles.cardActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="在这个容器里新建任务"
-              onPress={() => {
-                setAddingTask((value) => !value);
-                setPickingTasks(false);
-              }}>
-              <ThemedText type="small" themeColor="textSecondary">
-                {addingTask ? '收起' : '＋ 新建'}
-              </ThemedText>
-            </Pressable>
-
-            {candidates.length ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  setPickingTasks((value) => !value);
-                  setAddingTask(false);
-                }}>
-                <ThemedText type="small" themeColor="textSecondary">
-                  {pickingTasks ? '收起' : '加入已有'}
-                </ThemedText>
-              </Pressable>
-            ) : null}
-          </View>
-        }>
-        {/* 直接在这里写：以前只能把别处建好的任务"挂"进来，项目里没法顺手加一条 */}
-        {addingTask ? (
-          <View style={styles.addRow}>
-            <TextInput
-              value={newTaskTitle}
-              onChangeText={setNewTaskTitle}
-              placeholder="任务名字，点键盘上的「完成」接着加下一条"
-              placeholderTextColor={theme.textSecondary}
-              autoFocus
-              returnKeyType="done"
-              onSubmitEditing={() => void createTaskNow()}
+      {/* 进度：一件任务都没有时整块不出现 —— 一根 0% 的空条只会提醒人"这儿还空着" */}
+      {stats.total ? (
+        <Card title="进度" hint={`${stats.open} 件还没做完`}>
+          <View style={[styles.track, { backgroundColor: theme.backgroundSelected }]}>
+            <View
               style={[
-                styles.inlineInput,
-                {
-                  color: theme.text,
-                  backgroundColor: theme.background,
-                  borderColor: theme.backgroundSelected,
-                },
+                styles.fill,
+                { width: `${Math.round(stats.ratio * 100)}%`, backgroundColor: theme.text },
               ]}
             />
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void createTaskNow()}
-              style={[styles.smallAction, { backgroundColor: theme.text }]}>
-              <ThemedText type="small" style={{ color: theme.background }}>
-                加上
-              </ThemedText>
-            </Pressable>
           </View>
-        ) : null}
-
-        {members.length ? (
-          members.map((task) => (
-            <TaskRow
-              key={task.id}
-              task={task}
-              onPress={(t) => router.push(`/task/${t.id}`)}
-              onComplete={(t) => void toggleTaskDone(t.id)}
-              onDelete={(t) => void updateTask(t.id, { containerId: null })}
-            />
-          ))
-        ) : (
           <ThemedText type="small" themeColor="textSecondary">
-            还没有任务。用右上角「＋ 新建」加一条。
+            {`${stats.done} / ${stats.total} 件（${Math.round(stats.ratio * 100)}%）`}
           </ThemedText>
-        )}
+        </Card>
+      ) : null}
 
-        {pickingTasks ? (
-          <View style={styles.pickList}>
-            <ThemedText type="small" themeColor="textSecondary">
-              以下任务还没有归属（点一下挂进来）
-            </ThemedText>
-            {candidates.length ? (
-              candidates.map((task) => (
-                <Pressable
-                  key={task.id}
-                  accessibilityRole="button"
-                  onPress={() => void updateTask(task.id, { containerId: container.id })}
-                  style={({ pressed }) => [
-                    styles.pickRow,
-                    { backgroundColor: pressed ? theme.backgroundSelected : theme.background },
-                  ]}>
-                  <Ionicons name="add-circle-outline" size={16} color={theme.textSecondary} />
-                  <ThemedText type="small" numberOfLines={1} style={styles.pickText}>
-                    {task.title}
-                  </ThemedText>
-                  {taskDue(task) ? (
-                    <ThemedText type="small" themeColor="textSecondary">
-                      {describeDue(taskDue(task))}
-                    </ThemedText>
-                  ) : null}
-                </Pressable>
-              ))
-            ) : (
-              <ThemedText type="small" themeColor="textSecondary">
-                所有任务都有归属了。
-              </ThemedText>
-            )}
-          </View>
-        ) : null}
-      </Card>
+      {/*
+        甘特图：条子的长度就是**时间段**（容器用自己的起止，任务用它的时间），
+        只有一天的事画成点。什么都没排进来时整块不出现 —— 一张空图不说明任何事。
+      */}
+      {ganttItems.length ? (
+        <Card title="甘特图" hint="它自己和成员任务排在同一条时间轴上">
+          <GanttChart
+            items={ganttItems}
+            emptyHint="给它定个起止时间，或者把带时间的任务挂进来，就能看到条子"
+            onDragStateChange={setGanttDragging}
+            onReschedule={(item, days) => void shiftTaskByDays(item.id, days)}
+            onSelect={(item) => {
+              if (item.kind === 'container') return;
+              router.push(`/task/${item.id}`);
+            }}
+          />
+        </Card>
+      ) : null}
+
 
       {/* 子项 */}
       <Card
@@ -629,9 +631,8 @@ const styles = StyleSheet.create({
     borderRadius: Spacing.two,
   },
   pickText: { flex: 1 },
-  addRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  /** 卡片表头的多个动作：跟「收起 / 加入已有」并排 */
-  cardActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  // 输入框是多行的：`center` 会把「加上」按钮甩到中间去
+  addRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two },
   inlineInput: {
     flex: 1,
     borderRadius: Spacing.two,
