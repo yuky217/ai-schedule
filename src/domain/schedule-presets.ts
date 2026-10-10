@@ -94,10 +94,27 @@ export function buildRetimedSpanTime(
   startMinutes: number,
   endMinutes: number,
 ): TaskTime | null {
+  if (task.time.attribute === TimeAttribute.Deadline) return null;
   const anchor = taskAnchor(task);
   if (!anchor) return null;
-  const day = new Date(anchor);
-  if (Number.isNaN(day.getTime())) return null;
+  return buildSpanTime(new Date(anchor), startMinutes, endMinutes);
+}
+
+/**
+ * 某天 + 起止分钟 → 固定时段。
+ *
+ * 这是 `buildRetimedSpanTime` 的"**还没有任务**"版本：在日历上拖出一个时段新建日程时，
+ * 手上只有"哪天、从几点到几点"，没有任务可以取锚点。
+ *
+ * 两者共用同一段换算 —— 只差一次 `setHours` 的写法就会造出**差一天**的日程，
+ * 这种 bug 在界面上看起来只是"我明明拖在周五，它跑到周四了"，极难归因。
+ */
+export function buildSpanTime(
+  date: Date,
+  startMinutes: number,
+  endMinutes: number,
+): TaskTime | null {
+  if (Number.isNaN(date.getTime())) return null;
 
   const clamp = (m: number) => Math.max(0, Math.min(24 * 60 - 1, Math.round(m)));
   const start = clamp(startMinutes);
@@ -105,12 +122,11 @@ export function buildRetimedSpanTime(
   if (end <= start) return null;
 
   const at = (minutes: number) => {
-    const d = new Date(day);
+    const d = new Date(date);
     d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
     return d.toISOString();
   };
 
-  if (task.time.attribute === TimeAttribute.Deadline) return null;
   return { attribute: TimeAttribute.Fixed, startAt: at(start), endAt: at(end), dueAt: null };
 }
 

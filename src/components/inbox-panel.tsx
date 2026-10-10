@@ -38,8 +38,14 @@ import { useTheme } from '@/hooks/use-theme';
  * 把手是唯一"没有别的交互"的地方，让它专门负责展开/收起，两边互不干扰。
  */
 
-/** 把手高度：收起时整块面板就只剩这么高 */
-const HEADER_H = 46;
+/**
+ * 把手高度：收起时整块面板就只剩这么高。
+ *
+ * **导出**是因为日历页右下角那颗「＋」（新建日程）要摆在它正上方 ——
+ * 这个数一旦两处各写一份，"＋"迟早会压到把手上，而那种错位在真机上
+ * 只会被当成"这两个东西怎么挤在一起"，没人会想到是常量没同步。
+ */
+export const PANEL_HANDLE_HEIGHT = 46;
 /** 清单区最高多少；再长也只给这么多，剩下的进全页看 */
 const MAX_LIST_H = 320;
 /** 弹簧：跟手松开后回弹 */
@@ -93,13 +99,13 @@ export function InboxPanel({
   /** 清单区的自然高度（onLayout 量出来），决定 expanded 档要展开到多少 */
   const [listH, setListH] = useState(0);
 
-  const height = useSharedValue(HEADER_H);
-  const fullHeight = useSharedValue(HEADER_H);
-  const startHeight = useSharedValue(HEADER_H);
+  const height = useSharedValue(PANEL_HANDLE_HEIGHT);
+  const fullHeight = useSharedValue(PANEL_HANDLE_HEIGHT);
+  const startHeight = useSharedValue(PANEL_HANDLE_HEIGHT);
 
   const listHeight = Math.min(listH, MAX_LIST_H);
   /** 展开档的目标高度；没有内容时展开＝没得展开，仍然只显示把手 */
-  const expandedHeight = HEADER_H + (listHeight > 0 ? listHeight + Spacing.two : 0);
+  const expandedHeight = PANEL_HANDLE_HEIGHT + (listHeight > 0 ? listHeight + Spacing.two : 0);
 
   // 内容高度变了要同步给 worklet（量出来之前是 0，第一次展开会先按把手高度算）
   useEffect(() => {
@@ -109,7 +115,7 @@ export function InboxPanel({
   const goTo = useCallback(
     (next: boolean) => {
       setExpanded(next);
-      height.value = withSpring(next ? expandedHeight : HEADER_H, SPRING);
+      height.value = withSpring(next ? expandedHeight : PANEL_HANDLE_HEIGHT, SPRING);
     },
     [expandedHeight, height],
   );
@@ -127,7 +133,7 @@ export function InboxPanel({
     // 1) 从展开态再往上拉（或往上甩）→ 去待办页
     if (expanded && (pulledUp >= FULL_PULL || velocityY <= -FULL_FLING)) {
       setExpanded(false);
-      height.value = withSpring(HEADER_H, SPRING);
+      height.value = withSpring(PANEL_HANDLE_HEIGHT, SPRING);
       onOpenFull?.();
       return;
     }
@@ -135,7 +141,7 @@ export function InboxPanel({
     let next: boolean;
     if (translationY <= -SWITCH_STEP) next = true;
     else if (translationY >= SWITCH_STEP) next = false;
-    else next = height.value > (HEADER_H + fullHeight.value) / 2;
+    else next = height.value > (PANEL_HANDLE_HEIGHT + fullHeight.value) / 2;
     goTo(next);
   };
 
@@ -150,7 +156,7 @@ export function InboxPanel({
     if (collapseWhen) {
       wasExpanded.current = expanded;
       setExpanded(false);
-      height.value = withSpring(HEADER_H, SPRING);
+      height.value = withSpring(PANEL_HANDLE_HEIGHT, SPRING);
     } else if (wasExpanded.current) {
       setExpanded(true);
       height.value = withSpring(expandedHeight, SPRING);
@@ -173,7 +179,7 @@ export function InboxPanel({
           // 超出展开档的那一段不跟手 —— 它是"要去全页"的信号，不是面板该变高。
           const next = startHeight.value - event.translationY;
           const max = fullHeight.value;
-          height.value = next < HEADER_H ? HEADER_H : next > max ? max : next;
+          height.value = next < PANEL_HANDLE_HEIGHT ? PANEL_HANDLE_HEIGHT : next > max ? max : next;
         })
         .onEnd((event) => {
           'worklet';
@@ -296,7 +302,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   handle: {
-    height: HEADER_H,
+    height: PANEL_HANDLE_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.two,

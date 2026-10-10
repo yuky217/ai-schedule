@@ -107,6 +107,14 @@ export interface CalendarWeekProps {
   onSelectTask: (task: Task) => void;
   /** 拖动落库：目标日期 + 当天第几分钟 */
   onPlace?: (task: Task, date: Date, minutesOfDay: number) => Promise<void> | void;
+  /**
+   * 在某一列的**空白处**长按拖出一个时段 → 在那天的那个时段新建日程（2026-10-10）。
+   *
+   * 与日视图同一个出口，只是多带一个"哪一天"（在这里，**列就是天**）。
+   * 只认竖直拖：横向留给翻页 —— 想在别的日子建，就去那一列上拖。
+   * 落点在那一**列**（不是"起点列 + 横移量"）：列窄，横着挪列的手感远不如直接去目标列。
+   */
+  onCreateSpan?: (date: Date, startMinutes: number, endMinutes: number) => void;
   /** 点某天表头 = 切到那天的日视图 */
   onOpenDay?: (date: Date) => void;
   /** 拖拽开始 / 结束：父层用它临时锁住页面滚动 */
@@ -124,6 +132,7 @@ export function CalendarWeek({
   onOpenDay,
   onDraggingChange,
   dragFlag,
+  onCreateSpan,
 }: CalendarWeekProps) {
   const theme = useTheme();
   const scrollRef = useRef<ScrollView>(null);
@@ -141,6 +150,102 @@ export function CalendarWeek({
     },
     [onDraggingChange],
   );
+
+  /* ---------------- 空白处拖出一个时段 → 新建日程（2026-10-10） ---------------- */
+
+  /*
+   * 锚点 / 限流 / 松手补半小时这一套与日视图完全同构（那边有完整注释，
+   * 包括"为什么必须长按"和"为什么原地松手也给半小时"）。这里只多记一个 column ——
+   * 周视图的「哪一列」就是「哪一天」。
+   */
+  const draftAnchor = useSharedValue(0);
+  const draftLo = useSharedValue(0);
+  const draftHi = useSharedValue(0);
+  const draftKey = useSharedValue(-1);
+  const [draft, setDraft] = useState<{ column: number; start: number; end: number } | null>(null);
+
+  const beginDraft = useCallback(
+    (column: number, minutes: number) => {
+      setDraft({ column, start: minutes, end: minutes });
+      setDraggingState(true);
+      // 拿起来了就不许翻页：用户已经在"创建"这件事里，页面不该在他手底下换走
+      if (dragFlag) dragFlag.value = 1;
+    },
+    [dragFlag, setDraggingState],
+  );
+
+  const updateDraft = useCallback(
+    (column: number, lo: number, hi: number) => setDraft({ column, start: lo, end: hi }),
+    [],
+  );
+
+  const commitDraft = useCallback(
+    (column: number, lo: number, hi: number) => {
+      setDraft(null);
+      onCreateSpan?.(days[column], lo, hi > lo ? hi : lo + DEFAULT_BLOCK_MINUTES);
+    },
+    [days, onCreateSpan],
+  );
+
+  const endDraft = useCallback(() => {
+    setDraft(null);
+    setDraggingState(false);
+    if (dragFlag) dragFlag.value = 0;
+  }, [dragFlag, setDraggingState]);
+
+  /** 每列一个手势：列索引是常量，7 个一起建出来，别在 render 里现造 */
+  const createGestures = useMemo(
+    () =>
+      Array.from({ length: COLUMNS }, (_, column) =>
+        Gesture.Pan()
+          .activateAfterLongPress(PICK_UP_DELAY)
+          // 横向留给翻页，这个手势只认竖直（想在别的日子建，去那一列上拖）
+          .failOffsetX([-16, 16])
+          .shouldCancelWhenOutside(false)
+          .onStart((event) => {
+            'worklet';
+            const at = clampMinutes(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+            draftAnchor.value = at;
+            draftLo.value = at;
+            draftHi.value = at;
+            draftKey.value = -1;
+            runOnJS(beginDraft)(column, at);
+          })
+          .onUpdate((event) => {
+            'worklet';
+            const at = clampMinutes(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+            const lo = Math.min(draftAnchor.value, at);
+            const hi = Math.max(draftAnchor.value, at);
+            draftLo.value = lo;
+            draftHi.value = hi;
+            const key = lo * 2000 + hi;
+            if (key !== draftKey.value) {
+              draftKey.value = key;
+              runOnJS(updateDraft)(column, lo, hi);
+            }
+          })
+          .onEnd((event) => {
+            'worklet';
+            const at = clampMinutes(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+            runOnJS(commitDraft)(
+              column,
+              Math.min(draftAnchor.value, at),
+              Math.max(draftAnchor.value, at),
+            );
+          })
+          .onFinalize(() => {
+            'worklet';
+            runOnJS(endDraft)();
+          }),
+      ),
+    [beginDraft, commitDraft, draftAnchor, draftHi, draftKey, draftLo, endDraft, updateDraft],
+  );
+
+  const draftStyle = useAnimatedStyle(() => {
+    const top = ((draftLo.value - START_HOUR * 60) / 60) * HOUR_HEIGHT;
+    const height = ((draftHi.value - draftLo.value) / 60) * HOUR_HEIGHT;
+    return { top: Math.max(0, top), height: Math.max(3, height) };
+  });
 
   // 一进周视图先滚到 8:00 附近，别让用户盯着凌晨的空白
   useEffect(() => {
@@ -232,9 +337,24 @@ export function CalendarWeek({
                 const tasks = tasksByDay.get(key) ?? [];
                 return (
                   <View key={key} style={styles.column}>
+                    {/*
+                      空白层：长按拖出一个时段 → 新建日程。
+                      **先渲染 = 在本列最下面**，所以按在已有的块上仍然是"拖那一块"；
+                      而列里的刻线全是 `pointerEvents="none"`，不会把它挡掉。
+                    */}
+                    {onCreateSpan ? (
+                      <GestureDetector gesture={createGestures[column]}>
+                        <View
+                          accessibilityLabel={`长按并拖动，在${format(day, 'M月d日')}新建日程`}
+                          style={styles.createLayer}
+                        />
+                      </GestureDetector>
+                    ) : null}
+
                     {hours.map((hour, index) => (
                       <View
                         key={hour}
+                        pointerEvents="none"
                         style={[
                           styles.hourLine,
                           { top: index * HOUR_HEIGHT, backgroundColor: theme.backgroundSelected },
@@ -294,6 +414,29 @@ export function CalendarWeek({
                         style={[styles.nowLine, { top: topForMinutes(now.getHours() * 60 + now.getMinutes()) }]}>
                         <View style={[styles.nowBar, { backgroundColor: theme.text }]} />
                       </View>
+                    ) : null}
+
+                    {/* 拖动中还没落定的那一段：任务块的样子 + 半透明 */}
+                    {draft && draft.column === column ? (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[styles.block, draftStyle, styles.draftBlock]}>
+                        <View
+                          style={[
+                            styles.blockInner,
+                            { backgroundColor: theme.backgroundSelected, borderLeftColor: theme.text },
+                          ]}>
+                          <ThemedText
+                            type="small"
+                            numberOfLines={1}
+                            themeColor="textSecondary"
+                            style={styles.blockTitle}>
+                            {draft.end > draft.start
+                              ? `${formatMinutes(draft.start)}–${formatMinutes(draft.end)}`
+                              : formatMinutes(draft.start)}
+                          </ThemedText>
+                        </View>
+                      </Animated.View>
                     ) : null}
                   </View>
                 );
@@ -578,6 +721,10 @@ const styles = StyleSheet.create({
   hourLabel: { fontSize: 10, lineHeight: 12, textAlign: 'right', paddingRight: 4 },
   columns: { flex: 1, flexDirection: 'row' },
   column: { flex: 1, position: 'relative' },
+  /** 空白层：铺满本列，只挂长按拖动手势（不画任何东西） */
+  createLayer: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 },
+  /** 拖动中还没落定的那一段：整列宽 + 半透明 */
+  draftBlock: { left: 0, right: 0, opacity: 0.6 },
   hourLine: { position: 'absolute', left: 0, right: 0, height: StyleSheet.hairlineWidth },
   nowLine: { position: 'absolute', left: 0, right: 0 },
   nowBar: { height: 1.5 },

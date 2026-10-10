@@ -9,6 +9,7 @@ import {
   buildRetimedSpanTime,
   buildScheduleTime,
   buildSemanticTime,
+  buildSpanTime,
   buildTimeOnDay,
   SCHEDULE_PRESETS,
   SEMANTIC_TARGETS,
@@ -235,6 +236,64 @@ describe('buildRetimedSpanTime / 时长保留', () => {
     const bare = { ...task, time: { ...task.time, endAt: null } };
     const time = buildPlacedTime(bare, new Date(2026, 9, 8), 14 * 60)!;
     expect(time.endAt).toBeNull();
+  });
+});
+
+/**
+ * 空地上拖出一个时段（2026-10-10）：日历时间轴上"长按空白处拖动"新建日程走的换算。
+ *
+ * 它与 `buildRetimedSpanTime` 共用同一段实现 —— 这两条路必须给出**同一天同一时刻**，
+ * 否则"拖出来新建的"和"拖完再调整的"会落在不同的地方，而用户完全看不出为什么。
+ */
+describe('buildSpanTime / 某天 + 起止分钟', () => {
+  it('把起止分钟落到指定的那一天上', () => {
+    const time = buildSpanTime(new Date(2026, 9, 8), 14 * 60, 15 * 60 + 30)!;
+    const start = new Date(time.startAt!);
+    expect(start.getDate()).toBe(8);
+    expect(start.getHours()).toBe(14);
+    expect(start.getMinutes()).toBe(0);
+    expect(new Date(time.endAt!).getHours()).toBe(15);
+    expect(new Date(time.endAt!).getMinutes()).toBe(30);
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+  });
+
+  it('时分带进结果：9:45 就是 9:45，不被抹成整点', () => {
+    const time = buildSpanTime(new Date(2026, 9, 8), 9 * 60 + 45, 10 * 60 + 15)!;
+    expect(new Date(time.startAt!).getMinutes()).toBe(45);
+    expect(new Date(time.endAt!).getMinutes()).toBe(15);
+  });
+
+  it('倒挂（结束不晚于开始）返回 null —— 不建零长度的日程', () => {
+    const day = new Date(2026, 9, 8);
+    expect(buildSpanTime(day, 10 * 60, 9 * 60)).toBeNull();
+    expect(buildSpanTime(day, 10 * 60, 10 * 60)).toBeNull();
+  });
+
+  it('非法日期返回 null', () => {
+    expect(buildSpanTime(new Date('nope'), 9 * 60, 10 * 60)).toBeNull();
+  });
+
+  it('越界的分钟夹回一天之内（拖到时间轴外面的兜底）', () => {
+    const time = buildSpanTime(new Date(2026, 9, 8), -30, 30 * 60)!;
+    expect(new Date(time.startAt!).getHours()).toBe(0);
+    expect(new Date(time.endAt!).getHours()).toBe(23);
+    expect(new Date(time.endAt!).getMinutes()).toBe(59);
+  });
+
+  it('⭐ 与 buildRetimedSpanTime 同一口径：同一天同一对刻度落成同一个时刻', () => {
+    const task = {
+      ...createTask({ title: '先有的一条' }),
+      time: {
+        attribute: TimeAttribute.Fixed,
+        startAt: new Date(2026, 9, 8, 9, 0).toISOString(),
+        endAt: null,
+        dueAt: null,
+      },
+    };
+    const fromScratch = buildSpanTime(new Date(2026, 9, 8), 8 * 60 + 30, 10 * 60 + 30)!;
+    const fromTask = buildRetimedSpanTime(task, 8 * 60 + 30, 10 * 60 + 30)!;
+    expect(fromScratch.startAt).toBe(fromTask.startAt);
+    expect(fromScratch.endAt).toBe(fromTask.endAt);
   });
 });
 

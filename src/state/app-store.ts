@@ -50,6 +50,7 @@ import {
 import type { Idea } from '@/domain/idea';
 import { planBreakdown } from '@/domain/idea-breakdown';
 import { advanceRepeatingTask } from '@/domain/repeat-next';
+import { buildSpanTime } from '@/domain/schedule-presets';
 import { desiredParentStatus } from '@/domain/subtask-progress';
 import { CaptureSource, CompletionRule, TaskKind, TaskStatus } from '@/domain/enums';
 import type { Task, TaskTime } from '@/domain/task';
@@ -165,6 +166,26 @@ interface AppState {
   addTaskToContainer: (containerId: string, title: string) => Promise<Task>;
   /** 一口气加好几条：一行一条写好，一次全建（只刷新一次） */
   addTasksToContainer: (containerId: string, titles: readonly string[]) => Promise<Task[]>;
+
+  /**
+   * 日历上新建一条**日程**（时间轴上拖出一个时段），返回新任务 id。
+   *
+   * 刻意只收「哪天 + 从几点到几点」，不收整个 `TaskTime` —— 因为调用方
+   * （时间轴的手势）手上就这几个数。**类型写死日程型**：在"这段时间被占住了"
+   * 的地方建出来的就该是日程；要建截止型或"还没排时间的待办"，
+   * 去记录页（那才是"记一件事"的家，还会解析文字里的时间与地点）。
+   *
+   * 时间段不合法（结束不晚于开始）时返回 null，由调用方决定怎么提示。
+   *
+   * **不设提醒**：与"没提提醒就是不提醒"这条已拍口径一致（`resolveReminderMinutes`）——
+   * 用户只是把一件事摆到了日历上，没有要求被打扰。想提醒去详情页挑一个提前量。
+   */
+  createScheduledTask: (input: {
+    title: string;
+    date: Date;
+    startMinutes: number;
+    endMinutes: number;
+  }) => Promise<string | null>;
 
   /** 子任务：读取 / 新增 / 勾选 / 删除。父任务完成态由子任务自动推导 */
   loadSubtasks: (parentId: string) => Promise<Task[]>;
@@ -554,6 +575,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     await get().refresh();
     return created;
+  },
+
+  createScheduledTask: async ({ title, date, startMinutes, endMinutes }) => {
+    const time = buildSpanTime(date, startMinutes, endMinutes);
+    // 时段不合法（结束不晚于开始）：不建，让调用方保持输入状态
+    if (!time) return null;
+    const task = createTask({
+      title,
+      kind: TaskKind.Schedule,
+      time,
+      source: CaptureSource.Manual,
+    });
+    await taskRepository.create(task);
+    await get().refresh();
+    return task.id;
   },
 
   loadSubtasks: async (parentId) => taskRepository.listSubtasks(parentId),

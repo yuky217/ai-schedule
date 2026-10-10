@@ -19,8 +19,10 @@ import { Card } from '@/components/card';
 import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
-import { InboxPanel } from '@/components/inbox-panel';
+import { Fab } from '@/components/fab';
+import { InboxPanel, PANEL_HANDLE_HEIGHT } from '@/components/inbox-panel';
 import { MonthPlan } from '@/components/month-plan';
+import { NewSpanSheet } from '@/components/new-span-sheet';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
@@ -121,6 +123,24 @@ const PAGE_OFFSET = 44;
  */
 const INBOX_DRAG_LIMIT = 4;
 
+/**
+ * 「新建」默认时段的两个数（2026-10-10）。
+ *
+ * - 起点：**下一个整点**，但最晚只到 23:00 —— 23:30 点「新建」时，
+ *   再往后就没有"一整小时"可以摆了，硬算会得到一个已经过去的时刻。
+ * - 时长：1 小时。想更短更长去拽那块的上下边（`buildRetimedSpanTime` 那条路），
+ *   不必在创建的时候先问一遍。
+ */
+const NEW_SPAN_MINUTES = 60;
+const NEW_SPAN_LAST_START = 23 * 60;
+
+/** 「新建」建在非今天的日子时，从上午 9 点开始（一天常规的起点） */
+const NEW_SPAN_MORNING_START = 9 * 60;
+
+/** 分钟数 → `HH:mm`（时段文案用） */
+const clockText = (minutes: number): string =>
+  `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
 const dayKey = (d: Date): string => format(d, 'yyyy-MM-dd');
 const keyToDate = (key: string): Date => {
   const [y, m, d] = key.split('-').map(Number);
@@ -166,6 +186,8 @@ export default function CalendarScreen() {
   // 纪念日也全量在 store：它就那么几个日子，月历的圆点和日卡里的行都从这儿出
   const marks = useAppStore((state) => state.marks);
   const saveCourse = useAppStore((state) => state.saveCourse);
+  /** 时间轴上圈出一段之后落库的那一步（唯一出口，见 state/app-store） */
+  const createScheduledTask = useAppStore((state) => state.createScheduledTask);
   /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
   const timetableOn = useSettings((state) => state.timetableEnabled);
   const simpleMode = useSettings((state) => state.simpleMode);
@@ -189,6 +211,13 @@ export default function CalendarScreen() {
   /** 选中那天那张卡里的"加到这天"草稿 */
   const [dayDraft, setDayDraft] = useState('');
   const [addingToDay, setAddingToDay] = useState(false);
+  /**
+   * 刚圈出来、还没起名的那条日程（null = 没在新建）。
+   *
+   * 它同时就是"输入面板开不开"的开关，不再需要第二个 boolean ——
+   * 有时段就该问标题，没时段就什么都不该有。
+   */
+  const [newSpan, setNewSpan] = useState<{ date: Date; start: number; end: number } | null>(null);
   /** 下拉手势正在跟手（期间锁页面滚动，否则手指一竖页面跟着滚） */
   const [monthPulling, setMonthPulling] = useState(false);
 
@@ -630,6 +659,78 @@ export default function CalendarScreen() {
     [cursor],
   );
 
+  /* ---------------- 新建日程（2026-10-10）---------------- */
+
+  /**
+   * 「新建」建在**当前视图正对着的那一天**。
+   *
+   * 日 / 月视图 = 选中的那天；周视图 = 本周的今天（翻到别的周之后就用周一兜底，
+   * 那是这一周里最有理由被当作"起点"的日子）。
+   *
+   * 三个视图同一个答案，用户不用记住"这个键在我现在这一栏是什么意思" ——
+   * 一个入口一旦要分情况理解，它就会开始被误解。
+   */
+  const focusDate = useMemo(
+    () =>
+      mode === 'week'
+        ? (weekDays.find((day) => isSameDay(day, new Date())) ?? weekDays[0])
+        : selected,
+    [mode, selected, weekDays],
+  );
+
+  /** 点「新建」：算出默认时段，然后交给输入面板（只问标题） */
+  const openNewSpan = useCallback(() => {
+    const now = new Date();
+    const start = isSameDay(focusDate, now)
+      ? Math.min((now.getHours() + 1) * 60, NEW_SPAN_LAST_START)
+      : NEW_SPAN_MORNING_START;
+    setNewSpan({
+      date: focusDate,
+      start,
+      end: Math.min(start + NEW_SPAN_MINUTES, 24 * 60 - 1),
+    });
+  }, [focusDate]);
+
+  /**
+   * 时间轴上拖出一段：日期就是用户拖的那一列 / 那一天，不再问。
+   * 两个包装只是"日期从哪儿来"不同（周视图的手势带日期，日视图就是当前看的那天）。
+   */
+  const openSpanOnDay = useCallback(
+    (date: Date, start: number, end: number) => setNewSpan({ date, start, end }),
+    [],
+  );
+  const openSpanOnSelectedDay = useCallback(
+    (start: number, end: number) => setNewSpan({ date: selected, start, end }),
+    [selected],
+  );
+
+  /**
+   * 起好名字 → 落库。
+   *
+   * **不跳详情页**：用户刚在日历上把它拖出来，松手、敲个名字，那块地方立刻出现一条
+   * —— "我做的事有结果"到这儿就闭环了。再跳一页去填地点/提醒，等于把一件刚做完的事
+   * 变成"还要再看一页"。想补的时候点它一下就是详情页，路没堵。
+   */
+  const submitNewSpan = useCallback(
+    (title: string) => {
+      const span = newSpan;
+      if (!span) return;
+      setNewSpan(null);
+      void createScheduledTask({
+        title,
+        date: span.date,
+        startMinutes: span.start,
+        endMinutes: span.end,
+      });
+    },
+    [createScheduledTask, newSpan],
+  );
+
+  /** 输入面板顶部那行"什么时候"：只读，因为时段是用户自己圈出来的 */
+  const newSpanWhen = newSpan
+    ? `${format(newSpan.date, 'M月d日')} ${clockText(newSpan.start)}–${clockText(newSpan.end)}`
+    : '';
+
   const selectedTasks = tasksByDay.get(dayKey(selected)) ?? [];
 
   /**
@@ -902,10 +1003,10 @@ export default function CalendarScreen() {
     mode === 'month'
       ? '长按一行拖到日期格：改期或安排到那天'
       : mode === 'week'
-        ? '长按块横拖换天、纵拖换时刻'
+        ? '长按块横拖换天、纵拖换时刻 · 空白处长按拖：新建日程'
         : mode === 'timetable'
           ? '点课块：改这一次（调课 / 停课）· 长按拖：改整学期'
-          : '长按块拖动改时刻 · 拽上下边改时长';
+          : '长按块拖动改时刻 · 拽上下边改时长 · 空白处长按拖：新建日程';
 
   /**
    * 月历圆点的三种形状，只有**月视图且这张月历上真出现过课或考试**时才解释。
@@ -957,20 +1058,50 @@ export default function CalendarScreen() {
         拖某一行时它自动缩回把手（见 collapseWhen），月历格才露得出来。
       */
       overlay={
-        panelGroups.length ? (
-          <View style={styles.inboxLayer} pointerEvents="box-none">
-            <InboxPanel
-              groups={panelGroups}
-              limit={INBOX_DRAG_LIMIT}
-              gestureFor={gestureFor}
-              onOpenTask={guardedOpen}
-              onCompleteTask={guardedToggle}
-              onOpenFull={() => router.push('/inbox')}
-              // 拖起来了就收起，让出下方的日期格
-              collapseWhen={draggingTask !== null}
-            />
-          </View>
-        ) : null
+        <>
+          {panelGroups.length ? (
+            <View style={styles.inboxLayer} pointerEvents="box-none">
+              <InboxPanel
+                groups={panelGroups}
+                limit={INBOX_DRAG_LIMIT}
+                gestureFor={gestureFor}
+                onOpenTask={guardedOpen}
+                onCompleteTask={guardedToggle}
+                onOpenFull={() => router.push('/inbox')}
+                // 拖起来了就收起，让出下方的日期格
+                collapseWhen={draggingTask !== null}
+              />
+            </View>
+          ) : null}
+
+          {/*
+            新建日程：右下角一颗「＋」，摆在待办面板把手的正上方
+            （屏底已经有一个贴底的东西，别再叠一个上去）。
+
+            **课表那一栏不放**：课表是学期框架，不是"某天的一件事"，
+            在那儿建日程只会建到一个跟眼前这张表毫无关系的地方。
+            月 / 周 / 日三栏都有，而且规则一致 —— 都建在"当前正对着的那天"（见 focusDate）。
+
+            刻意**不给它一个"点空白就建"的替代**：时间轴上的空白既属于滚动、
+            又属于翻页，再塞第三种含义进去，三者会互相打架。
+          */}
+          {mode === 'timetable' ? null : (
+            <View style={styles.fabLayer} pointerEvents="box-none">
+              <Fab onPress={openNewSpan} accessibilityLabel="新建日程" />
+            </View>
+          )}
+
+          {/*
+            圈好一段时间之后，只问名字。放在 overlay 里是为了盖在整页之上
+            （包括那个贴底的待办面板）—— 这一刻用户眼里只有"给这段时间起个名字"这件事。
+          */}
+          <NewSpanSheet
+            visible={newSpan !== null}
+            when={newSpanWhen}
+            onCancel={() => setNewSpan(null)}
+            onSubmit={submitNewSpan}
+          />
+        </>
       }>
       <View ref={containerRef} style={styles.container} collapsable={false}>
         <View style={styles.toolbar}>
@@ -1168,6 +1299,7 @@ export default function CalendarScreen() {
                   onOpenDay={focusDay}
                   onDraggingChange={setTimelineDragging}
                   dragFlag={dragFlag}
+                  onCreateSpan={openSpanOnDay}
                 />
               ) : null}
 
@@ -1197,6 +1329,7 @@ export default function CalendarScreen() {
                     onRetime={handleRetime}
                     onResize={handleResize}
                     onDraggingChange={setTimelineDragging}
+                    onCreateSpan={openSpanOnSelectedDay}
                   />
                 </>
               ) : null}
@@ -1424,6 +1557,12 @@ const styles = StyleSheet.create({
     bottom: BottomTabInset,
     alignItems: 'center',
     paddingHorizontal: Spacing.three,
+  },
+  /** 「＋」（新建日程）：贴在右下角，**让开**待办面板把手那一行 */
+  fabLayer: {
+    position: 'absolute',
+    right: Spacing.three,
+    bottom: BottomTabInset + PANEL_HANDLE_HEIGHT + Spacing.two,
   },
   /**
    * 工具栏：加了「待办」之后分段变五个，窄屏上一行放不下

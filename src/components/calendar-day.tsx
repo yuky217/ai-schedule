@@ -76,6 +76,16 @@ export interface CalendarDayProps {
   onResize?: (task: Task, startMinutes: number, endMinutes: number) => Promise<void> | void;
   /** 拖拽开始 / 结束：父层用它临时关掉页面滚动 */
   onDraggingChange?: (dragging: boolean) => void;
+  /**
+   * 在时间轴**空白处**长按拖出一个时段 → 新建一条日程（2026-10-10）。
+   *
+   * 收到的两个数是"当天第几分钟到第几分钟"，已经吸过刻度、`start < end`。
+   * **只拖才建**：空白处点一下什么也不做（长短按的区分交给 `PICK_UP_DELAY`）。
+   *
+   * 为什么不直接在这里建：新建要问标题，而问标题是页面的事（还要处理键盘）。
+   * 这一层只负责"把用户圈出来的那段时间变成两个数"。
+   */
+  onCreateSpan?: (startMinutes: number, endMinutes: number) => void;
 }
 
 /** 考试画进时间轴需要的三个数（父层已经从 CalEvent 换算好） */
@@ -138,6 +148,7 @@ export function CalendarDay({
   onRetime,
   onResize,
   onDraggingChange,
+  onCreateSpan,
 }: CalendarDayProps) {
   const theme = useTheme();
   const scrollRef = useRef<ScrollView>(null);
@@ -150,6 +161,108 @@ export function CalendarDay({
     },
     [onDraggingChange],
   );
+
+  /* ---------------- 空白处拖出一个时段 → 新建日程（2026-10-10） ---------------- */
+
+  /**
+   * 锚点 = 拿起时手指按在哪个刻度上。
+   * 它是拖出区间的**不动的那一端**：往下拖它当下界，往上拖它当上界 ——
+   * 而不是"从按下处开始往下量"。后者往上拖会得到负数长度。
+   */
+  const draftAnchor = useSharedValue(0);
+  /** 草稿块的起止（当天分钟数）。跟手的位置走 UI 线程，不走 setState */
+  const draftLo = useSharedValue(0);
+  const draftHi = useSharedValue(0);
+  /** 上一次报给 JS 的那对刻度（打包成一个数），用来限流 —— 每换一个刻度才 setState 一次 */
+  const draftKey = useSharedValue(-1);
+  /** 草稿块的内容（时刻文字）。null = 现在没有草稿 */
+  const [draft, setDraft] = useState<{ start: number; end: number } | null>(null);
+
+  const beginDraft = useCallback(
+    (minutes: number) => {
+      setDraft({ start: minutes, end: minutes });
+      setDraggingState(true);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
+    },
+    [setDraggingState],
+  );
+
+  const updateDraft = useCallback((lo: number, hi: number) => setDraft({ start: lo, end: hi }), []);
+
+  /**
+   * 松手：把圈出来的区间交给页面去建日程。
+   *
+   * **原地松手（没拖出长度）给半小时**：长按这个动作本身已经在说"我要在这儿加一件"，
+   * 再让他拖一下才建，等于把一句话拆成两个动作。半小时取的是
+   * `DEFAULT_BLOCK_MINUTES` —— 与"没定时长的块"画多高同一个数。
+   */
+  const commitDraft = useCallback(
+    (lo: number, hi: number) => {
+      setDraft(null);
+      onCreateSpan?.(lo, hi > lo ? hi : lo + DEFAULT_BLOCK_MINUTES);
+    },
+    [onCreateSpan],
+  );
+
+  const endDraft = useCallback(() => {
+    setDraft(null);
+    setDraggingState(false);
+  }, [setDraggingState]);
+
+  const createGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        // 必须长按才动：这片区域在滚动容器里，直接拖会被页面滚动吃掉
+        // （和"拖动已有任务块"同一个套路、同一个阈值）
+        .activateAfterLongPress(PICK_UP_DELAY)
+        // 横向留给页面翻页，这个手势只认竖直
+        .failOffsetX([-16, 16])
+        .shouldCancelWhenOutside(false)
+        .onStart((event) => {
+          'worklet';
+          const at = snap(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+          draftAnchor.value = at;
+          draftLo.value = at;
+          draftHi.value = at;
+          draftKey.value = -1;
+          runOnJS(beginDraft)(at);
+        })
+        .onUpdate((event) => {
+          'worklet';
+          const at = snap(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+          const lo = Math.min(draftAnchor.value, at);
+          const hi = Math.max(draftAnchor.value, at);
+          draftLo.value = lo;
+          draftHi.value = hi;
+          // 打包成一个数做比较：两端都要看（从上界往下拖时 lo 不动、hi 在动）
+          const key = lo * 2000 + hi;
+          if (key !== draftKey.value) {
+            draftKey.value = key;
+            runOnJS(updateDraft)(lo, hi);
+          }
+        })
+        .onEnd((event) => {
+          'worklet';
+          const at = snap(START_HOUR * 60 + (event.y / HOUR_HEIGHT) * 60);
+          runOnJS(commitDraft)(
+            Math.min(draftAnchor.value, at),
+            Math.max(draftAnchor.value, at),
+          );
+        })
+        .onFinalize(() => {
+          'worklet';
+          runOnJS(endDraft)();
+        }),
+    [beginDraft, commitDraft, draftAnchor, draftHi, draftKey, draftLo, endDraft, updateDraft],
+  );
+
+  /** 草稿块画在哪儿：只读 shared value，拖动时跑在 UI 线程上 */
+  const draftStyle = useAnimatedStyle(() => {
+    const top = ((draftLo.value - START_HOUR * 60) / 60) * HOUR_HEIGHT;
+    const height = ((draftHi.value - draftLo.value) / 60) * HOUR_HEIGHT;
+    // 原地松手前它只是个零高度的东西 —— 留一条细线，让"我按住了"看得见
+    return { top: Math.max(0, top), height: Math.max(3, height) };
+  });
 
   /**
    * 全天：**横幅，不进时间轴**（2026-10-10）。
@@ -307,6 +420,20 @@ export function CalendarDay({
               <View style={[styles.hourLine, { backgroundColor: theme.backgroundSelected }]} />
             </View>
           ))}
+          {/*
+            空白层：长按拖出一个时段 → 新建日程。
+            它**先渲染 = 在任务块下面**，所以按在已有的块上仍然是"拖那一块"，
+            只有真正的空白（含刻度区之外的整条轴）才归它。点一下什么也不做 ——
+            建一条日程要长按，是为了不要和"翻页 / 滚动"的短划动手势抢。
+          */}
+          {onCreateSpan ? (
+            <GestureDetector gesture={createGesture}>
+              <View
+                accessibilityLabel="长按并拖动，在这段时间新建日程"
+                style={[styles.createLayer, { left: GUTTER_WIDTH, right: Spacing.two }]}
+              />
+            </GestureDetector>
+          ) : null}
 
           {/* 任务块（课是它下面的背景带，见上面的注释） */}
           <View style={[styles.blocks, { left: GUTTER_WIDTH, right: Spacing.two }]}>
@@ -383,6 +510,28 @@ export function CalendarDay({
                 onDraggingChange={setDraggingState}
               />
             ))}
+
+            {/*
+              拖动中还没落定的那一段。样子就是任务块（实心 + 左侧色条），
+              只是**半透明** —— 一眼看出"这是要建的东西"，又不会被当成已经存在的一条。
+              刻意不用虚线：虚线在这个 App 里是"课"的语言（见 domain/calendar-shape）。
+            */}
+            {draft ? (
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.block, draftStyle, styles.draftBlock]}>
+                <View style={[styles.blockInner, { backgroundColor: theme.backgroundSelected }]}>
+                  <View style={[styles.blockBar, { backgroundColor: theme.text }]} />
+                  <View style={styles.blockBody}>
+                    <ThemedText type="small" numberOfLines={1} themeColor="textSecondary">
+                      {draft.end > draft.start
+                        ? `${formatMinutes(draft.start)}–${formatMinutes(draft.end)}`
+                        : formatMinutes(draft.start)}
+                    </ThemedText>
+                  </View>
+                </View>
+              </Animated.View>
+            ) : null}
           </View>
 
           {/* 当前时间线 */}
@@ -874,6 +1023,10 @@ const styles = StyleSheet.create({
   hourLabel: { width: GUTTER_WIDTH, textAlign: 'center', fontSize: 11 },
   hourLine: { flex: 1, height: StyleSheet.hairlineWidth },
   blocks: { position: 'absolute', top: 0, bottom: 0 },
+  /** 空白层：铺满整条时间轴，只挂长按拖动手势（不画任何东西） */
+  createLayer: { position: 'absolute', top: 0, bottom: 0 },
+  /** 拖动中还没落定的那一段：整行宽（不分道）+ 半透明 */
+  draftBlock: { left: 0, right: 0, opacity: 0.6 },
   /**
    * 课的背景带：虚线、透明底、不显眼 —— 一眼就知道"这段被占着"，
    * 但绝不会被误认成一件待办（实心块 = 任务，这是全 App 的约定）。
