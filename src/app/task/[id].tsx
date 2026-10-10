@@ -37,10 +37,9 @@ import { describePastWindow, planEventShift, toLooseTodo } from '@/domain/past-e
 import { describeNextFire } from '@/domain/reminder';
 import { describeReminder, describeRepeat } from '@/domain/repeat-next';
 import { buildScheduleTime, SCHEDULE_PRESETS } from '@/domain/schedule-presets';
-import { splitSubtaskLines } from '@/domain/subtask-lines';
 import { subtaskProgress } from '@/domain/subtask-progress';
 import { taskDisplayState } from '@/domain/task-state';
-import { taskAnchor, type RepeatRule, type Task, type TaskTime } from '@/domain/task';
+import { taskAnchor, isAllDay, type RepeatRule, type Task, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { describeDue, formatDayTime } from '@/utils/datetime';
@@ -139,6 +138,8 @@ export default function TaskDetailScreen() {
     task && isFrequency ? occurrencesInPeriod(checkinKeys, task.repeat) : 0;
   const [subtasks, setSubtasks] = useState<Task[]>([]);
   const [newSubtask, setNewSubtask] = useState('');
+  /** 子项输入框：提交一条后要立刻聚焦回去，好接着写下一条（连续创建） */
+  const subtaskInputRef = useRef<TextInput>(null);
   const [loading, setLoading] = useState(true);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetView, setSheetView] = useState<SheetView>('main');
@@ -150,8 +151,6 @@ export default function TaskDetailScreen() {
   /** 滚轮按住时关掉整页滚动（见 date-time-picker 文件头：外层会吃掉滚轮手势） */
   const [wheelLocked, setWheelLocked] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  /** 低频设置（状态/类型/目标/归属/转打卡）收在这个开关后面，默认收起 */
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /** 输入框内容单独放，避免每次写库都重渲染整页 */
   const [title, setTitle] = useState('');
@@ -212,21 +211,25 @@ export default function TaskDetailScreen() {
   }, [id, loadSubtasksAction, loadTask]);
 
   /**
-   * 一次提交**好几条**：输入框里一行一步，写完点「加」全部建成。
+   * 一次提交**一条**：输入框里整段就是一个子项，点「加」建一条。
    *
-   * 拆一件事本来就是一口气想完的（"查资料 / 写提纲 / 发给小王"），
-   * 建一条、点一次、再建一条，是把一次思考切成三次操作。
-   * 只写一行时行为跟以前一样 —— 老用法不会被打破。
+   * 以前"一行一条"会把贴进来的清单自动炸成好几条 —— 那是替用户猜边界：
+   * 换行只是排版，不是"这是另一件事"的声明，切错了还得一条条删。
+   * 现在子项就是用户一条条主动放上去的积木块（对齐滴答清单的手动归档心智）。
+   *
+   * 代价是"一口气录五条"变慢了，所以配**连续创建**：提交后清空并把焦点
+   * 还给输入框，可以一条接一条地敲（Things / Todoist 的 quick-add 循环），
+   * 手不用离开键盘 —— 慢的不是操作次数，是"要不要重新点一下输入框"。
    */
-  /** 输入框里真的有东西可加（空行、纯符号不算） */
-  const canAddSubtask = splitSubtaskLines(newSubtask).length > 0;
+  const canAddSubtask = newSubtask.trim().length > 0;
 
   const addSubtaskNow = useCallback(async () => {
-    const lines = splitSubtaskLines(newSubtask);
-    if (!id || !lines.length) return;
+    const title = newSubtask.trim();
+    if (!id || !title) return;
+    // 先清空 + 抢回焦点，再等落库：连续创建时手指/光标不该被 await 卡住
     setNewSubtask('');
-    // 只写一行也走批量那条路：它本来就是"建 N 条 + 刷一次"，N=1 时行为完全一致
-    await addSubtasksAction(id, lines);
+    subtaskInputRef.current?.focus();
+    await addSubtasksAction(id, [title]);
     await reloadAfterSubtaskChange();
   }, [id, newSubtask, addSubtasksAction, reloadAfterSubtaskChange]);
 
@@ -544,8 +547,11 @@ export default function TaskDetailScreen() {
   const pastPlan = pastEvent ? planEventShift(task) : null;
   const pastWindow = pastEvent ? describePastWindow(task) : '';
 
+  // 全天不写时刻：它没落在几点几分，写 00:00 是在替用户说一句他没说过的话
   const timeText = anchor
-    ? `${describeDue(anchor)} · ${formatDayTime(anchor)}`
+    ? isAllDay(task.time)
+      ? `${describeDue(anchor)} · 全天`
+      : `${describeDue(anchor)} · ${formatDayTime(anchor)}`
     : '还没定时间';
   /**
    * 没有时间时不写第二行：卡片标题旁边那句提示已经把这件事说完了，
@@ -616,8 +622,8 @@ export default function TaskDetailScreen() {
             : done
               ? '撤销完成'
               : task.repeat
-                ? '完成这一次'
-                : '完成'}
+                ? '标记完成这一次'
+                : '标记完成'}
         </ThemedText>
       </Pressable>
     </>
@@ -947,26 +953,33 @@ export default function TaskDetailScreen() {
         ))}
 
         {/*
-          一行一步：写好几步再点「加」，一次全建成（splitSubtaskLines 定怎么切）。
-          **必须有多行**：拆一件事是连着想出来的，一个一个加会把一次思考切成好几次操作。
-          也留了 onSubmitEditing —— 键盘上有「完成」键的人不用挪手去找按钮。
+          一次一条，但**提交后不清场**：输入框清空、焦点还在，接着写下一条。
+          所以"录五条"不是五次要点，而是连着五次「完成」—— 手始终在键盘上。
+          onSubmitEditing 让键盘上的「完成」键直接提交，不用挪手去找「加」。
         */}
         <View style={[styles.subtaskAdd, { borderColor: theme.backgroundSelected }]}>
           <Ionicons name="add" size={16} color={theme.textSecondary} />
           <TextInput
+            ref={subtaskInputRef}
             value={newSubtask}
             onChangeText={setNewSubtask}
             onSubmitEditing={() => void addSubtaskNow()}
-            placeholder="一行一步，可以写好几步"
+            placeholder="加一个子项"
             placeholderTextColor={theme.textSecondary}
             returnKeyType="done"
-            multiline
+            /*
+             * 单行 + 不因提交失焦：既然不再按换行拆条，多行就没用了，
+             * 而单行能让软键盘的「完成」键直接等于"建一条" —— 手不用离开键盘，
+             * 连着敲就是连续创建。blurOnSubmit 默认是 true，那样一提交键盘就落下去了，
+             * 连续创建的前提（键盘还在）就没了。
+             */
+            blurOnSubmit={false}
             style={[styles.subtaskInput, { color: theme.text }]}
           />
           {canAddSubtask ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="加上这几步"
+              accessibilityLabel="加上这个子项"
               onPress={() => void addSubtaskNow()}
               style={({ pressed }) => [
                 styles.subtaskAddButton,
@@ -981,34 +994,25 @@ export default function TaskDetailScreen() {
       </Card>
 
       {/*
-        低频设置收在开关后面。
-        这一页以前是 9 个分区平铺，最常改的「时间」被挤到第 3 屏才看得见 ——
-        现在把"一辈子改不了几次"的收起来，收起时只剩一行摘要。
-      */}
-      <Card>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded: settingsOpen }}
-          accessibilityLabel={settingsOpen ? '收起更多设置' : '展开更多设置'}
-          onPress={() => setSettingsOpen((open) => !open)}
-          style={({ pressed }) => [styles.settingsToggle, { opacity: pressed ? 0.7 : 1 }]}>
-          <Ionicons name="options-outline" size={16} color={theme.textSecondary} />
-          <View style={styles.settingsToggleBody}>
-            <ThemedText type="small">更多设置</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
-              {settingsSummary}
-            </ThemedText>
-          </View>
-          <Ionicons
-            name={settingsOpen ? 'chevron-up' : 'chevron-down'}
-            size={16}
-            color={theme.textSecondary}
-          />
-        </Pressable>
-      </Card>
+        低频设置（状态 / 类型 / 目标 / 归属 / 转打卡 / 删除）**常驻展开**。
 
-      {settingsOpen ? (
-        <>
+        以前它们收在一个「更多设置」开关后面：多一次点击才看得见，而用户根本
+        不知道里面有什么 —— 折叠把"找设置"变成了"猜设置"。现在改成常驻，
+        代价是页面变长，但**靠顺序而不是靠折叠来保证「时间」最显眼**：
+        时间卡前面就摆着，往下滚才是这些低频项。
+        这一行只剩一个分组标题 + 当前值摘要，不再是可点的开关。
+      */}
+      <View style={styles.settingsToggle}>
+        <Ionicons name="options-outline" size={16} color={theme.textSecondary} />
+        <View style={styles.settingsToggleBody}>
+          <ThemedText type="small">更多设置</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.rowHint}>
+            {settingsSummary}
+          </ThemedText>
+        </View>
+      </View>
+
+      <>
           {/* 状态 */}
           <Card title="状态">
         <View style={styles.chips}>
@@ -1222,7 +1226,6 @@ export default function TaskDetailScreen() {
             </ThemedText>
           </Pressable>
         </>
-      ) : null}
 
       <ScheduleSheet
         task={sheetOpen ? task : null}

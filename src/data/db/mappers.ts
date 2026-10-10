@@ -100,6 +100,8 @@ export interface TaskRow extends BaseRow {
   start_at: string | null;
   end_at: string | null;
   due_at: string | null;
+  /** 全天。可空：老库没有这一列，NULL 一律按"不是全天"读 */
+  all_day: number | null;
   repeat_json: string | null;
   completion: string;
   target_minutes: number | null;
@@ -122,6 +124,9 @@ export function taskFromRow(row: TaskRow): Task {
     startAt: row.start_at,
     endAt: row.end_at,
     dueAt: row.due_at,
+    // 只有真的标记过全天才带 true：不写成 `allDay: Boolean(row.all_day)`，
+    // 那样每条任务都会多出一个 `allDay: false`，导出备份时也跟着多一列噪音
+    allDay: row.all_day ? true : undefined,
   });
   return {
     ...readBase(row),
@@ -164,6 +169,8 @@ export function taskColumns(task: Task): ColumnMap {
     start_at: time.startAt ?? null,
     end_at: time.endAt ?? null,
     due_at: time.dueAt ?? null,
+    // 1 / 0 而不是 true/false：SQLite 没有布尔，存整数才好在 SQL 里直接判
+    all_day: time.allDay ? 1 : 0,
     repeat_json: task.repeat ? JSON.stringify(task.repeat) : null,
     completion: task.completion,
     target_minutes: task.targetMinutes ?? null,

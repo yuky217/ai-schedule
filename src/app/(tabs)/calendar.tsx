@@ -19,14 +19,13 @@ import { Card } from '@/components/card';
 import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
+import { InboxPanel } from '@/components/inbox-panel';
 import { MonthPlan } from '@/components/month-plan';
 import { Screen } from '@/components/screen';
-import { SideDrawer } from '@/components/side-drawer';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
 import { TimetableView } from '@/components/timetable-view';
-import { TodoView } from '@/components/todo-view';
-import { Spacing } from '@/constants/theme';
+import { BottomTabInset, Spacing } from '@/constants/theme';
 import type { DayMarks } from '@/domain/calendar-shape';
 import { calendarWindow, monthGridDays, windowKey } from '@/domain/calendar-window';
 import {
@@ -59,7 +58,7 @@ import { buildPlacedTime, buildRetimedSpanTime, buildRetimedTime, buildTimeOnDay
 import { NO_TIME, taskAnchor, type Task } from '@/domain/task';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
 import { groupTodos } from '@/domain/todo';
-import { useCrossDayDrag } from '@/hooks/use-cross-day-drag';
+import { useCrossDayDrag, type CrossDayDragGesture } from '@/hooks/use-cross-day-drag';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
@@ -91,7 +90,19 @@ import { toDate } from '@/utils/datetime';
  * 所以课表里换周只走 ‹ › 两个按钮，横向手势全留给表格。
  */
 
-type CalendarMode = 'month' | 'week' | 'day' | 'timetable' | 'todo';
+/**
+ * 日历只有"有时间才进得去"的四个视图（2026-10-10 删掉第五栏「待办」）。
+ *
+ * 原来还有一栏「待办」，装的是 `groupTodos` 那份五档列表 —— 而收集箱页
+ * （底部 Tab）现在装的就是同一份东西。同一份数据两处渲染，代价是**同一个列表
+ * 两种手感**（收集箱的行能拖、待办栏的行不能拖），那是最难向用户解释的一种不一致。
+ * 所以并到收集箱，这里只剩下按时间说话的四个视图。
+ *
+ * 副作用要记住：**"还没排时间的事"在日历页唯一的落点就是那个磁吸面板**
+ * （见下面 overlay 的 InboxPanel）—— 以后要再把"欠着的"请回这一页，
+ * 落点也是它，不要再新开一栏。
+ */
+type CalendarMode = 'month' | 'week' | 'day' | 'timetable';
 
 /** 跟手位移上限（超过就不动，给用户"到头了"的手感） */
 const PAN_LIMIT = 56;
@@ -101,12 +112,12 @@ const VELOCITY_THRESHOLD = 350;
 /** 翻页时新旧内容错位的距离 */
 const PAGE_OFFSET = 44;
 /**
- * 月视图里"收集箱抽屉"最多列出几行。
+ * 收集箱磁吸面板最多列出几行。
  *
- * 抽屉贴在屏幕底部（Screen 的 bottomBar 槽位，不随页面滚动），
+ * 面板是**拖拽源头**（把欠着的事扔到某天），展开后贴在屏幕底部。
  * 拖动期间页面滚动被锁，所以能拖到的只有屏幕上看得见的日期格 ——
- * 限行是为了让抽屉自己别长高到把月历顶出屏幕：抽屉每多一行，
- * 上方的月历就少一行可见空间。
+ * 限行是为了让面板别长高到把月历顶出屏幕：面板每多一行，
+ * 上方的月历就少一行可见空间。多出来的收成一行「还有 N 件 · 去收集箱」。
  */
 const INBOX_DRAG_LIMIT = 4;
 
@@ -140,25 +151,20 @@ export default function CalendarScreen() {
   const courses = useAppStore((state) => state.courses);
   const term = useAppStore((state) => state.term);
   /**
-   * 收集箱（顶层、未完成、完全没时间的那些）也放这一页当一个**拖拽源头**。
+   * 磁吸面板的数据源（拖拽源头）。
    *
    * 为什么要放在日历里：想"排到具体哪天"时，用户脑子里对照的是**日历本身**
-   * ——这天有没有课、那天是不是周末。在收集箱里拖只能看到一条两周的日期带，
-   * 看不到这张月历。而跨 Tab 拖拽在手机上不成立（切页那一下手势就被系统掐断了），
-   * 所以只能把源头搬进日历，不能让手指把条目拖过去。
+   * ——这天有没有课、那天是不是周末。而跨 Tab 拖拽在手机上不成立
+   * （切页那一下手势就被系统掐断了），所以只能把源头搬进日历，不能让手指把条目拖过去。
+   *
+   * 取 `tasks`（全量、含已完成）而不是某条 SQL：分档口径只有 `domain/todo.ts` 一份，
+   * 面板只是从里面挑两档 —— 这样"面板列什么"和"收集箱页列什么"永远说得一致。
    */
-  const inbox = useAppStore((state) => state.inbox);
+  const allTasks = useAppStore((state) => state.tasks);
   // 考试同理：一学期十来场，全量放 store，页面按日期分桶
   const events = useAppStore((state) => state.events);
   // 纪念日也全量在 store：它就那么几个日子，月历的圆点和日卡里的行都从这儿出
   const marks = useAppStore((state) => state.marks);
-  /**
-   * 待办视图要的是**全部任务**（含已完成）—— 分档、排序都在 `domain/todo.ts`。
-   *
-   * 这里刻意不自己查库：`tasks` 本来就被 `app-store.refresh` 拉全量存着
-   * （容器进度与甘特图一直用它），数据早就在内存里，页面直接取。
-   */
-  const allTasks = useAppStore((state) => state.tasks);
   const saveCourse = useAppStore((state) => state.saveCourse);
   /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
   const timetableOn = useSettings((state) => state.timetableEnabled);
@@ -180,11 +186,6 @@ export default function CalendarScreen() {
   const [monthOpen, setMonthOpenState] = useState(false);
   /**
    * 右侧收集箱抽屉开没开。
-   * 它跟底部那条收集箱是**两回事**：底部的是拖拽源头（把待办扔到某天），
-   * 这一层是"看看我还欠着什么" + 直接勾掉 / 点开 —— 而且它在每个视图都在，
-   * 不只是月视图。
-   */
-  const [inboxOpen, setInboxOpen] = useState(false);
   /** 选中那天那张卡里的"加到这天"草稿 */
   const [dayDraft, setDayDraft] = useState('');
   const [addingToDay, setAddingToDay] = useState(false);
@@ -219,11 +220,6 @@ export default function CalendarScreen() {
   const [scheduled, setScheduled] = useState<Task[]>([]);
 
   useEffect(() => {
-    /**
-     * 待办视图用的是 store 里的全量任务（`allTasks`），根本不看这个时间窗 ——
-     * 没必要为了一个用不上的窗口去查库。这也是它唯一和别处不同的地方。
-     */
-    if (mode === 'todo') return;
     let alive = true;
     void loadScheduledBetween(range.from.toISOString(), range.to.toISOString()).then((rows) => {
       if (alive) setScheduled(rows);
@@ -425,8 +421,9 @@ export default function CalendarScreen() {
 
   /* ---------------- 跨天拖拽改期（月视图） ---------------- */
 
-  const { countsByDay, tasksByDay } = useMemo(() => {
+  const { countsByDay, tasksByDay, openCountsByDay } = useMemo(() => {
     const counts = new Map<string, number>();
+    const openCounts = new Map<string, number>();
     const tasks = new Map<string, Task[]>();
     for (const task of scheduled) {
       const anchor = taskAnchor(task);
@@ -434,6 +431,11 @@ export default function CalendarScreen() {
       if (!date) continue;
       const key = dayKey(date);
       counts.set(key, (counts.get(key) ?? 0) + 1);
+      // 「其中还欠着几件」——月历圆点靠它分深浅（见 domain/calendar-shape）。
+      // 只有任务有完成态，所以这个数只在这儿算，课/考试不参与。
+      if (task.status !== TaskStatus.Done) {
+        openCounts.set(key, (openCounts.get(key) ?? 0) + 1);
+      }
       const bucket = tasks.get(key) ?? [];
       bucket.push(task);
       tasks.set(key, bucket);
@@ -445,7 +447,7 @@ export default function CalendarScreen() {
         return ta.localeCompare(tb);
       });
     }
-    return { countsByDay: counts, tasksByDay: tasks };
+    return { countsByDay: counts, tasksByDay: tasks, openCountsByDay: openCounts };
   }, [scheduled]);
 
   /**
@@ -562,8 +564,6 @@ export default function CalendarScreen() {
 
   const advance = useCallback(
     (dir: 1 | -1) => {
-      // 待办看的是"当下手上欠着什么"，没有前后可分 —— 翻页对它没有意义
-      if (mode === 'todo') return;
       if (mode === 'day') {
         setSelected((d) => addDays(d, dir));
       } else {
@@ -594,8 +594,7 @@ export default function CalendarScreen() {
       Gesture.Pan()
         // 课表要横滑看 7 列，翻页手势必须先让开 —— 同一方向的两种手势抢起来，
         // 结果一定是"想滚表格却把周翻掉了"。
-        // 待办也关掉：它没有"上一页/下一页"，横滑只会把内容无意义地推走再弹回。
-        .enabled(mode !== 'timetable' && mode !== 'todo')
+        .enabled(mode !== 'timetable')
         .activeOffsetX([-16, 16])
         // 竖直方向留给滚动，一旦判定为竖划就放弃翻页
         .failOffsetY([-20, 20])
@@ -688,15 +687,20 @@ export default function CalendarScreen() {
    */
   const dayMarks = useMemo(() => {
     const map = new Map<string, DayMarks>();
-    for (const [key, count] of courseCountByDay) {
-      map.set(key, { courses: count, exams: 0 });
-    }
-    for (const [key, list] of examsByDay) {
-      const current = map.get(key) ?? { courses: 0, exams: 0 };
-      map.set(key, { courses: current.courses, exams: list.length });
-    }
+    const bump = (key: string, patch: Partial<DayMarks>) => {
+      map.set(key, { ...(map.get(key) ?? { courses: 0, exams: 0 }), ...patch });
+    };
+    /*
+      先铺「欠着几件」这一层，再补课和考试。
+      顺序有讲究：一个只有任务、没课也没考试的日子，唯一会碰这张表的
+      就是这一步 —— 反过来的话 `marksByDay.get(key)` 会是 undefined，
+      那天的点就全被当成"已了结"，深浅直接失效。
+    */
+    for (const [key, openTasks] of openCountsByDay) bump(key, { openTasks });
+    for (const [key, count] of courseCountByDay) bump(key, { courses: count });
+    for (const [key, list] of examsByDay) bump(key, { exams: list.length });
     return map;
-  }, [courseCountByDay, examsByDay]);
+  }, [courseCountByDay, examsByDay, openCountsByDay]);
 
   /**
    * 月历下拉展开的那张清单：这个月每天都有什么。
@@ -879,10 +883,7 @@ export default function CalendarScreen() {
   const headerLabel =
     mode === 'month'
       ? format(cursor, 'yyyy年M月')
-      : mode === 'todo'
-        ? // 待办不按日期看，所以这儿不放"月份"那种翻页标题，改成一句它自己的定位
-          `手上欠着的 · ${groupTodos(allTasks).reduce((sum, g) => (g.bucket === 'done' ? sum : sum + g.tasks.length), 0)} 件`
-        : mode === 'timetable'
+      : mode === 'timetable'
           ? `${
               termStarted ? `第 ${cursorWeek} 周 · ` : term ? `${term.label} · ` : ''
             }${format(weekDays[0], 'M月d日')} - ${format(weekDays[6], 'M月d日')}`
@@ -904,10 +905,7 @@ export default function CalendarScreen() {
         ? '长按块横拖换天、纵拖换时刻'
         : mode === 'timetable'
           ? '点课块：改这一次（调课 / 停课）· 长按拖：改整学期'
-          : mode === 'todo'
-            ? // 待办里没有任何手势要教：点行进详情、点圈勾完成，都是看得见的
-              ''
-            : '长按块拖动改时刻 · 拽上下边改时长';
+          : '长按块拖动改时刻 · 拽上下边改时长';
 
   /**
    * 月历圆点的三种形状，只有**月视图且这张月历上真出现过课或考试**时才解释。
@@ -928,116 +926,65 @@ export default function CalendarScreen() {
    */
   const hasMuted = scheduled.some((task) => isMuted(taskDisplayState(task)));
 
+  /**
+   * 磁吸面板只列两档（见 `docs/未完成与检索方案`）：
+   * 「已过期」最该先安排，「还没排时间」是删掉第五栏「待办」之后
+   * **日历页唯一的**"没时间的事"落点 —— 其余四栏都要求有时间才进得去。
+   */
+  const panelGroups = useMemo(
+    () => groupTodos(allTasks).filter((g) => g.bucket === 'overdue' || g.bucket === 'someday'),
+    [allTasks],
+  );
+
   return (
     <Screen
-      title="日历"
       /*
-        副标题随视图变：待办视图里"有时间的事才会出现在这里"恰好是**反的**
-        —— 那一栏存在的意义就是"没时间的事也在"。副标题说错话比不写更糟。
+        没有页头（2026-10-10）：标题和副标题都撤了。底部 Tab 栏已经写着「日历」，
+        左上角再写一遍，就是从日历身上抠下来的高度 —— 这一页的主角是日历本身。
+        （副标题原来还得随视图变措辞，待办栏说"有时间的事才出现"恰好是反的，
+        撤掉之后连那句例外也不用维护了。）
       */
-      subtitle={mode === 'todo' ? '跟时间无关，欠着你的都在这儿' : '有时间的事才会出现在这里'}
+      // 收紧留白：日历要在屏幕上占更大一块（"范围放大"指的是页面占比，不是时间跨度）
+      contentStyle={styles.tightContent}
       // 拉清单期间也不能滚：手指一竖页面跟着跑，跟手的面板就抖了
       scrollEnabled={!busyDragging && !monthPulling}
       /*
-        收集箱抽屉：贴在屏幕底部常驻，不随页面滚动。
-        它是这个页面的第二个拖拽源头，落点就是上方那些日期格。
-        为什么必须常驻：拖动期间页面滚动被锁死，源头一旦滚出屏幕就再也拖不到；
-        而月历自身高度固定（6 行不跳），抽屉贴底不会把它挤变形。
-        只在月视图出现 —— 周/日/课视图里没有"日期格"这个落点。
-      */
-      bottomBar={
-        mode === 'month' && inbox.length ? (
-          <View style={styles.drawer}>
-            <View style={styles.drawerHead}>
-              <ThemedText type="smallBold">收集箱 · {inbox.length} 件</ThemedText>
-              <ThemedText type="small" themeColor="textSecondary" style={styles.drawerHint}>
-                长按一行，拖到上面的日期格
-              </ThemedText>
-            </View>
-            {inbox.slice(0, INBOX_DRAG_LIMIT).map((task) => (
-              <DraggableTaskRow
-                key={task.id}
-                task={task}
-                gestureFor={gestureFor}
-                onOpen={guardedOpen}
-                onComplete={guardedToggle}
-              />
-            ))}
-            {inbox.length > INBOX_DRAG_LIMIT ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => router.push('/inbox')}
-                style={({ pressed }) => [styles.moreRow, { opacity: pressed ? 0.6 : 1 }]}>
-                <ThemedText type="small" themeColor="textSecondary">
-                  还有 {inbox.length - INBOX_DRAG_LIMIT} 件 · 去收集箱
-                </ThemedText>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : undefined
-      }
-      /*
-        右侧那一层收集箱：**每个视图都能拉出来**。
-        底部那条只在月视图有（它是拖拽源头，非月视图没有"日期格"这个落点），
-        而"我还欠着什么"这件事在任何视图都成立，所以另开这一层 ——
-        平时只露一条把手，不占版面。
+        收集箱面板：**这一页上唯一的收集箱**（2026-10-10）。
+
+        以前有两个入口 —— 底部那条（拖拽源头，只在月视图）和右侧抽屉
+        （任何视图都能拉，但盖住月历于是拖不到格子上）。现在合成一个：
+        任何视图都能拉出、本身就是拖拽源头、收起时只占一条把手。
+        拖某一行时它自动缩回把手（见 collapseWhen），月历格才露得出来。
       */
       overlay={
-        <SideDrawer open={inboxOpen} onOpenChange={setInboxOpen}>
-          <View style={styles.sideHead}>
-            <ThemedText type="smallBold">收集箱 · {inbox.length} 件</ThemedText>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                setInboxOpen(false);
-                router.push('/inbox');
-              }}
-              style={({ pressed }) => [styles.sideLink, { opacity: pressed ? 0.7 : 1 }]}>
-              <ThemedText type="small" themeColor="textSecondary">
-                去收集箱 ›
-              </ThemedText>
-            </Pressable>
+        panelGroups.length ? (
+          <View style={styles.inboxLayer} pointerEvents="box-none">
+            <InboxPanel
+              groups={panelGroups}
+              limit={INBOX_DRAG_LIMIT}
+              gestureFor={gestureFor}
+              onOpenTask={guardedOpen}
+              onCompleteTask={guardedToggle}
+              onOpenFull={() => router.push('/inbox')}
+              // 拖起来了就收起，让出下方的日期格
+              collapseWhen={draggingTask !== null}
+            />
           </View>
-          {inbox.length ? (
-            inbox.map((task) => (
-              <TaskRow
-                key={task.id}
-                task={task}
-                onPress={guardedOpen}
-                onComplete={guardedToggle}
-              />
-            ))
-          ) : (
-            <ThemedText type="small" themeColor="textSecondary">
-              收集箱是空的 —— 记东西时不写时间，就先落在这儿
-            </ThemedText>
-          )}
-        </SideDrawer>
+        ) : null
       }>
       <View ref={containerRef} style={styles.container} collapsable={false}>
         <View style={styles.toolbar}>
           <View style={styles.nav}>
-            {/*
-              待办视图没有"上一页/下一页"—— 它看的是当下手上欠着什么，
-              翻到"上个月的待办"没有意义。所以那对箭头整个撤掉，
-              标题退化成一句纯文字（不再是可点回今天的按钮）。
-            */}
-            {mode === 'todo' ? (
+            <NavButton label="‹" onPress={() => pageBy(-1)} />
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setCursor(new Date());
+                setSelected(new Date());
+              }}>
               <ThemedText type="smallBold">{headerLabel}</ThemedText>
-            ) : (
-              <>
-                <NavButton label="‹" onPress={() => pageBy(-1)} />
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setCursor(new Date());
-                    setSelected(new Date());
-                  }}>
-                  <ThemedText type="smallBold">{headerLabel}</ThemedText>
-                </Pressable>
-                <NavButton label="›" onPress={() => pageBy(1)} />
-              </>
-            )}
+            </Pressable>
+            <NavButton label="›" onPress={() => pageBy(1)} />
           </View>
           <Segmented value={mode} onChange={changeMode} segments={segments} />
         </View>
@@ -1254,15 +1201,6 @@ export default function CalendarScreen() {
                 </>
               ) : null}
 
-              {mode === 'todo' ? (
-                <TodoView
-                  tasks={allTasks}
-                  onOpen={openTask}
-                  onComplete={toggleById}
-                  onCapture={() => router.push('/capture')}
-                />
-              ) : null}
-
               {mode === 'timetable' ? (
                 <TimetableView
                   courses={courses}
@@ -1283,12 +1221,9 @@ export default function CalendarScreen() {
         </GestureDetector>
 
         {/*
-          图例区。待办视图整个不渲染它 —— 那一栏的 legend 是空串，
-          而这段逻辑还会因为"今天没有已排的事"补一句"这个范围内还没有安排"，
-          在待办里就是错的话（待办的存在意义正是"没时间的也在"）。
-          简约模式下也整块不渲染：图例是说明书，开简约的人已经不需要它了。
+          图例区。简约模式下整块不渲染：图例是说明书，开简约的人已经不需要它了。
         */}
-        {mode === 'todo' || simpleMode ? null : (
+        {simpleMode ? null : (
           <View style={[styles.legend, { borderColor: theme.backgroundSelected }]}>
             <ThemedText type="small" themeColor="textSecondary" style={styles.legendText}>
               {mode === 'timetable'
@@ -1353,7 +1288,7 @@ export default function CalendarScreen() {
 
 interface DraggableTaskRowProps {
   task: Task;
-  gestureFor: (task: Task) => ReturnType<typeof Gesture.Pan>;
+  gestureFor: (task: Task) => CrossDayDragGesture;
   onOpen: (task: Task) => void;
   onComplete: (task: Task) => void;
 }
@@ -1408,7 +1343,6 @@ const SEGMENTS: Array<{ key: CalendarMode; label: string }> = [
   { key: 'week', label: '周' },
   { key: 'day', label: '日' },
   { key: 'timetable', label: '课' },
-  { key: 'todo', label: '待办' },
 ];
 
 /** 分段控件：高亮块跟着选中项平移，而不是硬切换 */
@@ -1475,6 +1409,23 @@ function Segmented({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   /**
+   * 收紧后的内容边距（"范围放大"= 页面占比）：Screen 默认上边距 16、区块间距 24，
+   * 这里各减一档。日历这页要的是"日历占满屏"，不是"每块之间留口气"。
+   */
+  tightContent: { paddingTop: Spacing.two, gap: Spacing.three },
+  /**
+   * 收集箱面板贴着屏幕底部，浮在内容之上。
+   * box-none 让面板之外的点击照旧落到页面上（月历格子照样点得到）。
+   */
+  inboxLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: BottomTabInset,
+    alignItems: 'center',
+    paddingHorizontal: Spacing.three,
+  },
+  /**
    * 工具栏：加了「待办」之后分段变五个，窄屏上一行放不下
    * （导航区 + 五个分段超过 439pt），所以允许换行 ——
    * 挤不下时分段整体落到第二行，而不是把标题压到看不清。
@@ -1533,23 +1484,6 @@ const styles = StyleSheet.create({
    * 它是"屏幕的一部分"，不是浮在内容上的一张卡；再有边框会看着像挡住了日历。
    * 上方留一条细线把"屏幕下方这块是另一个区"讲清楚就够了。
    */
-  drawer: {
-    gap: Spacing.one,
-    paddingTop: Spacing.two,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  drawerHead: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.two },
-  drawerHint: { flex: 1, textAlign: 'right' },
-  /** 「还有 N 件 · 去收集箱」—— 居中的一行轻提示，不是主操作 */
-  moreRow: { paddingTop: Spacing.two, alignItems: 'center' },
-  sideHead: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: Spacing.two,
-    paddingBottom: Spacing.one,
-  },
-  sideLink: { paddingVertical: 2 },
   dayAdd: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -51,38 +51,80 @@ export const SHAPE_RADIUS = 8;
 /** 月历一格上最多摆几个圆点 */
 export const MAX_DAY_DOTS = 3;
 
-/** 那天各有多少课、多少场考试（月历圆点分形状用；任务数走另一条老路） */
+/**
+ * 那天各有多少课、多少场考试、多少件**还没做完**的任务。
+ * 任务总数走另一条老路（`countsByDay`），这里只补"其中欠着几件"。
+ */
 export interface DayMarks {
   courses: number;
   exams: number;
+  /** 那天还没做完的任务数（≤ 任务总数）。不传按 0 算 = 一律当"已了结" */
+  openTasks?: number;
 }
 
 /**
- * 把"那天有几件什么"摊成一个有序的形状列表，最多 `MAX_DAY_DOTS` 个。
+ * 月历一格上的**一个点**。
  *
- * 两条约定，都在这里定死：
+ * 从"就是一个形状枚举"变成带信息的对象，是因为任务点要分深浅 ——
+ * 而深浅这层信息**只对任务存在**：课是背景（不用你动手）、考试到点就是它
+ * （没有完成态），两者都答不出"做完了没有"。所以不给形状语言再加一套维度，
+ * 只让 `open` 挂在 task 上。
+ */
+export interface DayDot {
+  /** 形状：课 / 考试 / 任务 */
+  kind: CalendarShape;
+  /**
+   * 只对 `task` 有值：`true` = **还没做完**（画深色，见 `calendar-month`）。
+   *
+   * 这是月历唯一能**提前**告诉用户的事 —— "这天除了安排，还欠着事"。
+   * 过期与否在月历上完全看不出（形状一样、位置一样），深浅是目前成本最低
+   * 又不用再切一种形状的做法。
+   */
+  open?: boolean;
+}
+
+/**
+ * 把"那天有几件什么"摊成一个有序的点列表，最多 `MAX_DAY_DOTS` 个。
+ *
+ * 三条约定，都在这里定死：
  *
  * 1. **顺序**：先课 → 再考试 → 最后任务 —— 越往后越需要你动手。
  * 2. **名额不够时按优先级保**：任务 > 考试 > 课。课有课表可以看，少一个圆点
  *    不损失信息；而"这天除了满课还压着两件事"恰恰是月历唯一能告诉你的事。
+ * 3. **同是任务点时，没做完的先留**（`marks.openTasks`）—— 和上一条同一个精神：
+ *    欠着的更该被看见。丢掉的永远是"已经了结的那几件"。
  *
- * 注意这条说的是**丢掉谁**，不是**不许出现谁**：有富余名额时课照常画出来
+ * 注意第 2 条说的是**丢掉谁**，不是**不许出现谁**：有富余名额时课照常画出来
  * （"空心 + 实心 + 实心"是准确的信息）。只有名额被事占满，课才整个消失。
  *
  * 为什么不是简单地"排好序再取后 3 个"：那样中间的考试会被误伤 ——
  * 排序是课/考试/任务，取尾巴时考试会被任务先挤掉，顺序就白排了。
- * 先算配额、再按顺序摆，两个约定才同时成立。
+ * 先算配额、再按顺序摆，三条约定才同时成立。
+ *
+ * `openTasks` 会被夹到 `count` 以内再算：这个字段是"其中欠着几件"，
+ * 传进来比总数还大就是调用方算错了，此时按"全是欠着的"处理，
+ * 而不是凭空多出几个点。
  */
-export function dayShapes(count: number, marks: DayMarks | undefined): CalendarShape[] {
+export function dayShapes(count: number, marks: DayMarks | undefined): DayDot[] {
   const courses = marks?.courses ?? 0;
   const exams = marks?.exams ?? 0;
+  const openTasks = Math.min(marks?.openTasks ?? 0, count);
   // 先保任务、再保考试、最后才轮到课 —— 从后往前分配名额
   const keepTasks = Math.min(count, MAX_DAY_DOTS);
   const keepExams = Math.min(exams, MAX_DAY_DOTS - keepTasks);
   const keepCourses = Math.min(courses, MAX_DAY_DOTS - keepTasks - keepExams);
+  // 任务名额里也按同一精神再分一次：没做完的先留，剩下的才是已了结的
+  const keepOpen = Math.min(openTasks, keepTasks);
+  const keepDone = keepTasks - keepOpen;
   return [
-    ...Array<CalendarShape>(keepCourses).fill('course'),
-    ...Array<CalendarShape>(keepExams).fill('exam'),
-    ...Array<CalendarShape>(keepTasks).fill('task'),
+    ...dots(keepCourses, { kind: 'course' }),
+    ...dots(keepExams, { kind: 'exam' }),
+    ...dots(keepOpen, { kind: 'task', open: true }),
+    ...dots(keepDone, { kind: 'task', open: false }),
   ];
+}
+
+/** 生成 n 个点。**每个都是新对象** —— 别让调用的地方共享同一个引用 */
+function dots(n: number, dot: DayDot): DayDot[] {
+  return Array.from({ length: n }, () => ({ ...dot }));
 }

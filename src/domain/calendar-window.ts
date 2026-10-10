@@ -22,7 +22,7 @@ import { addDays, endOfDay, endOfWeek, startOfDay, startOfMonth, startOfWeek } f
  *    多读几天的代价可以忽略，读漏一天就是用户看得见的 bug。
  */
 
-export type CalendarRangeMode = 'month' | 'week' | 'day' | 'timetable' | 'todo';
+export type CalendarRangeMode = 'month' | 'week' | 'day' | 'timetable';
 
 export interface CalendarWindow {
   /** 起点（当天 00:00） */
@@ -76,10 +76,7 @@ export function calendarWindow(
     from = startOfWeek(cursor, WEEK_OPTIONS);
     to = endOfWeek(cursor, WEEK_OPTIONS);
   } else {
-    // 「日」按选中的那一天取范围。
-    // 「待办」也落进这里：它其实**不用这个窗口**（用的是 store 里的全量任务，
-    // 因为"没排时间的待办"本来就不在任何一个时间窗里）。给它一个今天的范围只是
-    // 为了让这个纯函数有确定返回值 —— 调用方不必为它写特判分支。
+    // 「日」按选中的那一天取范围；「课」在上面和「周」共用同一段（见注释）。
     from = startOfDay(selected);
     to = endOfDay(selected);
   }

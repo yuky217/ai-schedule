@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable } from 'react-native';
 
@@ -62,6 +62,10 @@ export default function CaptureScreen() {
   const router = useRouter();
   const theme = useTheme();
   const capture = useAppStore((state) => state.capture);
+  // 收集箱入口带 from=inbox 进来：那是一条"先记下来"的路，没有"这是灵感"的语义，
+  // 手动勾选灵感是冗余的（文本里含灵感/想法本来就会由 decideRoute 进想法库）。
+  const { from } = useLocalSearchParams<{ from?: string }>();
+  const showIdeaToggle = from !== 'inbox';
 
   const [result, setResult] = useState<QuickCaptureResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +96,7 @@ export default function CaptureScreen() {
             autoFocus
             timePresets={CAPTURE_TIME_PRESETS}
             submitLabel="记下"
+            showIdeaToggle={showIdeaToggle}
             placeholder="比如：周五下午三点开会 / 想做一个只记灵感的 App"
             onSubmit={async (text, options) => {
               setError(null);

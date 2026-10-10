@@ -2,7 +2,7 @@ import { differenceInCalendarDays, startOfDay } from 'date-fns';
 
 import { TaskKind, TaskStatus, TimeAttribute } from './enums';
 import { taskDisplayState, type TaskDisplayState } from './task-state';
-import { taskDue, type Task } from './task';
+import { hasAnyTime, taskDue, type Task } from './task';
 
 /**
  * 「待办」视图的数据口径。
@@ -16,6 +16,9 @@ import { taskDue, type Task } from './task';
  * 到点发生，不需要"你去做"。而执行型（写作业、写策划）和习惯型（跑步、背单词）
  * 才是"欠着你的"。所以这里**不需要用户手动归档、也不需要一个"标记为待办"的开关**，
  * 类型本身就把这件事答了（与"不做智能清单"那条立场一致：落位规则只有一套）。
+ *
+ * 唯一的例外是**还没排时间的日程型**（快记的一句"开会"、没写时间）——
+ * 它没有"到点"可言，反而需要一个落点，否则会从所有列表里消失（见 `isTodo`）。
  *
  * 想法型（idea）也不进来：它在想法库里等着被拆解，不是待办。
  */
@@ -55,14 +58,30 @@ const BUCKET_TITLE: Record<TodoBucket, string> = {
 const BUCKET_ORDER: TodoBucket[] = ['overdue', 'today', 'upcoming', 'someday', 'done'];
 
 /**
- * 是不是"待办"：**只看类型**，不看状态也不看有没有时间。
+ * 是不是"待办"。默认**只看类型**：
  *
  * 执行型和习惯型就是待办（做完的也在内，它落在最后的『已完成』档）；
- * 日程型永远不是 —— 做完的会更不是，它从来就不欠你什么。
+ * 日程型不是 —— 开会、上课是"别人定好的时间，到点发生"，不欠你什么。
  * 所以这里不能先判 `status === Done`，那会把"做完的会"也收进来。
+ *
+ * ⭐ **一条例外：日程型但完全没排时间**时也算待办。
+ *
+ * "到点发生"这条理由的**前提是它有时间**；一条连锚点都没有的日程根本谈不上"到点"，
+ * 它和"没排期的执行型"处境完全一样 —— 都是"记下来了、还没安排"。
+ *
+ * 不收它的后果非常具体：收集箱（五档列表）不收、日历要时间才进得去、
+ * 首页今天按时间窗匹配、习惯页只取习惯型 —— 四个列表同时把它排除，
+ * 用户快记的一句"开会"就凭空消失了（只有知道 id 才打得开）。
+ * 这不是假设：`task-repository.test.ts` 的可达性扫描把
+ * `todo/doing/waiting/done × schedule × 无时间` 四种组合直接扫了出来。
+ *
+ * 想法型不在例外里 —— 它在想法库等拆解，那里才是它的家（`kind` 判定在后，
+ * 就是为了不被这条例外顺带收进来）。
  */
-export function isTodo(task: Pick<Task, 'kind'>): boolean {
-  return task.kind === TaskKind.Execution || task.kind === TaskKind.Habit;
+export function isTodo(task: Pick<Task, 'kind' | 'time'>): boolean {
+  if (task.kind === TaskKind.Execution || task.kind === TaskKind.Habit) return true;
+  if (task.kind === TaskKind.Schedule) return !hasAnyTime(task.time);
+  return false;
 }
 
 /**

@@ -5,6 +5,7 @@ import { Gesture } from 'react-native-gesture-handler';
 import { runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import type { AnimatedStyle } from 'react-native-reanimated';
 
+import { LONG_PRESS_PICKUP_MS } from '@/constants/gestures';
 import type { Task } from '@/domain/task';
 
 /**
@@ -13,8 +14,8 @@ import type { Task } from '@/domain/task';
  * 为什么用 react-native-gesture-handler + react-native-reanimated：
  * - 手势在原生层识别，不再经过 JS 的手势响应链，不会跟子元素的点击、
  *   外层滚动、横向翻页互相抢（之前手写 PanResponder 就是死在这里）；
- * - `activateAfterLongPress` 让"整行长按"就能拿起，不必让用户去掐中
- *   一个 26px 的 ⠿ 手柄；而单击仍然照常触发行内按钮；
+ * - **长按才拿起**，单击仍然照常触发行内按钮（点开 / 勾完成），不必让用户去掐中
+ *   一个 26px 的 ⠿ 手柄；
  * - 跟手的浮块由 shared value 驱动，跑在 UI 线程；命中检测（哪个格子高亮）
  *   才走 JS，并且做了位移节流，手指移动 12px 才回一次 JS。
  *
@@ -33,6 +34,23 @@ export interface CellRect {
 const GHOST_WIDTH = 172;
 /** 手指移动多少 px 才回一次 JS 做命中检测 */
 const HIT_TEST_STEP = 12;
+/** 长按多久才拾起（与收集箱排序同一个数，见 constants/gestures） */
+const PICKUP_MS = LONG_PRESS_PICKUP_MS;
+/**
+ * 按住期间允许手指移动多少 px（2026-10-10）。
+ *
+ * 这是"长按拖拽有时不成功"的真正原因：以前用 `Pan().activateAfterLongPress()`，
+ * 而 **Pan 没有 `maxDistance`** —— 手指按下之后的自然抖动一旦超过触摸阈值，
+ * 长按就前功尽弃，于是表现为"有时能拖、有时拖不起来"。
+ * `LongPress` 有 `maxDistance`，把这段抖动容忍掉，拿起来就稳得多。
+ *
+ * 24pt 是个刻意的折中：够吃掉一次自然的按压抖动，又不至于大到"滑动列表"被
+ * 误判成"拿起"（系统触摸阈值通常在 8–10pt）。
+ */
+const DRIFT_PX = 24;
+
+/** 面板 / 行拿到的就是这个（长按 + 拖 的组合体，不是单个 Pan） */
+export type CrossDayDragGesture = ReturnType<typeof Gesture.Simultaneous>;
 
 export interface CrossDayDragOptions {
   /** 松手且落在某个格子上时触发 */
@@ -49,7 +67,7 @@ export interface CrossDayDrag {
   /** 把某个格子注册进来（返回稳定的 ref 回调，可安全传给 ref） */
   registerCell: (key: string) => (view: View | null) => void;
   /** 给某一行生成拖拽手势；同一个 task 的手势对象保持稳定，避免拖到一半被重建 */
-  gestureFor: (task: Task) => ReturnType<typeof Gesture.Pan>;
+  gestureFor: (task: Task) => CrossDayDragGesture;
   /** 浮块的动画样式，直接给 <Animated.View style={[styles.ghost, ghostStyle]} /> */
   ghostStyle: AnimatedStyle<ViewStyle>;
   /** 浮块正在显示（用于决定要不要挂载浮层节点） */
@@ -80,6 +98,8 @@ export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): Cros
   const opacity = useSharedValue(0);
   const lastHitX = useSharedValue(0);
   const lastHitY = useSharedValue(0);
+  /** 已经"拿起"了（长按已激活）。拖拽手势等它为 1 才肯生效 —— 见 gestureFor */
+  const pickedUp = useSharedValue(0);
 
   /**
    * 浮块位置用**屏幕坐标**（手指的 absoluteX/Y）而不是"容器内坐标"。
@@ -198,7 +218,7 @@ export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): Cros
     reset();
   }, [reset]);
 
-  const gestureCache = useRef(new Map<string, ReturnType<typeof Gesture.Pan>>());
+  const gestureCache = useRef(new Map<string, CrossDayDragGesture>());
 
   const gestureFor = useCallback(
     (task: Task) => {
@@ -206,18 +226,47 @@ export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): Cros
       tasksRef.current.set(task.id, task);
       const cached = gestureCache.current.get(task.id);
       if (cached) return cached;
-      const gesture = Gesture.Pan()
-        // 长按 200ms 才进入拖拽：单击照常触发行内按钮，不用掐手柄
-        .activateAfterLongPress(200)
-        // 手指离开这一行也要继续跟手
+
+      /*
+       * 两个手势分工（2026-10-10 修"长按拖拽有时不成功"）：
+       *
+       * - **hold（长按）只负责"拿起"**。它有 `maxDistance`，所以按住期间
+       *   手指的微小抖动不会再把长按判掉 —— 这正是以前 `Pan.activateAfterLongPress`
+       *   偶发失灵的根因。
+       * - **pan（拖）只负责"跟着走"**，而且是**手动激活**：没拿起之前它不生效，
+       *   所以不会跟页面滚动抢；`pickedUp` 为 1 之后手指一动才转成拖拽。
+       *
+       * 必须是 `Simultaneous`：长按激活之后，Pan 要能**同时**继续活着跟手。
+       *
+       * 点击仍由行内那个 `Pressable` 处理（这里一个手势都不碰它）——
+       * 所以"点开详情 / 勾完成"的老行为一点没变，也就不会出现
+       * "点勾选圈顺手把详情也打开了"这种回归。
+       */
+      const hold = Gesture.LongPress()
+        .minDuration(PICKUP_MS)
+        .maxDistance(DRIFT_PX)
         .shouldCancelWhenOutside(false)
         .onStart((event) => {
           'worklet';
+          pickedUp.value = 1;
           fingerX.value = event.absoluteX;
           fingerY.value = event.absoluteY;
           lastHitX.value = event.absoluteX;
           lastHitY.value = event.absoluteY;
           runOnJS(begin)(task.id, event.absoluteX, event.absoluteY);
+        })
+        .onFinalize(() => {
+          'worklet';
+          pickedUp.value = 0;
+        });
+
+      const pan = Gesture.Pan()
+        .manualActivation(true)
+        // 手指离开这一行也要继续跟手
+        .shouldCancelWhenOutside(false)
+        .onTouchesMove((_event, manager) => {
+          'worklet';
+          if (pickedUp.value) manager.activate();
         })
         .onUpdate((event) => {
           'worklet';
@@ -242,10 +291,12 @@ export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): Cros
           'worklet';
           runOnJS(cancel)();
         });
+
+      const gesture = Gesture.Simultaneous(hold, pan);
       gestureCache.current.set(task.id, gesture);
       return gesture;
     },
-    [begin, cancel, end, fingerX, fingerY, lastHitX, lastHitY, move],
+    [begin, cancel, end, fingerX, fingerY, lastHitX, lastHitY, move, pickedUp],
   );
 
   return useMemo(

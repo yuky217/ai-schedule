@@ -124,7 +124,13 @@ function normalizeTime(kind: TaskKind, input: CreateTaskInput): TaskTime {
     else if (kind === TaskKind.Schedule) attribute = TimeAttribute.Fixed;
     else attribute = TimeAttribute.None;
   }
-  return { attribute, startAt, endAt, dueAt };
+  /*
+    `allDay` 要**原样透传**：`CreateTaskInput.time` 的类型明明白白带着它，
+    而它的 `null`/`undefined` 与"是什么时间"无关（它是"这一天，不落到几点几分"）。
+    以前这里手写四个字段、把它漏掉了 —— 传进来会被**静默丢掉**，
+    表现是"标了全天的新任务，落库后又变回有时刻的"。
+  */
+  return { attribute, startAt, endAt, dueAt, allDay: input.time?.allDay };
 }
 
 /** 时长 / 习惯型默认用"够时长/够频率自动完成"，其余手动勾选 */

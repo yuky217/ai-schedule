@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { restoreOverlayIfEnabled } from '@/entry/overlay';
+import '@/widget';
 import { useAppStore } from '@/state/app-store';
 import { useSettings } from '@/state/settings-store';
 

@@ -8,6 +8,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
+import { LONG_PRESS_PICKUP_MS } from '@/constants/gestures';
 import { Spacing } from '@/constants/theme';
 import { moveItem } from '@/domain/ordering';
 import { useTheme } from '@/hooks/use-theme';
@@ -36,6 +37,10 @@ import { useTheme } from '@/hooks/use-theme';
  * 第三种去向与排序共用一个手势，靠**落点**分工：手指进了投递区就不再算插入位置、
  * 插入线收起、跟手浮层淡下去，松手交给调用方；没进就还是老老实实排序。
  * 不传 `dropZone` 的列表保持原样。
+ *
+ * `reorderable: false` 的列表（收集箱里按时间排的那几档）**三种去向都还在**，
+ * 只是"排序"那一路被关掉：松手不回写顺序、也不画插入线 —— 因为那些档的
+ * 先后是算出来的，拖了会弹回原处，比不能拖更像坏了。
  */
 export interface ReorderableListProps<T> {
   items: T[];
@@ -44,7 +49,23 @@ export interface ReorderableListProps<T> {
   /** 浮层上显示什么（一般就是这行的标题） */
   labelOf: (item: T) => string;
   renderItem: (item: T, index: number, dragging: boolean) => ReactNode;
-  onReorder: (ids: string[]) => void;
+  /**
+   * 排序后回传新顺序。**`reorderable: false` 的列表不会调用它**，
+   * 那种情况下可以不传。
+   */
+  onReorder?: (ids: string[]) => void;
+  /**
+   * 这一档**能不能拖动排序**（默认 `true`）。
+   *
+   * `false` 时长按照样抓得起来、照样跟手、照样能拖进外部投递区、
+   * 原地松手照样走 `onLongPressIdle` —— **只是松手不改顺序**，也不画插入线。
+   *
+   * 为什么要有这个开关：收集箱改成「已过期 / 今天 / 往后」这类**按时间排**
+   * 的档之后，档内顺序是算出来的、不是用户排的。此时还给排序，用户拖完松手
+   * 位置会弹回原处 —— 那比干脆不能拖更糟（看起来像坏了）。
+   * 所以那些档只留"拖出去定时间"这一路，把排序关掉。
+   */
+  reorderable?: boolean;
   /**
    * 长按后**原地松手**（没拖动）时回调 —— 用来弹一层菜单。
    * 传了它，长按就有了两种去向；不传则只有排序。
@@ -121,6 +142,7 @@ export function ReorderableList<T>({
   labelOf,
   renderItem,
   onReorder,
+  reorderable = true,
   onLongPressIdle,
   onDraggingChange,
   dropZone,
@@ -144,6 +166,9 @@ export function ReorderableList<T>({
   keyOfRef.current = keyOf;
   const onReorderRef = useRef(onReorder);
   onReorderRef.current = onReorder;
+  /** 能不能拖动排序。放进 ref 是为了不让手势对象依赖它而重建 */
+  const reorderableRef = useRef(reorderable);
+  reorderableRef.current = reorderable;
   const onLongPressIdleRef = useRef(onLongPressIdle);
   onLongPressIdleRef.current = onLongPressIdle;
   const onDraggingChangeRef = useRef(onDraggingChange);
@@ -184,7 +209,8 @@ export function ReorderableList<T>({
   const begin = useCallback(
     (index: number) => {
       setActiveIndex(index);
-      setTargetIndex(index);
+      // 不能排序的档不画插入线：落点从头到尾就是它自己，画出来只是骗人
+      setTargetIndex(reorderableRef.current ? index : null);
       zoneGhost.value = 1;
       onDraggingChangeRef.current?.(true);
     },
@@ -192,6 +218,7 @@ export function ReorderableList<T>({
   );
 
   const move = useCallback((index: number, dy: number) => {
+    if (!reorderableRef.current) return;
     const rects = rowsRef.current;
     const row = rects[index];
     if (!row) return;
@@ -225,11 +252,14 @@ export function ReorderableList<T>({
       const row = rects[index];
       const ids = itemsRef.current.map(keyOfRef.current);
       finish();
+      // 这一档的先后是**算出来的**（按时间），不让拖拽改写它 —— 见 props.reorderable。
+      // 拖起来照样有浮层跟手，只是松手不改顺序，也不留插入线。
+      if (!reorderableRef.current) return;
       if (!row || ids.length < 2) return;
 
       const target = indexAtY(rects, row.y + dy + row.h / 2);
       if (target === index) return;
-      onReorderRef.current(moveItem(ids, index, target));
+      onReorderRef.current?.(moveItem(ids, index, target));
     },
     [finish],
   );
@@ -260,8 +290,9 @@ export function ReorderableList<T>({
   const gestureFor = useCallback(
     (index: number) =>
       Gesture.Pan()
-        // 与月视图一致：长按先"拾起"，避免和单击、滚动抢
-        .activateAfterLongPress(220)
+        // 与月视图一致：长按先"拾起"，避免和单击、滚动抢。
+        // 同一个常量（constants/gestures），两边手感不会各走各的
+        .activateAfterLongPress(LONG_PRESS_PICKUP_MS)
         .shouldCancelWhenOutside(false)
         .onStart(() => {
           'worklet';

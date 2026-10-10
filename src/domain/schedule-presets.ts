@@ -189,6 +189,32 @@ export function buildCustomTime(
 }
 
 /**
+ * 全天：**占满一整天**的那一种（2026-10-10 加）。
+ *
+ * 与 `buildCustomTime` 是并列的两个出口，不是它的一个参数 —— 全天根本没有
+ * "几点几分"可言，让它去吃 minutesOfDay 只会造出一个假的 00:00。
+ *
+ * startAt / endAt **照旧写成当天的 00:00 与 23:59:59**：日历窗口按锚点收人、
+ * 排序按锚点、提醒按锚点排期，全天如果只留一个 `allDay` 标记而没有锚点，
+ * 它就会从**所有**按时间取数的列表里消失（和"有属性没锚点"同一个坑，
+ * 见 `normalizeTaskTime` 的说明）。`allDay: true` 只影响显示。
+ */
+export function buildAllDayTime(date: Date): TaskTime | null {
+  if (Number.isNaN(date.getTime())) return null;
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+  return {
+    attribute: TimeAttribute.Fixed,
+    startAt: start.toISOString(),
+    endAt: end.toISOString(),
+    dueAt: null,
+    allDay: true,
+  };
+}
+
+/**
  * 拖拽改期：把任务挪到某个日期，保留原来的时刻。
  * 日程型挪 startAt，截止型挪 dueAt；无时间任务返回 null（不该出现在日历上）。
  * 有 endAt 的同样按时长平移（同 buildPlacedTime：挪位置不挪长度）。

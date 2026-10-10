@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TimeAttribute } from './enums';
 import { createTask } from './factory';
 import {
+  buildAllDayTime,
   buildPlacedTime,
   buildRescheduledTime,
   buildRetimedSpanTime,
@@ -12,6 +13,7 @@ import {
   SCHEDULE_PRESETS,
   SEMANTIC_TARGETS,
 } from './schedule-presets';
+import { timeAnchor } from './task';
 
 /**
  * 安排预设的换算。
@@ -304,5 +306,40 @@ describe('buildTimeOnDay', () => {
 
   it('非法日期不落库', () => {
     expect(buildTimeOnDay(noTime(), new Date('nope'))).toBeNull();
+  });
+});
+
+describe('buildAllDayTime：全天（占满一整天）', () => {
+  it('整天覆盖 00:00 → 23:59:59，并带上 allDay 标记', () => {
+    const time = buildAllDayTime(new Date(2026, 9, 10, 14, 30))!;
+    expect(time.allDay).toBe(true);
+    expect(time.attribute).toBe(TimeAttribute.Fixed);
+    const start = new Date(time.startAt!);
+    const end = new Date(time.endAt!);
+    expect(start.getHours()).toBe(0);
+    expect(start.getMinutes()).toBe(0);
+    expect(end.getHours()).toBe(23);
+    expect(end.getMinutes()).toBe(59);
+  });
+
+  it('⭐ 忽略传入的时刻 —— 全天没有"几点"可言，造个假的 00:00 出来就是撒谎', () => {
+    const a = buildAllDayTime(new Date(2026, 9, 10, 0, 0))!;
+    const b = buildAllDayTime(new Date(2026, 9, 10, 18, 45))!;
+    expect(a.startAt).toBe(b.startAt);
+  });
+
+  it('⭐ 锚点仍落在当天 —— 全天如果没锚点，日历窗口就收不到它', () => {
+    const time = buildAllDayTime(new Date(2026, 9, 10, 9, 0))!;
+    expect(new Date(time.startAt!).getDate()).toBe(10);
+    expect(timeAnchor(time)).toBe(time.startAt);
+  });
+
+  it('与截止型区分开：全天是"这天都算它"，不是"这天之前交"', () => {
+    const time = buildAllDayTime(new Date(2026, 9, 10))!;
+    expect(time.dueAt).toBeNull();
+  });
+
+  it('非法日期不落库', () => {
+    expect(buildAllDayTime(new Date('nope'))).toBeNull();
   });
 });

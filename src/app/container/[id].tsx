@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
@@ -15,7 +15,6 @@ import type { Container } from '@/domain/container';
 import { CONTAINER_KIND_LABEL, containerStats } from '@/domain/container-stats';
 import { ContainerKind, ContainerStatus } from '@/domain/enums';
 import type { GanttItem } from '@/domain/gantt';
-import { splitSubtaskLines } from '@/domain/subtask-lines';
 import { taskDue } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -63,6 +62,8 @@ export default function ContainerDetailScreen() {
   const [pickingTasks, setPickingTasks] = useState(false);
   /** 「新建任务」的内联输入：一个项目往往要连着录好几条，所以建完不收输入框 */
   const [newTaskTitle, setNewTaskTitle] = useState('');
+  /** 任务输入框：提交一条后要把焦点还回去，好接着写下一条（连续创建） */
+  const taskInputRef = useRef<TextInput>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   /** 甘特图拖拽期间锁住页面滚动，否则手指一竖页面就跟着滚 */
   const [ganttDragging, setGanttDragging] = useState(false);
@@ -107,15 +108,21 @@ export default function ContainerDetailScreen() {
     [patch],
   );
 
-  /** 输入框里真的有东西可加（空行不算） */
-  const canAddTasks = splitSubtaskLines(newTaskTitle).length > 0;
+  /** 输入框里真的有东西可加 */
+  const canAddTasks = newTaskTitle.trim().length > 0;
 
-  /** 一次建好几条（一行一条）。只写一行时跟以前的行为一致 */
+  /**
+   * 一次建**一条**：整段就是一个任务名（跟详情页的子项同一套口径 ——
+   * 不再按换行切，换行是排版不是"另一件事"的声明）。
+   *
+   * 建完清空 + 抢回焦点，可以一条接一条地敲（连续创建），手不离开键盘。
+   */
   const createTasksNow = useCallback(async () => {
-    const lines = splitSubtaskLines(newTaskTitle);
-    if (!id || !lines.length) return;
+    const title = newTaskTitle.trim();
+    if (!id || !title) return;
     setNewTaskTitle('');
-    await addTasksToContainer(id, lines);
+    taskInputRef.current?.focus();
+    await addTasksToContainer(id, [title]);
   }, [addTasksToContainer, id, newTaskTitle]);
 
   const children = useMemo(
@@ -270,18 +277,20 @@ export default function ContainerDetailScreen() {
         {/*
           输入框**常驻**，不再藏在「＋ 新建」后面：走到这一步的人已经决定要加任务了，
           再让他点一次只是多一次操作。
-          **一行一条**，写完点「加上」一次全建 —— 往一个项目里丢任务也是连着想出来的
-          （"查资料 / 写提纲 / 发给小王"），一个一个加是把一次思考切成好几次操作。
+          **一次一条，但建完不清场**：清空 + 焦点还在，接着写下一条 ——
+          往项目里丢任务连着想出来的时候，慢的不是操作次数，是"要不要重新点一下输入框"。
+          软键盘的「完成」键直接等于"建一条"（单行 + blurOnSubmit=false）。
         */}
         <View style={styles.addRow}>
           <TextInput
+            ref={taskInputRef}
             value={newTaskTitle}
             onChangeText={setNewTaskTitle}
-            placeholder="一行一条，可以一次写好几条"
+            placeholder="加一个任务"
             placeholderTextColor={theme.textSecondary}
             returnKeyType="done"
             onSubmitEditing={() => void createTasksNow()}
-            multiline
+            blurOnSubmit={false}
             style={[
               styles.inlineInput,
               {
@@ -294,7 +303,7 @@ export default function ContainerDetailScreen() {
           {canAddTasks ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="加上这几条"
+              accessibilityLabel="加上这个任务"
               onPress={() => void createTasksNow()}
               style={[styles.smallAction, { backgroundColor: theme.text }]}>
               <ThemedText type="small" style={{ color: theme.background }}>

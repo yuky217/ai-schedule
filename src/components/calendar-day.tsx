@@ -16,10 +16,9 @@ import { BLOCK_BAR_WIDTH, COURSE_BORDER_STYLE, COURSE_OPACITY, SHAPE_RADIUS } fr
 import type { CourseSlot } from '@/domain/course';
 import { layoutLanes } from '@/domain/lane-layout';
 import { isMuted, taskDisplayState } from '@/domain/task-state';
-import type { Task } from '@/domain/task';
+import { isAllDay, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { describeDue, formatTime } from '@/utils/datetime';
-
 /**
  * 日视图：纵向小时刻度 + 任务块。
  *
@@ -152,11 +151,25 @@ export function CalendarDay({
     [onDraggingChange],
   );
 
-  /** 有具体开始时刻的（画在时间轴上） */
+  /**
+   * 全天：**横幅，不进时间轴**（2026-10-10）。
+   *
+   * 全天在库里是当天 00:00–23:59，而时间轴从 05:00 才开始 —— 不挑出来的话，
+   * 它会被摆到一个**负坐标**上（等于画在可视区外），看着就像"这天没这件事"。
+   * 而且它本来也不该占一格：全天说的是"这天都算它"，不是"从 0 点到 24 点有个块"。
+   */
+  const allDay = useMemo(() => tasks.filter((t) => isAllDay(t.time)), [tasks]);
+
+  /** 有具体开始时刻的（画在时间轴上）。全天已经挑出去了 */
   const timed = useMemo(
     () =>
       tasks
-        .filter((t) => t.time.startAt && isSameDay(new Date(t.time.startAt), date))
+        .filter(
+          (t) =>
+            t.time.startAt &&
+            !isAllDay(t.time) &&
+            isSameDay(new Date(t.time.startAt), date),
+        )
         .sort((a, b) => (a.time.startAt ?? '').localeCompare(b.time.startAt ?? '')),
     [tasks, date],
   );
@@ -202,6 +215,40 @@ export function CalendarDay({
 
   return (
     <View style={[styles.container, { backgroundColor: theme.backgroundElement }]}>
+      {allDay.length ? (
+        <View style={[styles.deadlineBar, { borderBottomColor: theme.backgroundSelected }]}>
+          <ThemedText type="small" themeColor="textSecondary">
+            全天
+          </ThemedText>
+          <View style={styles.deadlineItems}>
+            {allDay.map((task) => {
+              const done = taskDisplayState(task, now) === 'done';
+              return (
+                <Pressable
+                  key={task.id}
+                  accessibilityRole="button"
+                  onPress={() => onSelectTask(task)}
+                  style={[
+                    styles.deadline,
+                    { backgroundColor: theme.backgroundSelected, opacity: done ? 0.5 : 1 },
+                  ]}>
+                  <Ionicons name="sunny-outline" size={12} color={theme.textSecondary} />
+                  <ThemedText
+                    type="small"
+                    numberOfLines={1}
+                    style={[styles.deadlineText, done ? styles.struck : undefined]}>
+                    {task.title}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    全天
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
       {deadlines.length ? (
         <View style={[styles.deadlineBar, { borderBottomColor: theme.backgroundSelected }]}>
           <ThemedText type="small" themeColor="textSecondary">

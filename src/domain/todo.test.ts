@@ -47,8 +47,17 @@ describe('isTodo：谁算待办', () => {
     expect(isTodo(makeTask('b', { kind: TaskKind.Habit }))).toBe(true);
   });
 
-  it('日程型不算 —— 开会、上课是"到点发生"，不是欠你的事', () => {
-    expect(isTodo(makeTask('a', { kind: TaskKind.Schedule }))).toBe(false);
+  it('日程型（有时间）不算 —— 开会、上课是"到点发生"，不是欠你的事', () => {
+    expect(isTodo(makeTask('a', { kind: TaskKind.Schedule, time: fixed(at(18)) }))).toBe(false);
+  });
+
+  /**
+   * ⭐ 这条例外是可达性扫描扫出来的：`todo/doing/waiting/done × schedule × 无时间`
+   * 四种组合在**四个列表里同时查不到**（收集箱按分档、日历要时间、首页按时间窗、
+   * 习惯页只取习惯型）。快记一句"开会"、没写时间，就是这么丢的。
+   */
+  it('⭐ 日程型但没排时间 → 算 —— 没有"到点"可言的日程需要一个落点', () => {
+    expect(isTodo(makeTask('a', { kind: TaskKind.Schedule }))).toBe(true);
   });
 
   it('想法型不算 —— 它在想法库等拆解', () => {
@@ -59,8 +68,10 @@ describe('isTodo：谁算待办', () => {
     expect(isTodo(makeTask('a', { status: TaskStatus.Done }))).toBe(true);
   });
 
-  it('做完的日程型不算（它从来就不是待办）', () => {
-    expect(isTodo(makeTask('a', { kind: TaskKind.Schedule, status: TaskStatus.Done }))).toBe(false);
+  it('做完的日程型（有时间）不算（它从来就不是待办）', () => {
+    expect(
+      isTodo(makeTask('a', { kind: TaskKind.Schedule, time: fixed(at(18)), status: TaskStatus.Done })),
+    ).toBe(false);
   });
 });
 

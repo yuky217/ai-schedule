@@ -11,7 +11,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import { dayShapes, type CalendarShape, type DayMarks } from '@/domain/calendar-shape';
+import { dayShapes, type DayDot, type DayMarks } from '@/domain/calendar-shape';
 import { MONTH_GRID_ROWS } from '@/domain/calendar-window';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -30,10 +30,9 @@ const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'] as cons
 const WEEK_ROWS = MONTH_GRID_ROWS;
 
 /**
- * 一格上到底有哪几种东西 —— 顺序（先课 → 再考试 → 最后任务）与截断规则
- * 都在 `domain/calendar-shape.dayShapes` 里定死，这个组件只负责画。
+ * 一格上到底有哪几种东西、谁该给谁让位、深浅怎么分 —— 全在
+ * `domain/calendar-shape.dayShapes` 里定死，这个组件只负责画。
  */
-export type DayMarkKind = CalendarShape;
 
 export interface CalendarMonthProps {
   /** 任意一个落在目标月份的日期 */
@@ -88,7 +87,7 @@ export function CalendarMonth({
           {days.slice(row * 7, row * 7 + 7).map((day) => {
             const key = dayKey(day);
             const count = countsByDay.get(key) ?? 0;
-            const shapes = dayShapes(count, marksByDay?.get(key));
+            const dots = dayShapes(count, marksByDay?.get(key));
             const selectedDay = isSameDay(day, selected);
             const today = isSameDay(day, new Date());
             const outside = !isSameMonth(day, month);
@@ -111,31 +110,47 @@ export function CalendarMonth({
                 accessibilityLabel={format(day, 'M月d日')}
                 onPress={() => onSelectDay(day)}>
                 <View
-                  style={[
-                    styles.dayCircle,
-                    { backgroundColor: selectedDay ? theme.text : 'transparent' },
-                    !selectedDay && today && { borderColor: theme.text, borderWidth: 1.5 },
-                    dropTarget && { borderColor: theme.text, borderWidth: 2 },
-                  ]}>
-                  <ThemedText
-                    type="small"
-                    themeColor={selectedDay ? 'background' : outside ? 'textSecondary' : 'text'}
-                    style={[styles.dayText, outside && styles.outside]}>
-                    {day.getDate()}
-                  </ThemedText>
+                style={[
+                  styles.dayCircle,
+                  { backgroundColor: selectedDay ? theme.text : 'transparent' },
+                  // 今天永远有标记：没选中 = 空心圆环；选中了 = 实心 + 灰阶外圈，
+                  // 这样两种状态都认得出"今天"（之前今天被选中时圆环会消失）。
+                  today && !selectedDay && { borderColor: theme.text, borderWidth: 2 },
+                  today && selectedDay && { borderColor: theme.textSecondary, borderWidth: 2 },
+                  dropTarget && { borderColor: theme.text, borderWidth: 2 },
+                ]}>
+                <ThemedText
+                  type={today ? 'smallBold' : 'small'}
+                  themeColor={selectedDay ? 'background' : outside ? 'textSecondary' : 'text'}
+                  style={[styles.dayText, outside && styles.outside]}>
+                  {day.getDate()}
+                </ThemedText>
                 </View>
                 <View style={styles.dots}>
-                  {shapes.map((shape, i) => {
-                    const tint = selectedDay ? theme.background : theme.textSecondary;
+                  {dots.map((dot, i) => {
+                    /*
+                      未完成的任务点画**正文色（深）**，其余的浅 —— 月历上
+                      "这天还欠着事"是唯一能提前看见的信息，过期与否在形状上
+                      根本看不出来。深浅只挂在任务上（课/考试没有完成态）。
+
+                      选中那天整格统一退回底色：日期圈本身已是实心深色，
+                      深点压上去看不见。这天已经被高亮、清单也摊在下面，
+                      让深浅让位给"今天/选中"是划算的。
+                    */
+                    const tint = selectedDay
+                      ? theme.background
+                      : dot.kind === 'task' && dot.open
+                        ? theme.text
+                        : theme.textSecondary;
                     return (
                       <View
                         key={i}
                         style={[
                           styles.dot,
-                          // 课：空心（背景，不用你动手）· 考试：方块（硬边界）· 其余：实心点
-                          shape === 'course'
+                          // 课：空心（背景，不用你动手）· 考试：方块（硬边界）· 任务：实心点
+                          dot.kind === 'course'
                             ? [styles.dotHollow, { borderColor: tint }]
-                            : shape === 'exam'
+                            : dot.kind === 'exam'
                               ? [styles.dotSquare, { backgroundColor: tint }]
                               : { backgroundColor: tint, borderRadius: 2 },
                           { opacity: outside ? 0.4 : 1 },
@@ -161,16 +176,21 @@ const styles = StyleSheet.create({
   },
   weekHeader: { flexDirection: 'row' },
   weekRow: { flexDirection: 'row' },
-  cell: { flex: 1, alignItems: 'center', paddingVertical: Spacing.half, gap: Spacing.half },
+  /**
+   * 月格放大（2026-10-10 "范围放大"= 页面占比）：日期圈 30 → 36、数字 14 → 16。
+   * 七列在 390pt 屏上每列仍有 ~48pt，36pt 的圈放得下且四周留得住空隙；
+   * 六行整体变高，月历就把屏幕占满了 —— 放大的是渲染占比，取数范围没动。
+   */
+  cell: { flex: 1, alignItems: 'center', paddingVertical: Spacing.one, gap: Spacing.half },
   weekday: { fontSize: 12, lineHeight: 16 },
   dayCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dayText: { fontSize: 14, lineHeight: 18 },
+  dayText: { fontSize: 16, lineHeight: 20 },
   outside: { opacity: 0.4 },
   dots: { flexDirection: 'row', gap: 3, minHeight: 4 },
   dot: { width: 4, height: 4, borderRadius: 2 },

@@ -54,6 +54,7 @@ import { desiredParentStatus } from '@/domain/subtask-progress';
 import { CaptureSource, CompletionRule, TaskKind, TaskStatus } from '@/domain/enums';
 import type { Task, TaskTime } from '@/domain/task';
 import { toDayKey } from '@/utils/datetime';
+import { writeWidgetSnapshot } from '@/widget/snapshot';
 
 /**
  * 全局数据状态。
@@ -85,16 +86,7 @@ interface AppState {
   initializing: boolean;
   error: string | null;
 
-  inbox: Task[];
   today: Task[];
-  /**
-   * 已完成、但**从没安排过时间**的顶层任务（收集箱底部那个折叠区）。
-   *
-   * 为什么单拎这一份出来：一条任务完成之后会离开收集箱，如果它又是"没时间"的，
-   * 那它同时也不在日历上、不在首页今天里、不在任何容器里 —— 四个列表全都不收它，
-   * 用户勾完就再也找不到（只有知道 id 才打得开）。这里就是它的落脚点。
-   */
-  recentlyDone: Task[];
   /**
    * 数据版本号：每次 refresh 自增。
    *
@@ -290,9 +282,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ready: false,
   initializing: false,
   error: null,
-  inbox: [],
   today: [],
-  recentlyDone: [],
   dataVersion: 0,
   tasks: [],
   containers: [],
@@ -338,9 +328,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().reconcileFrequencyTasks();
 
     const [
-      inbox,
       today,
-      recentlyDone,
       tasks,
       containers,
       marks,
@@ -352,9 +340,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       term,
       events,
     ] = await Promise.all([
-      taskRepository.listInbox(),
       taskRepository.listToday(),
-      taskRepository.listRecentlyDone(),
       taskRepository.listAll(),
       containerRepository.listAll(),
       markRepository.listAll(),
@@ -367,9 +353,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       eventRepository.listAll(),
     ]);
     set({
-      inbox,
       today,
-      recentlyDone,
       tasks,
       containers,
       marks,
@@ -382,6 +366,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       events,
       dataVersion: get().dataVersion + 1,
     });
+
+    // 数据变动后把"今天 / 下一节课"算好写进快照，供桌面小组件读取
+    // （widget 进程读不到我们的数据库，见 docs/小组件实施规划.md 风险 1）
+    void writeWidgetSnapshot();
   },
 
   loadTask: async (id) => taskRepository.getById(id),

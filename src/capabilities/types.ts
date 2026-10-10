@@ -51,9 +51,15 @@ export const AI_CAPABILITIES: readonly AiCapabilityMeta[] = [
     description: '按优先级和空闲时间建议安排',
   },
   {
+    /**
+     * ⚠️ **还没接上**（2026-10-10 核对过）：打开这个开关，代码里没有任何 AI 调用 ——
+     * 想法页的搜索始终是 `includes` 子串匹配。它此前唯一的作用是改掉搜索框的
+     * 占位文案，那正是"界面在承诺、代码不兑现"。留在这儿是为了别把这件事忘了，
+     * 但**不要再让任何界面拿它去承诺什么**。
+     */
     id: AiCapability.SemanticSearch,
     name: '语义检索',
-    description: '用一句话找回以前记过的东西',
+    description: '用一句话找回以前记过的东西（尚未实现）',
   },
   {
     id: AiCapability.Review,

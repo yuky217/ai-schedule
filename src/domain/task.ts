@@ -30,6 +30,18 @@ export interface TaskTime {
   endAt?: string | null;
   /** 截止时间（ddl） */
   dueAt?: string | null;
+  /**
+   * 全天：**占满一整天，没有具体时刻**（2026-10-10 加）。
+   *
+   * 它不是第四种 attribute，而是**挂在"日程"上的一种形态** —— 属性仍然是
+   * "这天要发生"，只是不落到几点几分。所以落库时 startAt/endAt 照旧写
+   * （当天 00:00 到 23:59:59），日历窗口、排序、排提醒全都照原样工作，
+   * 这个字段只负责"显示上别把 00:00 当成真的零点"。
+   *
+   * 反过来，**不能靠"startAt 是 00:00"去推全天**：用户可以真的把一件事
+   * 定在零点。是全天就必须明说。
+   */
+  allDay?: boolean;
 }
 
 /**
@@ -197,6 +209,35 @@ export function hasAnyTime(
   time: Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
 ): boolean {
   return Boolean(time.startAt || time.endAt || time.dueAt);
+}
+
+/**
+ * 是不是"全天"。**两个条件都要**：标记了全天、而且真有锚点。
+ *
+ * 只看 `allDay` 是不够的 —— 退化数据（标了全天却没锚点）会被
+ * `normalizeTaskTime` 修成"没时间"，那时它就不该再被当成全天显示。
+ */
+export function isAllDay(
+  time: Pick<TaskTime, 'allDay'> & Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
+): boolean {
+  return Boolean(time.allDay) && hasAnyTime(time);
+}
+
+/**
+ * "这件事到什么时候为止都还算**没到**"（收件箱 / 小组件 / 首页都问这个）。
+ *
+ * ⭐ **全天看的是当天结束（endAt），不是开始**。
+ * 全天的 startAt 是当天 00:00，拿它跟"现在"比**永远比不过** ——
+ * 于是一条"今天全天"的事永远不会被算成"下一个截止"，凭空从卡片上少一件。
+ * 语义上也该这样：全天说的是"这一天都算它"，那这天过完之前它就还没到。
+ *
+ * 其余时间看 `timeDue`（截止优先、其次开始），与全局口径一致。
+ */
+export function pendingUntil(
+  time: Pick<TaskTime, 'allDay'> & Pick<TaskTime, 'startAt' | 'endAt' | 'dueAt'>,
+): string | null {
+  if (isAllDay(time)) return time.endAt ?? null;
+  return timeDue(time);
 }
 
 /**

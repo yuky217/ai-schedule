@@ -23,57 +23,57 @@ import {
   type SemanticTarget,
 } from '@/domain/schedule-presets';
 import type { Task } from '@/domain/task';
+import { groupTodos, TODO_DONE_LIMIT, type TodoBucket } from '@/domain/todo';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
 
 /**
- * 收集箱 = 主文档里的"中档待规划"。
+ * 收集箱 = **「我手上欠着什么」的唯一入口**（2026-10-10 改）。
  *
- * 这一页存在的意义是：允许用户先记下来、不立刻决定时间。
- * 点条目进任务详情页 —— 那里第一步就是"定时间"（预设 chips 一次点按），
- * 同时还能写备注、设提醒和重复。收集箱本身不再承载编辑动作。
+ * 它现在是 `domain/todo.ts` 的五档分档列表：已过期 → 今天 → 往后 →
+ * 还没排时间 → 已完成，档内按时间排、空档不显示。
  *
- * 多出来三个动作：
- * - **长按拖动排序**：收集箱天然是一个"待消化队列"，顺序就是你心里的先后。
- *   拖过之后顺序会写进 sort_order 落库。
- * - **长按原地松手 → 语义词片**（2026-10-07 加）：弹一层「今天 / 明天 / 周末 /
- *   下周 / 稍后」。消化收集箱时的第一念是"今天做还是周末做"，不是"14:00 开始"，
- *   所以给一组按日期说话的词，点一下这条就安排好了，不必进详情页。
- * - **长按拖到底部的日期条 → 定到某一天**（2026-10-08 加）。语义词片只覆盖
- *   "今天到下周"这几个说法，具体到"下下周三"就没词了；拖到日期条上则能指到
- *   今天起两周内的任意一天，同样一步到位、同样不进详情页。
+ * ## 为什么从"没时间的任务列表"变成了分档列表
  *
- *   落点分工：**手指进了日期条就不再是排序，没进就还是排序**。两者共用一个
- *   长按手势（见 reorderable-list 的三种去向），所以不需要再多一个入口 ——
- *   "拖出去"和"拖一下顺序"本来就是同一个动作，区别只在松手时手指在哪儿。
+ * 原来这一页只收 `time_attribute = 'none'` 的任务 —— 严格意义上它是
+ * "待规划队列"。但用户真正要的是**一进来就看到欠着的事**，而不是
+ * "先去日历第五栏看一遍欠着什么，再回这里排时间"。同一份数据
+ * （`groupTodos`）本来就已经在日历第五栏渲染着了，两处渲染的代价是
+ * **同一个列表两种手感**（那边不能拖，这边能拖）—— 那是最难向用户解释的
+ * 一种不一致。所以合并成一处：这里保留能拖的那一套，日历那栏撤掉。
  *
- *   为什么不能让日历页自己接这一拖：收集箱和日历是两个 Tab，手机上一次触摸
- *   跨不过去（拖到一半切页，手势会被系统掐断）。所以日历得**浮上来找手指**
- *   —— 这才是"拖到日历上"在手机上真正成立的样子。
+ * 分档与排序口径全在 `domain/todo.ts`（有 22 个测试），这一页只负责画。
  *
- * 再加一块**「已完成」折叠区**：勾掉的东西必须还能找回来。
- * 一条无时间的任务在收集箱里被勾掉之后，收集箱不收它（这里带 status != done）、
- * 日历不收它（没时间）、首页今天不收它（按时间匹配）、习惯页不收它（不是习惯）——
- * 四个列表全都不收，等于"勾一下=弄丢"。这一块就是它的落点，
- * 而且就地能撤销完成（`reopenTask`），不用跑去别的页面。
+ * ## 长按的三种去向（都由 `ReorderableList` 提供）
  *
- * 页首**不再挂操作说明**（2026-10-07 删）：原来有一张卡写着"点一下进详情页定时间、
- * 长按任一行可以拖动排序、勾掉的会收到「已完成」里" —— 三句里两句是通用的
- * （点一下进详情有 chevron 暗示，长按拖动是这类 App 的通用手势），一句是自然发生的
- * （勾完「已完成 N 件」自己就冒出来了）。常驻说明书=用户每次进来都要重读一遍。
+ * - **拖动排序**：只有「还没排时间」档真的落库（`sort_order` 是用户亲手排的
+ *   意愿）。「已过期 / 今天 / 往后」三档的先后**是算出来的**（按时间），
+ *   拖了会弹回原处，比不能拖更像坏了 —— 所以那些档 `reorderable={false}`。
+ * - **原地松手 → 语义词片**：弹「今天 / 明天 / 周末 / 下周 / 稍后」。消化欠着的
+ *   事情时第一念是"今天做还是周末做"，不是"14:00 开始"，所以给一组按日期说话的词。
+ * - **拖到底部日期条 → 定到某一天**（每一档都能用）。语义词片覆盖不到
+ *   "下下周三"，日期条能，而且**已经有时间的那几档等于顺延**：
+ *   `buildTimeOnDay` 保留时刻与属性、只换日期（10/8 的截止拖到 10/10 = 10/10 截止）。
+ *   这是用户自己下的决定，不是系统替他改时间。
+ *
+ * ## 已完成
+ *
+ * 勾掉的东西必须还能找回来 —— 这一档就是它的落点，而且就地能撤销完成
+ * （`reopenTask`），不用跑去别的页面。最多列 `TODO_DONE_LIMIT` 条，
+ * 再多的去回顾页看。
  */
 export default function InboxScreen() {
   const router = useRouter();
   const theme = useTheme();
 
-  const inbox = useAppStore((state) => state.inbox);
-  const recentlyDone = useAppStore((state) => state.recentlyDone);
+  const tasks = useAppStore((state) => state.tasks);
   const completeTask = useAppStore((state) => state.completeTask);
   const reopenTask = useAppStore((state) => state.reopenTask);
   const reorderTasks = useAppStore((state) => state.reorderTasks);
   const scheduleTask = useAppStore((state) => state.scheduleTask);
   const [reordering, setReordering] = useState(false);
-  const [doneOpen, setDoneOpen] = useState(false);
+  /** 收起来的档。**默认全展开**（对的默认值 = 用户零操作） */
+  const [collapsed, setCollapsed] = useState<TodoBucket[]>([]);
   /** 长按原地松手时选中的那一条 —— 非空就弹语义词片 */
   const [arranging, setArranging] = useState<Task | null>(null);
 
@@ -85,6 +85,18 @@ export default function InboxScreen() {
   const [dropZone, setDropZone] = useState<DropZoneRect | null>(null);
   /** 日期条格子区的窗口坐标：手指落在哪一格，全靠它算 */
   const barRect = useRef<StripRect | null>(null);
+
+  /**
+   * 每次渲染现算（不缓存在 store 里）：跨过午夜之后"今天"这一档要能自己变；
+   * 而且拖动排序写完库之后，分档顺序本来就该跟着刷新。
+   */
+  const groups = useMemo(() => groupTodos(tasks), [tasks]);
+
+  const toggleGroup = useCallback((bucket: TodoBucket) => {
+    setCollapsed((current) =>
+      current.includes(bucket) ? current.filter((b) => b !== bucket) : [...current, bucket],
+    );
+  }, []);
 
   // 拖拽开始时重算（依赖 barVisible）：挂着一整天不重启的话，"今天"会停在前一天
   const days = useMemo(() => dayStripDays(), [barVisible]);
@@ -102,9 +114,10 @@ export default function InboxScreen() {
   /**
    * 扔进日期条：落到那一格对应的那天。
    *
-   * 走 buildTimeOnDay（与长按菜单同一份口径）：没时间的落到那天 23:59 截止
-   * —— 用户说的是"这天做"，不是"这天 9 点开始"。落库后这条就离开收集箱、
-   * 出现在日历那一天，**消失本身就是反馈**，不用再弹一句"已安排到周三"。
+   * 走 `buildTimeOnDay`（与长按菜单同一份口径）：没时间的落到那天 23:59 截止
+   * —— 用户说的是"这天做"，不是"这天 9 点开始"；**已经有时间的只换日期、
+   * 时刻照旧**，所以把一条过期的截止拖到未来就等于顺延。
+   * 落库后这条就离开原来那一档、出现在日历那一天，**消失本身就是反馈**。
    */
   const handleDropOutside = useCallback(
     (task: Task, point: DropPoint) => {
@@ -134,13 +147,24 @@ export default function InboxScreen() {
     action(task);
   };
 
+  /** 拖拽开始/结束：锁滚动、浮出日期条、吞掉紧随其后的那次 click */
+  const handleDraggingChange = useCallback((dragging: boolean) => {
+    setReordering(dragging);
+    setBarVisible(dragging);
+    setHoverIndex(null);
+    longPressAt.current = Date.now();
+  }, []);
+
   return (
     <Screen
-      title="收集箱"
-      subtitle="先记下来，不必当场决定什么时候做"
+      /*
+        没有页头（2026-10-10）：底部 Tab 栏已经写着「收集箱」，
+        副标题那句"先记下来，不必当场决定什么时候做"也是说明书 —— 一并撤掉，
+        让列表自己占满这一屏。右上角的「＋」留着（它是这一页唯一的操作）。
+      */
       scrollEnabled={!reordering}
       right={
-        <Pressable hitSlop={8} onPress={() => router.push('/capture')}>
+        <Pressable hitSlop={8} onPress={() => router.push('/capture?from=inbox')}>
           <Ionicons name="add" size={24} color={theme.text} />
         </Pressable>
       }
@@ -152,78 +176,89 @@ export default function InboxScreen() {
           onMeasure={handleBarMeasure}
         />
       }>
-      {inbox.length ? (
-        <View style={styles.list}>
-          <ReorderableList
-            items={inbox}
-            keyOf={(task) => task.id}
-            labelOf={(task) => task.title}
-            gap={Spacing.two}
-            dropZone={dropZone}
-            onDropOutside={handleDropOutside}
-            onZoneHover={handleZoneHover}
-            onDraggingChange={(dragging) => {
-              setReordering(dragging);
-              setBarVisible(dragging);
-              setHoverIndex(null);
-              longPressAt.current = Date.now();
-            }}
-            onReorder={(ids) => void reorderTasks(ids)}
-            onLongPressIdle={setArranging}
-            renderItem={(task) => (
-              <TaskRow
-                task={task}
-                onPress={guarded((t) => router.push(`/task/${t.id}`))}
-                onComplete={guarded((t) => void completeTask(t.id))}
-              />
-            )}
-          />
-        </View>
+      {groups.length ? (
+        groups.map((group) => {
+          const isDoneGroup = group.bucket === 'done';
+          // 已完成只是"最近干完了什么"的回顾，不跟上面四档抢屏幕
+          const shown = isDoneGroup ? group.tasks.slice(0, TODO_DONE_LIMIT) : group.tasks;
+          const hidden = group.tasks.length - shown.length;
+          const open = !collapsed.includes(group.bucket);
+          return (
+            <View key={group.bucket} style={styles.group}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: open }}
+                accessibilityLabel={`${group.title} ${group.tasks.length} 件`}
+                onPress={() => toggleGroup(group.bucket)}
+                style={({ pressed }) => [styles.groupHead, { opacity: pressed ? 0.6 : 1 }]}>
+                {group.bucket === 'today' ? (
+                  <View style={[styles.todayRing, { borderColor: theme.text }]} />
+                ) : null}
+                <ThemedText type="smallBold" themeColor={isDoneGroup ? 'textSecondary' : 'text'}>
+                  {group.title}
+                </ThemedText>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.groupCount}>
+                  {group.tasks.length}
+                </ThemedText>
+                <Ionicons
+                  name={open ? 'chevron-up' : 'chevron-down'}
+                  size={14}
+                  color={theme.textSecondary}
+                />
+              </Pressable>
+
+              {open ? (
+                <ReorderableList
+                  items={shown}
+                  keyOf={(task) => task.id}
+                  labelOf={(task) => task.title}
+                  gap={Spacing.two}
+                  /*
+                    只有「还没排时间」档的先后是用户自己排出来的（落 sort_order）。
+                    另外三档按时间排，拖了会弹回原处 —— 关掉排序，但仍能拖到日期条。
+                    已完成档整条链路都关（它不该被拖去改期，那等于给做完的事重排时间）。
+                  */
+                  reorderable={group.bucket === 'someday'}
+                  enabled={!isDoneGroup}
+                  dropZone={dropZone}
+                  onDropOutside={handleDropOutside}
+                  onZoneHover={handleZoneHover}
+                  onDraggingChange={handleDraggingChange}
+                  onReorder={(ids) => void reorderTasks(ids)}
+                  onLongPressIdle={setArranging}
+                  renderItem={(task) => (
+                    <TaskRow
+                      task={task}
+                      showPendingLabel={false}
+                      onPress={guarded((t) => router.push(`/task/${t.id}`))}
+                      // 已完成那档的圈是勾上的，再点一下 = 拿回来（不是再完成一次）
+                      onComplete={guarded((t) =>
+                        isDoneGroup ? void reopenTask(t.id) : void completeTask(t.id),
+                      )}
+                    />
+                  )}
+                />
+              ) : null}
+
+              {open && hidden > 0 ? (
+                <ThemedText type="small" themeColor="textSecondary" style={styles.more}>
+                  还有 {hidden} 件已完成 · 去回顾页看全部
+                </ThemedText>
+              ) : null}
+            </View>
+          );
+        })
       ) : (
         <EmptyState
           icon="file-tray-outline"
           title="收集箱是空的"
-          hint="想到什么就丢进来，不用想清楚它属于哪里"
+          hint="想到什么就丢进来，不用想清楚它属于哪里；写作业、跑步这类要动手的也会出现在这儿"
         />
       )}
 
-      {/* 已完成：勾掉的东西有个地方待着，也能就地拿回来 */}
-      {recentlyDone.length ? (
-        <View style={styles.doneBlock}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: doneOpen }}
-            onPress={() => setDoneOpen((value) => !value)}
-            style={styles.doneHead}>
-            <Ionicons name="checkmark-circle-outline" size={16} color={theme.textSecondary} />
-            <ThemedText type="small" themeColor="textSecondary" style={styles.doneHeadText}>
-              已完成 {recentlyDone.length} 件
-            </ThemedText>
-            <Ionicons
-              name={doneOpen ? 'chevron-up' : 'chevron-down'}
-              size={16}
-              color={theme.textSecondary}
-            />
-          </Pressable>
-
-          {doneOpen ? (
-            <View style={styles.list}>
-              {recentlyDone.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  onPress={(t) => router.push(`/task/${t.id}`)}
-                  // 圈是勾上的，再点一下 = 拿回来（不是再完成一次）
-                  onComplete={(t) => void reopenTask(t.id)}
-                />
-              ))}
-            </View>
-          ) : null}
-        </View>
-      ) : null}
       {/* 长按原地松手 → 语义词片：按"哪天"安排，不必先想几点几分。
           选中即落库（走 store 的 scheduleTask，与详情页同一条路），
-          这条随即离开收集箱、出现在日历上 —— 消失本身就是反馈。 */}
+          这条随即离开这一档、出现在日历上 —— 消失本身就是反馈。 */}
       <ChoiceSheet
         visible={arranging !== null}
         title={arranging ? `安排「${arranging.title}」` : ''}
@@ -242,9 +277,24 @@ export default function InboxScreen() {
 }
 
 const styles = StyleSheet.create({
-  // 行间距由 ReorderableList 的 gap 统一处理（它要用间距算落点）
-  list: {},
-  doneBlock: { gap: Spacing.two },
-  doneHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.two },
-  doneHeadText: { flex: 1 },
+  group: { gap: Spacing.one },
+  groupHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingVertical: Spacing.two,
+  },
+  /** 档名后面的件数：贴着标题，别被 chevron 推到最右 */
+  groupCount: { flex: 1 },
+  /**
+   * "今天"分组头前的小圆环：与月视图的"今天"标记用同一套语言（灰阶、2pt 描边），
+   * 让两处说到"今天"时长一个样。只挂在 today 这一档。
+   */
+  todayRing: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    borderWidth: 2,
+  },
+  more: { paddingTop: Spacing.one, fontSize: 12 },
 });

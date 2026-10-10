@@ -11,7 +11,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { TaskKind, TaskStatus } from '@/domain/enums';
 import { describeRepeat } from '@/domain/repeat-next';
-import { taskDue, type Task } from '@/domain/task';
+import { isAllDay, taskDue, type Task } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { describeDue, formatDayTime } from '@/utils/datetime';
 
@@ -31,9 +31,21 @@ export interface TaskRowProps {
   onDelete?: (task: Task) => void;
   /** 右侧尾部插槽（例如日历里的拖拽抓手） */
   trailing?: ReactNode;
+  /**
+   * 无时间任务是否显示「待规划」标签。默认 true。
+   * 收集箱页本身就是一个"待规划桶"，每条再标「待规划」是冗余，传 false。
+   */
+  showPendingLabel?: boolean;
 }
 
-export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskRowProps) {
+export function TaskRow({
+  task,
+  onComplete,
+  onPress,
+  onDelete,
+  trailing,
+  showPendingLabel = true,
+}: TaskRowProps) {
   const theme = useTheme();
   const done = task.status === TaskStatus.Done;
   // 行上显示的是"期限"（优先截止），不是"什么时候发生" —— 两者不同，见 taskDue 的注释
@@ -113,10 +125,20 @@ export function TaskRow({ task, onComplete, onPress, onDelete, trailing }: TaskR
             <Meta text={`等 ${task.waitingFor}`} />
           ) : null}
           {anchor ? (
-            <Meta text={`${describeDue(anchor)} · ${formatDayTime(anchor)}`} />
-          ) : (
+            /*
+              全天**不显示时刻**：它压根没落在几点几分，显示 "00:00" 是在替用户
+              说一句他没说过的话（而且没人会把 00:00 读成"全天"，只会当成真的半夜）。
+            */
+            <Meta
+              text={
+                isAllDay(task.time)
+                  ? `${describeDue(anchor)} · 全天`
+                  : `${describeDue(anchor)} · ${formatDayTime(anchor)}`
+              }
+            />
+          ) : showPendingLabel ? (
             <Meta text="待规划" muted />
-          )}
+          ) : null}
           {task.location ? <Meta text={task.location} /> : null}
         </View>
       </View>

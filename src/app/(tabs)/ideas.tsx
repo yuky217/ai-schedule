@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
@@ -10,11 +10,9 @@ import { IdeaBreakdownSheet } from '@/components/idea-breakdown-sheet';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import { AiCapability } from '@/capabilities/types';
 import type { Idea } from '@/domain/idea';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
-import { useSettings } from '@/state/settings-store';
 import { formatMonthDay } from '@/utils/datetime';
 
 /**
@@ -22,7 +20,10 @@ import { formatMonthDay } from '@/utils/datetime';
  *
  * 三条设计约束在这里是可见的：
  * - 想法不提醒、不催办，只负责"记下来不丢"；
- * - 检索默认是本地模糊匹配，开了「语义检索」后升级成"用一句话找回"；
+ * - 检索是**本地的按字面匹配**（搜的字要原样出现在想法里）。设置里那个
+ *   「语义检索」开关**还没接上** —— 它此前只改了搜索框的占位文案，
+ *   AI 调用一行都没写。界面在承诺、代码不兑现比不做更伤，所以这一页
+ *   从现在起不再提它（2026-10-10）。真要做得另开一条；
  * - 归档而不是删除：想法只有被想起来的价值，没有清理的义务。
  *
  * ⚠️ 但"归档"必须**可逆**：归档按钮此前点一下就永久消失（`archived_at`
@@ -32,6 +33,8 @@ import { formatMonthDay } from '@/utils/datetime';
 export default function IdeasScreen() {
   const theme = useTheme();
   const router = useRouter();
+  /** 从全库搜索跳过来时带着关键词（`/ideas?q=…`），落地就先替用户填上 */
+  const params = useLocalSearchParams<{ q?: string }>();
 
   const ideas = useAppStore((state) => state.ideas);
   const dataVersion = useAppStore((state) => state.dataVersion);
@@ -43,13 +46,18 @@ export default function IdeasScreen() {
   const unarchiveIdea = useAppStore((state) => state.unarchiveIdea);
   const removeIdea = useAppStore((state) => state.removeIdea);
 
-  const aiEnabled = useSettings((state) => state.aiEnabled);
-  const semanticSearchOn = useSettings((state) => state.capabilities[AiCapability.SemanticSearch]);
-  const simpleMode = useSettings((state) => state.simpleMode);
-
   const [keyword, setKeyword] = useState('');
   /** 正在拆的那条想法（null = 面板没开） */
   const [breaking, setBreaking] = useState<Idea | null>(null);
+
+  /*
+    这一页是 Tab，可能早就挂载着 —— 所以不能只在 useState 初值里读一次 q：
+    从搜索页跳过来时页面已经在了，得跟着参数变。
+  */
+  useEffect(() => {
+    const q = params.q;
+    if (typeof q === 'string' && q) setKeyword(q);
+  }, [params.q]);
 
   /**
    * 每条任务底下有几个子任务 —— 想法行要说"我拆成了几步"。
@@ -109,12 +117,13 @@ export default function IdeasScreen() {
     return ideas.filter((idea) => idea.content.toLowerCase().includes(k));
   }, [ideas, keyword]);
 
-  const semanticReady = aiEnabled && semanticSearchOn;
-
   return (
     <Screen
-      title="想法"
-      subtitle="不提醒、不催办，只负责不丢"
+      /*
+        没有页头（2026-10-10）：底部 Tab 栏已经写着「想法」，左上角再写一遍，
+        下面还压一行"不提醒、不催办"的说明书 —— 两行高度都是从列表身上抠的。
+        这一页的主角是那些念头，不是它自己的名字。
+      */
       right={
         <Pressable hitSlop={8} onPress={() => router.push('/settings')}>
           <Ionicons name="settings-outline" size={22} color={theme.textSecondary} />
@@ -141,23 +150,11 @@ export default function IdeasScreen() {
         <TextInput
           value={keyword}
           onChangeText={setKeyword}
-          placeholder={semanticReady ? '用一句话找回来（语义检索已开启）' : '按关键词找'}
+          placeholder="按关键词找"
           placeholderTextColor={theme.textSecondary}
           style={[styles.searchInput, { color: theme.text }]}
         />
       </View>
-
-      {/* 「去开语义检索」这句也是说明书 —— 简约模式下不念给用户听 */}
-      {!semanticReady && !simpleMode ? (
-        <Card>
-          <View style={styles.tipRow}>
-            <Ionicons name="bulb-outline" size={16} color={theme.textSecondary} />
-            <ThemedText type="small" themeColor="textSecondary" style={styles.tipText}>
-              现在的查找是本地关键词匹配。到设置里打开「语义检索」，就能用一句话把以前记过的东西捞出来。
-            </ThemedText>
-          </View>
-        </Card>
-      ) : null}
 
       {visible.length ? (
         <View style={styles.list}>
@@ -316,8 +313,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   searchInput: { flex: 1, fontSize: 14, paddingVertical: Spacing.one },
-  tipRow: { flexDirection: 'row', gap: Spacing.two, alignItems: 'flex-start' },
-  tipText: { flex: 1, lineHeight: 18 },
   list: { gap: Spacing.two },
   ideaRow: {
     flexDirection: 'row',

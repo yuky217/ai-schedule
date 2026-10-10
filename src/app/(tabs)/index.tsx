@@ -235,6 +235,9 @@ export default function HomeScreen() {
       }
       right={
         <View style={styles.headerActions}>
+          <Pressable hitSlop={12} accessibilityLabel="搜索" onPress={() => router.push('/search')}>
+            <Ionicons name="search-outline" size={21} color={theme.textSecondary} />
+          </Pressable>
           <Pressable
             hitSlop={12}
             accessibilityLabel="回顾"

@@ -9,7 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { TimeWheel } from '@/components/time-wheel';
 import { Spacing } from '@/constants/theme';
 import { TimeAttribute } from '@/domain/enums';
-import { buildCustomTime } from '@/domain/schedule-presets';
+import { buildAllDayTime, buildCustomTime } from '@/domain/schedule-presets';
 import { taskAnchor, type Task, type TaskTime } from '@/domain/task';
 import { useTheme } from '@/hooks/use-theme';
 import { parseDayKey, toDayKey } from '@/utils/datetime';
@@ -29,15 +29,18 @@ import { parseDayKey, toDayKey } from '@/utils/datetime';
 
 export interface DateTimeDraft {
   date: Date;
-  /** 当天第几分钟 */
+  /** 当天第几分钟。全天时无意义（界面也不显示时刻） */
   minutesOfDay: number;
   attribute: Extract<TimeAttribute, 'fixed' | 'deadline'>;
+  /** 全天：占满一整天，没有具体时刻。为 true 时忽略 minutesOfDay */
+  allDay?: boolean;
 }
 
 /** 常用分钟档，省去滚动 */
 const QUICK_MINUTES = [0, 15, 30, 45] as const;
 
 export function draftToTime(draft: DateTimeDraft): TaskTime | null {
+  if (draft.allDay) return buildAllDayTime(draft.date);
   return buildCustomTime(draft.attribute, draft.date, draft.minutesOfDay);
 }
 
@@ -58,10 +61,13 @@ export function draftFromTask(task: Pick<Task, 'time'>, now: Date = new Date()):
     date,
     minutesOfDay: date.getHours() * 60 + date.getMinutes(),
     attribute: task.time.attribute === TimeAttribute.Deadline ? 'deadline' : 'fixed',
+    // 全天要原样带回来，否则编辑一件全天的事会把它变成"当天 00:00 的日程"
+    allDay: task.time.allDay || undefined,
   };
 }
 
 export function describeDraft(draft: DateTimeDraft): string {
+  if (draft.allDay) return `${format(draft.date, 'M月d日')} 全天`;
   return `${format(draft.date, 'M月d日')} ${formatTimeOfMinutes(draft.minutesOfDay)}`;
 }
 
@@ -85,21 +91,32 @@ export function DateTimePickerBody({ value, onChange, onScrollLockChange }: Date
 
   return (
     <>
-      {/* 日程 or 截止：同一套日期+时刻，落库形状不同 */}
+      {/*
+        三选一：日程（几点开始）/ 截止（几点前）/ 全天（整天都算它）。
+        前两者共用"日期 + 时刻"，落库形状不同；全天**没有时刻**，
+        所以选中后下面的滚轮和分钟快选都不出现（见下方 conditional）。
+      */}
       <View style={styles.toggle}>
         {(
           [
             { key: 'fixed' as const, label: '日程 · 几点开始' },
             { key: 'deadline' as const, label: '截止 · 几点前' },
+            { key: 'allday' as const, label: '全天' },
           ]
         ).map((opt) => {
-          const active = value.attribute === opt.key;
+          const active = opt.key === 'allday' ? Boolean(value.allDay) : value.attribute === opt.key && !value.allDay;
           return (
             <Pressable
               key={opt.key}
               accessibilityRole="button"
               accessibilityState={{ selected: active }}
-              onPress={() => onChange({ ...value, attribute: opt.key })}
+              onPress={() =>
+                onChange(
+                  opt.key === 'allday'
+                    ? { ...value, allDay: true }
+                    : { ...value, attribute: opt.key, allDay: undefined },
+                )
+              }
               style={[
                 styles.toggleItem,
                 {
@@ -160,35 +177,50 @@ export function DateTimePickerBody({ value, onChange, onScrollLockChange }: Date
         />
       ) : null}
 
-      {/* 时 / 分滚轮 */}
-      <TimeWheel
-        minutesOfDay={value.minutesOfDay}
-        onChange={(minutesOfDay) => onChange({ ...value, minutesOfDay })}
-        onScrollLockChange={onScrollLockChange}
-      />
+      {value.allDay ? (
+        /*
+          全天没有时刻可挑，滚轮和分钟快选都不该出现 —— 摆着就是让人去调一个
+          根本不生效的值。这里换成一句说明占住位置，免得面板下半截突然空掉
+          （确认键会跟着往上跳，手指刚好点在别的东西上）。
+        */
+        <View style={styles.allDayNote}>
+          <ThemedText type="small" themeColor="textSecondary">
+            这一整天都算它，不落到几点几分
+          </ThemedText>
+        </View>
+      ) : (
+        <>
+          {/* 时 / 分滚轮 */}
+          <TimeWheel
+            minutesOfDay={value.minutesOfDay}
+            onChange={(minutesOfDay) => onChange({ ...value, minutesOfDay })}
+            onScrollLockChange={onScrollLockChange}
+          />
 
-      <View style={styles.quickRow}>
-        {QUICK_MINUTES.map((m) => {
-          const target = Math.floor(value.minutesOfDay / 60) * 60 + m;
-          const active = value.minutesOfDay === target;
-          return (
-            <Pressable
-              key={m}
-              accessibilityRole="button"
-              onPress={() => onChange({ ...value, minutesOfDay: target })}
-              style={[
-                styles.quickChip,
-                {
-                  backgroundColor: active ? theme.backgroundSelected : theme.backgroundElement,
-                },
-              ]}>
-              <ThemedText type="small" themeColor={active ? 'text' : 'textSecondary'}>
-                :{String(m).padStart(2, '0')}
-              </ThemedText>
-            </Pressable>
-          );
-        })}
-      </View>
+          <View style={styles.quickRow}>
+            {QUICK_MINUTES.map((m) => {
+              const target = Math.floor(value.minutesOfDay / 60) * 60 + m;
+              const active = value.minutesOfDay === target;
+              return (
+                <Pressable
+                  key={m}
+                  accessibilityRole="button"
+                  onPress={() => onChange({ ...value, minutesOfDay: target })}
+                  style={[
+                    styles.quickChip,
+                    {
+                      backgroundColor: active ? theme.backgroundSelected : theme.backgroundElement,
+                    },
+                  ]}>
+                  <ThemedText type="small" themeColor={active ? 'text' : 'textSecondary'}>
+                    :{String(m).padStart(2, '0')}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
     </>
   );
 }
@@ -322,6 +354,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   dateLabel: { flex: 1, alignItems: 'center', paddingVertical: Spacing.one },
+  /** 全天时顶替滚轮的那句说明 */
+  allDayNote: { alignItems: 'center', paddingVertical: Spacing.four },
   quickRow: {
     flexDirection: 'row',
     justifyContent: 'center',

@@ -150,7 +150,7 @@ export default function ProjectsScreen() {
 
   return (
     <Screen
-      title="项目"
+      /* 没有页头（2026-10-10）：底部 Tab 栏已经写着「项目」 */
       scrollEnabled={!ganttDragging}
       right={
         <View style={styles.headerActions}>

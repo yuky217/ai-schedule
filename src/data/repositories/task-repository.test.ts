@@ -7,6 +7,7 @@ import { bootstrapDatabase, type BootstrapDb, type SqlParams } from '@/data/db/b
 import { TaskKind, TaskStatus, TimeAttribute } from '@/domain/enums';
 import { createTask } from '@/domain/factory';
 import type { Task } from '@/domain/task';
+import { groupTodos } from '@/domain/todo';
 
 import { taskRepository } from './task-repository';
 
@@ -69,38 +70,52 @@ beforeEach(async () => {
   (globalThis as { __testDb?: unknown }).__testDb = adapter;
 });
 
+/**
+ * 收集箱页此刻会显示的 id —— 走 `domain/todo.groupTodos`，**与界面同一份口径**。
+ *
+ * 收集箱现在是"我手上欠着什么"的唯一入口（五档分档列表），所以
+ * "用户能不能看见它"这个问题由分档回答，而不是由某一条 SQL 回答。
+ * 测试和界面共用一份判据，才不会出现"库里查得到、界面上看不见"。
+ */
+async function inboxPageIds(): Promise<string[]> {
+  const groups = groupTodos(await taskRepository.listAll());
+  return groups.flatMap((group) => group.tasks.map((task) => task.id));
+}
+
 describe('taskRepository 的查询口径', () => {
   it('待办的无时间任务在收集箱里', async () => {
     const task = untimed();
     await taskRepository.create(task);
 
-    const inbox = await taskRepository.listInbox();
-    expect(inbox.map((t) => t.id)).toEqual([task.id]);
-    expect(await taskRepository.listRecentlyDone()).toEqual([]);
+    expect(await inboxPageIds()).toEqual([task.id]);
   });
 
   /**
-   * 这条是本次的核心回归：勾掉之后它离开收集箱是**对的**（收集箱装的是待办），
+   * 这条是最早的核心回归：勾掉之后它离开"还没排时间"那一档是**对的**，
    * 但它必须出现在别的地方 —— 否则"勾一下"就等于把任务弄丢了。
    */
-  it('无时间的任务完成后：离开收集箱，但必须出现在「已完成」里（不能凭空消失）', async () => {
+  it('无时间的任务完成后：离开「还没排时间」档，但必须落到「已完成」档（不能凭空消失）', async () => {
     const task = untimed();
     await taskRepository.create(task);
     await taskRepository.complete(task.id);
 
-    expect(await taskRepository.listInbox()).toEqual([]);
-
-    const done = await taskRepository.listRecentlyDone();
-    expect(done.map((t) => t.id)).toEqual([task.id]);
-    expect(done[0].status).toBe('done');
+    // 收集箱页里还找得到它，只是换到了已完成那一档
+    expect(await inboxPageIds()).toEqual([task.id]);
+    const groups = groupTodos(await taskRepository.listAll());
+    expect(groups.find((g) => g.bucket === 'someday')).toBeUndefined();
+    const done = groups.find((g) => g.bucket === 'done');
+    expect(done?.tasks.map((t) => t.id)).toEqual([task.id]);
+    expect(done?.tasks[0]?.status).toBe('done');
   });
 
-  it('有时间的任务完成后靠日历兜底，不进「已完成」（否则同一件事出现在两处）', async () => {
+  it('日程型（开会）不是待办：做没做完都不进收集箱的任何一档', async () => {
     const task = scheduled();
     await taskRepository.create(task);
-    await taskRepository.complete(task.id);
+    // 开会、上课是"别人定好的时间，到点发生"，不欠你什么 —— 从分档这一步就不进来
+    expect(await inboxPageIds()).toEqual([]);
 
-    expect(await taskRepository.listRecentlyDone()).toEqual([]);
+    await taskRepository.complete(task.id);
+    expect(await inboxPageIds()).toEqual([]);
 
     const onCalendar = await taskRepository.listScheduledBetween(
       '2026-10-06T00:00:00.000Z',
@@ -116,8 +131,7 @@ describe('taskRepository 的查询口径', () => {
     await taskRepository.complete(task.id);
     await taskRepository.softDelete(task.id);
 
-    expect(await taskRepository.listRecentlyDone()).toEqual([]);
-    expect(await taskRepository.listInbox()).toEqual([]);
+    expect(await inboxPageIds()).toEqual([]);
     expect(await taskRepository.getById(task.id)).toBeNull();
   });
 
@@ -127,35 +141,23 @@ describe('taskRepository 的查询口径', () => {
     const child = createTask({ title: '子任务', kind: TaskKind.Execution, parentId: parent.id });
     await taskRepository.create(child);
 
-    expect((await taskRepository.listInbox()).map((t) => t.id)).toEqual([parent.id]);
+    expect(await inboxPageIds()).toEqual([parent.id]);
     expect((await taskRepository.listAll()).map((t) => t.id)).toEqual([parent.id]);
   });
 
-  it('重新打开之后又回收集箱（撤销完成是个来回，不是单向门）', async () => {
+  it('重新打开之后又回「还没排时间」档（撤销完成是个来回，不是单向门）', async () => {
     const task = untimed();
     await taskRepository.create(task);
     await taskRepository.complete(task.id);
-    expect(await taskRepository.listInbox()).toEqual([]);
+    expect(
+      groupTodos(await taskRepository.listAll()).find((g) => g.bucket === 'done')?.tasks,
+    ).toHaveLength(1);
 
     await taskRepository.setStatus(task.id, TaskStatus.Todo);
 
-    expect((await taskRepository.listInbox()).map((t) => t.id)).toEqual([task.id]);
-    expect(await taskRepository.listRecentlyDone()).toEqual([]);
-  });
-
-  it('「已完成」按完成时间倒序，最近勾的在最上面', async () => {
-    const older = untimed();
-    const newer = untimed();
-    await taskRepository.create(older);
-    await taskRepository.create(newer);
-    await taskRepository.complete(older.id);
-    // complete() 写的是"此刻"，两条会撞在同一毫秒；显式错开一下
-    await taskRepository.update(older.id, { completedAt: '2026-10-06T01:00:00.000Z' });
-    await taskRepository.complete(newer.id);
-    await taskRepository.update(newer.id, { completedAt: '2026-10-06T02:00:00.000Z' });
-
-    const done = await taskRepository.listRecentlyDone();
-    expect(done.map((t) => t.id)).toEqual([newer.id, older.id]);
+    const groups = groupTodos(await taskRepository.listAll());
+    expect(groups.find((g) => g.bucket === 'someday')?.tasks.map((t) => t.id)).toEqual([task.id]);
+    expect(groups.find((g) => g.bucket === 'done')).toBeUndefined();
   });
 });
 
@@ -176,8 +178,14 @@ async function surfacesOf(task: Task): Promise<string[]> {
   const found: string[] = [];
   const has = (list: readonly Task[]) => list.some((item) => item.id === task.id);
 
-  if (has(await taskRepository.listInbox())) found.push('收集箱');
-  if (has(await taskRepository.listRecentlyDone())) found.push('收集箱·已完成');
+  /*
+    收集箱页现在是**五档分档列表**，它同时接过了原来「收集箱」与「收集箱·已完成」
+    两个入口：一条无时间的任务不论做没做完都在里面（没做完落"还没排时间"，
+    做完了落"已完成"）。所以这里用 domain 的分档问 —— 测试和界面同一份判据，
+    才挡得住"库里查得到、界面上看不见"。
+  */
+  const inboxPage = groupTodos(await taskRepository.listAll()).flatMap((group) => group.tasks);
+  if (has(inboxPage)) found.push('收集箱');
   if (has(await taskRepository.listHabits())) found.push('习惯页');
   if (task.containerId && has(await taskRepository.listByContainer(task.containerId))) {
     found.push('容器页');
@@ -358,7 +366,7 @@ describe('日历时间窗（判据 = 整段重叠）', () => {
 
     const stored = await taskRepository.getById(task.id);
     expect(stored?.time.attribute).toBe(TimeAttribute.None);
-    expect((await taskRepository.listInbox()).map((t) => t.id)).toEqual([task.id]);
+    expect(await inboxPageIds()).toEqual([task.id]);
   });
 });
 

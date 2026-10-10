@@ -10,7 +10,7 @@
  * **顺序不能换**，原因见 INDEXES 上的注释（换过，代价是升级后 App 直接起不来）。
  */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** 表名集中放这里，避免各处硬编码字符串写错 */
 export const TABLES = {
@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS ${TABLES.tasks} (
   start_at          TEXT,
   end_at            TEXT,
   due_at            TEXT,
+  /** 全天（NULL / 0 = 不是全天）。必须与 MIGRATIONS 9 同步加 */
+  all_day           INTEGER,
   repeat_json       TEXT,
   completion        TEXT NOT NULL,
   target_minutes    INTEGER,
@@ -294,4 +296,14 @@ export const MIGRATIONS: Readonly<Record<number, readonly string[]>> = {
    * **可空**，于是老数据不用回填 —— 没填过地点的任务读出来跟以前完全一样。
    */
   8: [`ALTER TABLE ${TABLES.tasks} ADD COLUMN location TEXT`],
+  /**
+   * v9 = tasks 加 all_day（全天）。
+   *
+   * "这件事占满一整天、没有具体时刻"必须**单独存**：全天在库里仍然写成
+   * 当天 00:00–23:59，而用户完全可以真的把一件事定在零点 ——
+   * 靠"start_at 是 00:00"去推全天，会把真·零点的日程错认成全天。
+   *
+   * **可空**（NULL = 不是全天），于是老数据不用回填：存量任务读出来跟以前完全一样。
+   */
+  9: [`ALTER TABLE ${TABLES.tasks} ADD COLUMN all_day INTEGER`],
 };

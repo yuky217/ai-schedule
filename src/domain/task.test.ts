@@ -4,7 +4,9 @@ import { TimeAttribute } from './enums';
 import {
   hasAnyTime,
   hasConcreteTime,
+  isAllDay,
   normalizeTaskTime,
+  pendingUntil,
   taskAnchor,
   taskDue,
   timeAnchor,
@@ -153,5 +155,64 @@ describe('hasAnyTime：这件事落进时间轴了吗', () => {
 
   it('空字符串不算数（"填过又清空"的字段不该被当成有时间）', () => {
     expect(hasAnyTime({ startAt: '', endAt: '', dueAt: '' })).toBe(false);
+  });
+});
+
+describe('isAllDay：是不是"全天"', () => {
+  const day = '2026-10-10T00:00:00.000Z';
+
+  it('标了全天 + 有锚点 → true', () => {
+    expect(isAllDay({ allDay: true, startAt: day, endAt: null, dueAt: null })).toBe(true);
+  });
+
+  it('没标 → false（**不能靠 startAt 是 00:00 去推**：真·零点的日程不是全天）', () => {
+    expect(isAllDay({ startAt: day, endAt: null, dueAt: null })).toBe(false);
+    expect(isAllDay({ allDay: false, startAt: day, endAt: null, dueAt: null })).toBe(false);
+  });
+
+  it('⭐ 标了全天却没有锚点 → false（退化数据已被 normalize 判成"没时间"）', () => {
+    expect(isAllDay({ allDay: true, startAt: null, endAt: null, dueAt: null })).toBe(false);
+  });
+
+  it('⭐ 全天照样有锚点 —— 否则它会从所有按时间取数的列表里消失', () => {
+    const time = { allDay: true, startAt: day, endAt: null, dueAt: null };
+    expect(timeAnchor(time)).toBe(day);
+    expect(hasAnyTime(time)).toBe(true);
+  });
+});
+
+describe('pendingUntil：这件事到什么时候为止都算"没到"', () => {
+  const start = '2026-10-10T09:00:00.000Z';
+  const end = '2026-10-10T15:00:00.000Z';
+  const due = '2026-10-10T18:00:00.000Z';
+
+  it('普通时间：截止优先，其次开始（与 timeDue 同一口径）', () => {
+    expect(pendingUntil({ startAt: start, endAt: end, dueAt: due })).toBe(due);
+    expect(pendingUntil({ startAt: start, endAt: end, dueAt: null })).toBe(start);
+  });
+
+  it('⭐ 全天看当天结束，不是开始 —— 00:00 永远在过去，用它比等于全天永远"已过期"', () => {
+    const time = {
+      allDay: true,
+      startAt: '2026-10-10T00:00:00.000Z',
+      endAt: '2026-10-10T23:59:59.999Z',
+      dueAt: null,
+    };
+    expect(pendingUntil(time)).toBe('2026-10-10T23:59:59.999Z');
+  });
+
+  it('⭐ 全天即使另有截止也按当天结束算（它说的是"这天都算它"）', () => {
+    expect(
+      pendingUntil({
+        allDay: true,
+        startAt: '2026-10-10T00:00:00.000Z',
+        endAt: '2026-10-10T23:59:59.999Z',
+        dueAt: due,
+      }),
+    ).toBe('2026-10-10T23:59:59.999Z');
+  });
+
+  it('退化数据（标了全天却没锚点）不特殊对待：按没时间算', () => {
+    expect(pendingUntil({ allDay: true, startAt: null, endAt: null, dueAt: null })).toBeNull();
   });
 });
