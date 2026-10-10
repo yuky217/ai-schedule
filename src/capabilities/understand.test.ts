@@ -116,9 +116,17 @@ describe('parseUnderstood：重复与提醒', () => {
   });
 
   it('非法重复（freq 不认识 / interval 是 0）→ 当作不重复，不硬凑', () => {
-    expect(parse({ repeat: { freq: 'yearly', interval: 1 } })!.repeat).toBeNull();
+    // 'hourly' 不在 RepeatFreq 里（2026-10-11 起 yearly 是合法值，不能再拿它当反例）
+    expect(parse({ repeat: { freq: 'hourly', interval: 1 } })!.repeat).toBeNull();
     expect(parse({ repeat: { freq: 'daily', interval: 0 } })!.repeat).toEqual({
       freq: RepeatFreq.Daily,
+      interval: 1,
+    });
+  });
+
+  it('yearly 是合法频率（2026-10-11 加的：每年一次的事也能是任务）', () => {
+    expect(parse({ repeat: { freq: 'yearly', interval: 1 } })!.repeat).toEqual({
+      freq: RepeatFreq.Yearly,
       interval: 1,
     });
   });

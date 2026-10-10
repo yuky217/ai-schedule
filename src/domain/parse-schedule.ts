@@ -146,7 +146,7 @@ export function parseSchedule(raw: string, now: Date = new Date()): ParsedSchedu
    * 认不出日期，于是一条"每周五之前交"的任务变成了没有任何期限的重复任务）。
    * 所以两段各记各的区间，最后一起切。
    */
-  const tm = parseTime(text, now);
+  const tm = parseTime(text, now, !rep);
 
   // ③ 提醒："提前半小时提醒我" / "记得提醒我"。命中的片段同样要切掉 —— 它是指令，不是内容
   const remind = extractReminder(text);
@@ -266,9 +266,9 @@ interface RepeatHit {
  * 「每周末」必须排在「每周」之前，否则"末"字不匹配周几字符类时会掉到「每周」兜底，
  * 把"每周末"读成"每周"（每周一次 vs 每周两次，差一倍）。
  *
- * 不做「每年」：`RepeatFreq` 里没有 yearly，而"每年"的场景（生日、年检、纪念日）
- * 主文档已经划给**纪念日**实体了（`marks.repeat_yearly`）。在这里造一个存不进
- * UI 的规则，就是"留了个没人能碰到的字段" —— 宁可少认一个，也不留半截能力。
+ * 「每年」2026-10-11 拍板加（此前"每年场景归纪念日"）：生日 / 年检这类事
+ * 用户就是想当任务记，`RepeatFreq.Yearly` 已有，解析器没理由把它推走。
+ * 纪念日照旧是纪念日的家 —— 两条路不冲突。
  */
 function extractRepeat(text: string): RepeatHit | null {
   const make = (rule: RepeatRule, matched: string, index: number): RepeatHit => ({
@@ -280,6 +280,17 @@ function extractRepeat(text: string): RepeatHit | null {
 
   /** 每个候选返回 RepeatRule 与命中的正则匹配；按顺序取第一个命中的 */
   const candidates: Array<() => { rule: RepeatRule; m: RegExpExecArray } | null> = [
+    // 每年3月6日（生日 / 年检 / 续费）。必须排在「每月25号」前 ——
+    // 虽然两者的正则互不误伤（"每年3月6日"里「每」后面是「年」），
+    // 但"越具体越靠前"的排序原则不能破
+    () => {
+      const m = /每年(\d{1,2})月(\d{1,2})[日号]/.exec(text);
+      if (!m) return null;
+      const month = Number(m[1]);
+      const day = Number(m[2]);
+      if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+      return { rule: { freq: RepeatFreq.Yearly, interval: 1 }, m };
+    },
     // 每周末 / 每个双休日 → 周六 + 周日
     () => {
       const m = /每(?:个)?(?:周末|双休日?)/.exec(text);
@@ -332,6 +343,11 @@ function extractRepeat(text: string): RepeatHit | null {
     () => {
       const m = /每(?:个)?月/.exec(text);
       return m ? { rule: { freq: RepeatFreq.Monthly, interval: 1 }, m } : null;
+    },
+    // 每年（不带日期）
+    () => {
+      const m = /每年/.exec(text);
+      return m ? { rule: { freq: RepeatFreq.Yearly, interval: 1 }, m } : null;
     },
   ];
 
@@ -524,7 +540,15 @@ function overlaps(a: Span, b: Span): boolean {
   return a.start < b.end && b.start < a.end;
 }
 
-function parseTime(text: string, now: Date): TimeHit | null {
+/**
+ * 在原文上认时间。
+ *
+ * `allowClockWrap`：**只有一次性任务**才允许裸时刻做"钟面就近"的 12 小时环绕
+ * （"9点"在下午 = 今晚 9 点）。重复任务不绕 —— "每天8点吃药"在早 10 点记下，
+ * 第一期是**明天 8:00**，不是今天 20:00：带 repeat 的"8点"说的是"每天 8 点
+ * 这个档"，不是"离现在最近的那个 8 点钟面"。
+ */
+function parseTime(text: string, now: Date, allowClockWrap: boolean): TimeHit | null {
   // ➓ 截止式（不带日期）："12点前交" / "三点半前给我" / "18:00前提交"
   //
   // 必须在 ① 之前判：① 要求**必须有日期词**（"周五前"、"下个月10号前"），
@@ -647,6 +671,21 @@ function parseTime(text: string, now: Date): TimeHit | null {
         };
       }
 
+      // 日期 + 光杆时段词（"明天晚上开会"）→ 时段默认时刻，见 DAY_PART_DEFAULTS。
+      // resolveDate 保证日期不早于今天，所以"已过"只可能是今天 + 时段默认已过 → 顺延明天
+      const dateDayPart = firstDayPart(text);
+      if (dateDayPart) {
+        const d = new Date(date);
+        d.setHours(dateDayPart.hour, 0, 0, 0);
+        if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+        return {
+          time: fixedTime(d),
+          label: `${dateLabel(d, now)} ${clock(d)}`,
+          spans: [daySpan, { start: dateDayPart.index, end: dateDayPart.index + dateDayPart.word.length }],
+          raw: `${dateMatch[0]}${dateDayPart.word}`,
+        };
+      }
+
       // 只有日期 → 截止到当天结束
       const due = new Date(date);
       due.setHours(23, 59, 0, 0);
@@ -685,12 +724,45 @@ function parseTime(text: string, now: Date): TimeHit | null {
     }
   }
 
-  // ⑤ 只有时刻："晚上8点跑步" → 今天，过了就顺延到明天
+  // ⑤ 只有时刻："晚上8点跑步" / "9点提醒我"
   if (timeMatch) {
     const hm = to24h(timeMatch, 1);
     if (hm) {
       const d = new Date(startOfDay(now));
       d.setHours(hm.hour, hm.minute, 0, 0);
+
+      // 光杆裸时刻（没写上午/下午，也不是冒点写法）：**钟面就近**（2026-10-11 拍板）。
+      // 下午 4 点说"9点" → 今天 21:00：在 {今天H:MM, 今天H+12:MM, 明天H:MM} 里取
+      // 最近的未来。带时段词的不在此列 —— "晚上8点"是用户亲口说的晚上，过了就明天。
+      // 冒点写法（"9:30"）也不此列 —— 那是 24 小时制，没有第二种读法。
+      // （TIME_EXPR 组下标：0 整体 / 1 整体外壳 / 2 时段词 / 3 小时 / 4 分或半 /
+      //   5 分的数字 / 6 冒点时 / 7 冒点分 —— 与 to24h(base=1) 同一套）
+      const periodWord = timeMatch[2]?.trim();
+      const isColon = timeMatch[6] !== undefined && timeMatch[7] !== undefined;
+      if (allowClockWrap && !periodWord && !isColon) {
+        const candidates = [d];
+        if (hm.hour + 12 <= 23) {
+          const evening = new Date(d);
+          evening.setHours(hm.hour + 12, hm.minute, 0, 0);
+          candidates.push(evening);
+        }
+        const tomorrow = new Date(d);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        candidates.push(tomorrow);
+        const next = candidates
+          .filter((c) => c.getTime() > now.getTime())
+          .sort((a, b) => a.getTime() - b.getTime())[0];
+        if (next) {
+          return {
+            time: fixedTime(next),
+            label: `${describeDay(next, now)} ${clock(next)}`,
+            spans: [spanOf(timeMatch)],
+            raw: timeMatch[0],
+          };
+        }
+      }
+
+      // 带时段词 / 冒点：今天，过了就顺延到明天
       if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
       return {
         time: fixedTime(d),
@@ -699,6 +771,20 @@ function parseTime(text: string, now: Date): TimeHit | null {
         raw: timeMatch[0],
       };
     }
+  }
+
+  // ⑥ 光杆时段词："晚上跑步" / "下午去取快递" → 时段默认时刻，过了顺延明天
+  const bareDayPart = firstDayPart(text);
+  if (bareDayPart) {
+    const d = new Date(startOfDay(now));
+    d.setHours(bareDayPart.hour, 0, 0, 0);
+    if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+    return {
+      time: fixedTime(d),
+      label: `${describeDay(d, now)} ${clock(d)}`,
+      spans: [{ start: bareDayPart.index, end: bareDayPart.index + bareDayPart.word.length }],
+      raw: bareDayPart.word,
+    };
   }
 
   return null;
@@ -752,6 +838,37 @@ function cnHour(s: string): number | null {
   if (s[1] === '十') return tens * 10;
   const ones = map[s[1]!];
   return ones != null ? tens * 10 + ones : tens;
+}
+
+/**
+ * 时段词单独出现时的默认时刻（2026-10-11 指令给的对照表）。
+ *
+ * 用户说"晚上跑步"时，"晚上"已经把时间说清了 —— 不认它，任务就掉进
+ * "还没排时间"，而用户明明说了时间。数值：早上=7 · 上午=9 · 中午=12 ·
+ * 下午=13（即"下午1点"）· 傍晚=17 · 晚上=20；凌晨 / 清晨 / 夜里指令没给，
+ * 取常识值外推（这张表在测试里逐项守着）。
+ */
+const DAY_PART_DEFAULTS: ReadonlyArray<{ re: RegExp; hour: number }> = [
+  { re: /凌晨/, hour: 6 },
+  { re: /清晨|早上|早晨/, hour: 7 },
+  { re: /上午/, hour: 9 },
+  { re: /中午/, hour: 12 },
+  { re: /下午/, hour: 13 },
+  { re: /傍晚/, hour: 17 },
+  { re: /晚上/, hour: 20 },
+  { re: /夜里/, hour: 21 },
+];
+
+/** 原文里第一个光杆时段词（"晚上跑步"的「晚上」）及其默认时刻与位置 */
+function firstDayPart(text: string): { word: string; hour: number; index: number } | null {
+  let best: { word: string; hour: number; index: number } | null = null;
+  for (const { re, hour } of DAY_PART_DEFAULTS) {
+    const m = re.exec(text);
+    if (m && (best == null || m.index < best.index)) {
+      best = { word: m[0], hour, index: m.index };
+    }
+  }
+  return best;
 }
 
 /**

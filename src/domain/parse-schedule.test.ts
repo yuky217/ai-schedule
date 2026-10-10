@@ -517,3 +517,81 @@ describe('地点：只认 "标签：值" 那种写法', () => {
   });
 });
 
+describe('时段词单独出现 → 默认时刻（2026-10-11 指令对照表）', () => {
+  it('晚上跑步 → 今天 20:00', () => {
+    const r = parseSchedule('晚上跑步', NOW);
+    expect(r.time?.startAt).toBe(at(2026, 10, 7, 20, 0));
+    expect(r.title).toBe('跑步');
+  });
+
+  it('下午去取快递 → 今天 13:00（"下午1点"）', () => {
+    const r = parseSchedule('下午去取快递', NOW);
+    expect(r.time?.startAt).toBe(at(2026, 10, 7, 13, 0));
+  });
+
+  it('时段默认已过 → 顺延明天（早上 = 7 点）', () => {
+    const r = parseSchedule('早上背单词', NOW);
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 7, 0));
+  });
+
+  it('日期 + 光杆时段词："明天晚上交" → 明天 20:00 固定，不是截止', () => {
+    const r = parseSchedule('明天晚上交', NOW);
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 20, 0));
+    expect(r.time?.dueAt).toBeNull();
+    expect(r.title).toBe('交');
+  });
+});
+
+describe('裸时刻的"最近有效"= 钟面就近（2026-10-11 拍板）', () => {
+  const AFTERNOON = new Date(2026, 9, 7, 16, 0, 0); // 周三 16:00
+
+  it('下午4点说"9点" → 今天 21:00（今天上午已过，就近取今晚）', () => {
+    const r = parseSchedule('9点提醒我', AFTERNOON);
+    expect(r.time?.startAt).toBe(at(2026, 10, 7, 21, 0));
+  });
+
+  it('下午4点说"11点半" → 今天 23:30', () => {
+    const r = parseSchedule('11点半交作业', AFTERNOON);
+    expect(r.time?.startAt).toBe(at(2026, 10, 7, 23, 30));
+  });
+
+  it('已经晚于该钟面的今天面 → 明天（"2点"在 16:00 = 明天 02:00）', () => {
+    const r = parseSchedule('2点喂猫', AFTERNOON);
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 2, 0));
+  });
+
+  it('冒点写法是 24 小时制，不就近：16:00 说"9:30" → 明天 9:30', () => {
+    const r = parseSchedule('9:30 站会', AFTERNOON);
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 9, 30));
+  });
+
+  it('带时段词的不就近："晚上8点"过了就是明天 20:00（用户亲口说的晚上）', () => {
+    const r = parseSchedule('晚上8点跑步', new Date(2026, 9, 7, 21, 0, 0));
+    expect(r.time?.startAt).toBe(at(2026, 10, 8, 20, 0));
+  });
+});
+
+describe('每年重复（2026-10-11 拍板： yearly 进任务，不再只归纪念日）', () => {
+  it('每年3月6日体检 → yearly + 3月6日（今年的已过就明年）', () => {
+    const r = parseSchedule('每年3月6日体检', NOW);
+    expect(r.repeat).toEqual({ freq: 'yearly', interval: 1 });
+    expect(r.repeatLabel).toBe('每年');
+    // 没写钟点 → 截止当天结束（与"每月25号"同一待遇）
+    expect(r.time?.dueAt).toBe(at(2027, 3, 6, 23, 59));
+    expect(r.title).toBe('体检');
+    // 重复词与日期词重叠，标题里一个字都不留
+    expect(r.title).not.toContain('3月');
+  });
+
+  it('每年12月31日 20:00 跨年聚会 → yearly + 固定时刻', () => {
+    const r = parseSchedule('每年12月31日20:00跨年聚会', NOW);
+    expect(r.repeat).toEqual({ freq: 'yearly', interval: 1 });
+    expect(r.time?.startAt).toBe(at(2026, 12, 31, 20, 0));
+  });
+
+  it('光杆"每年体检"也认', () => {
+    const r = parseSchedule('每年体检', NOW);
+    expect(r.repeat).toEqual({ freq: 'yearly', interval: 1 });
+    expect(r.title).toBe('体检');
+  });
+});

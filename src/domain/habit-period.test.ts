@@ -214,3 +214,12 @@ describe('describePeriodProgress：进度文案', () => {
     expect(describePeriodProgress(weekly, null, 4, d(2026, 10, 6))).toBe('本周 4 次');
   });
 });
+
+describe('yearly 本期窗口（2026-10-11 加）', () => {
+  it('interval=1 → 今年 1月1日 到 12月31日，label 今年', () => {
+    const w = periodWindow({ freq: RepeatFreq.Yearly, interval: 1 }, d(2026, 10, 6));
+    expect(w.fromDayKey).toBe('2026-01-01');
+    expect(w.toDayKey).toBe('2026-12-31');
+    expect(w.label).toBe('今年');
+  });
+});

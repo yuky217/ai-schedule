@@ -22,6 +22,7 @@ const WEEKDAY_CN = ['日', '一', '二', '三', '四', '五', '六'] as const;
  * - weekly 无 byWeekday：+interval 周；有 byWeekday：从次日找起，
  *   且"周的序号差"必须是 interval 的整数倍（支持"每 2 周的周一"）
  * - monthly：月份 +interval，日期超出月末时钳到月末（1月31日 → 2月28日）
+ * - yearly：年 +interval，同样钳日（2月29日 → 平年2月28日）
  */
 export function nextOccurrence(rule: RepeatRule, anchor: Date): Date | null {
   const from = new Date(anchor);
@@ -47,6 +48,21 @@ export function nextOccurrence(rule: RepeatRule, anchor: Date): Date | null {
     return null;
   }
 
+  if (rule.freq === 'yearly') {
+    const target = new Date(
+      from.getFullYear() + rule.interval,
+      from.getMonth(),
+      1,
+      from.getHours(),
+      from.getMinutes(),
+      0,
+      0,
+    );
+    const daysInTargetMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(from.getDate(), daysInTargetMonth));
+    return target;
+  }
+
   // monthly：先落目标月，再钳日期
   const target = new Date(
     from.getFullYear(),
@@ -67,6 +83,7 @@ export function describeRepeat(rule: RepeatRule): string {
   const n = rule.interval;
   if (rule.freq === 'daily') return n > 1 ? `每 ${n} 天` : '每天';
   if (rule.freq === 'monthly') return n > 1 ? `每 ${n} 个月` : '每月';
+  if (rule.freq === 'yearly') return n > 1 ? `每 ${n} 年` : '每年';
 
   if (rule.byWeekday?.length) {
     // 按中文说话习惯排：周一在前、周日收尾（0 = 周日）
@@ -152,6 +169,7 @@ export const REPEAT_PRESETS: readonly RepeatPreset[] = [
   },
   { id: 'weekly', label: '每周', rule: { freq: 'weekly', interval: 1 } },
   { id: 'monthly', label: '每月', rule: { freq: 'monthly', interval: 1 } },
+  { id: 'yearly', label: '每年', rule: { freq: 'yearly', interval: 1 } },
 ];
 
 /** 安排面板里的提醒提前量预设 */

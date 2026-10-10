@@ -128,6 +128,8 @@ export const RepeatFreq = {
   Daily: 'daily',
   Weekly: 'weekly',
   Monthly: 'monthly',
+  /** 2026-10-11 拍板加的：生日 / 年检这类"每年一次"的事也允许是任务 */
+  Yearly: 'yearly',
 } as const;
 export type RepeatFreq = (typeof RepeatFreq)[keyof typeof RepeatFreq];
 

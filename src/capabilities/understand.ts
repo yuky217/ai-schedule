@@ -48,7 +48,7 @@ export const understandSpec: CapabilitySpec<ParsedSchedule> = {
   "dueAt": "截止时间。timeKind=deadline 时必填，其余为 null",
   "timeLabel": "这个时间的自然说法，如「明天 15:00」「10月14日 19:00」；没有时间就 null",
   "location": "地点；没提到就 null",
-  "repeat": "null，或 {\"freq\":\"daily|weekly|monthly\",\"interval\":1,\"byWeekday\":[1,3,5]}",
+  "repeat": "null，或 {\"freq\":\"daily|weekly|monthly|yearly\",\"interval\":1,\"byWeekday\":[1,3,5]}",
   "reminderSpecified": "布尔。用户明确要求提醒（说了「提醒我」「叫我」「别让我忘」）才是 true",
   "reminderMinutes": "提前几分钟。用户说了具体时长就给数字（提前半小时=30，准点=0）；只说提醒没说多久就给 null",
   "note": "与这件事有关的其它信息（要求、注意事项、要带什么）；没有就 null"
@@ -207,7 +207,9 @@ function readRepeat(value: unknown): RepeatRule | null {
         ? RepeatFreq.Weekly
         : obj.freq === 'monthly'
           ? RepeatFreq.Monthly
-          : null;
+          : obj.freq === 'yearly'
+            ? RepeatFreq.Yearly
+            : null;
   if (!freq) return null;
 
   const rawInterval = typeof obj.interval === 'number' ? Math.round(obj.interval) : 1;

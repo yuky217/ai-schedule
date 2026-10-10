@@ -171,3 +171,44 @@ describe('中文短描述', () => {
     expect(describeReminder(minutes)).toBe(label);
   });
 });
+
+describe('yearly（2026-10-11 加的：每年一次的事也允许是任务）', () => {
+  it('每年：下一年同月同日，时刻保留', () => {
+    const next = nextOccurrence({ freq: 'yearly', interval: 1 }, new Date(2026, 2, 6, 9, 0));
+    expect(next!.getFullYear()).toBe(2027);
+    expect(next!.getMonth()).toBe(2);
+    expect(next!.getDate()).toBe(6);
+    expect(next!.getHours()).toBe(9);
+  });
+
+  it('2月29日 → 平年钳到 2月28日（不滚成 3月1日）', () => {
+    const next = nextOccurrence({ freq: 'yearly', interval: 1 }, new Date(2028, 1, 29, 8, 0));
+    expect(next!.getFullYear()).toBe(2029);
+    expect(next!.getMonth()).toBe(1);
+    expect(next!.getDate()).toBe(28);
+  });
+
+  it('每 2 年：跨两年', () => {
+    const next = nextOccurrence({ freq: 'yearly', interval: 2 }, new Date(2026, 2, 6, 9, 0));
+    expect(next!.getFullYear()).toBe(2028);
+  });
+
+  it('描述：每年 / 每 2 年', () => {
+    expect(describeRepeat({ freq: 'yearly', interval: 1 })).toBe('每年');
+    expect(describeRepeat({ freq: 'yearly', interval: 2 })).toBe('每 2 年');
+  });
+
+  it('完成一次后滚到下一期（advanceRepeatingTask 走通 yearly）', () => {
+    vi.setSystemTime(new Date(2026, 2, 7, 10, 0)); // 锚点 3月6日 已过
+    try {
+      const patch = advanceRepeatingTask(
+        dailyTask(new Date(2026, 2, 6, 9, 0), {
+          repeat: { freq: 'yearly', interval: 1 },
+        }),
+      );
+      expect(patch?.time).toMatchObject({ startAt: new Date(2027, 2, 6, 9, 0).toISOString() });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

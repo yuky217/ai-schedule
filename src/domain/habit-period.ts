@@ -18,11 +18,12 @@ import type { RepeatRule, Task } from './task';
  * 打卡记录里有 `dayKey`，把时间轴切成等长的块，数一数落在本块里的记录有几条，
  * 就是这个答案。不需要定时任务、不会漂移、撤销打卡后立刻正确。
  *
- * 三个单位共用同一个公式：**把时间轴按 interval 切成等长的块，本期 = 含此刻的那一块**。
+ * 四个单位共用同一个公式：**把时间轴按 interval 切成等长的块，本期 = 含此刻的那一块**。
  * - daily：以 1970-01-01 起算的日块（interval=1 就是"今天"）
  * - weekly：以 1970-01-05（周一）起算的周块 → 块边界永远落在周一
  * - monthly：以 1970 年 1 月起算的月块
- * 块的分界与公历对齐（周一 / 每月 1 号），所以"本周""本月"符合人的直觉；
+ * - yearly：月块的公式再乘 12，块边界永远落在 1 月 1 日
+ * 块的分界与公历对齐（周一 / 每月 1 号 / 每年 1 月 1 日），所以"本周""本月""今年"符合人的直觉；
  * interval > 1 时按同样的边界往后并成一块（"每 2 周"是相邻两周并起来，不是滚动窗口）。
  */
 
@@ -99,6 +100,19 @@ export function periodWindow(
       fromDayKey: toDayKey(startOfDay(from)),
       toDayKey: toDayKey(startOfDay(to)),
       label: interval > 1 ? `这 ${interval} 个月` : '本月',
+    };
+  }
+
+  if (freq === RepeatFreq.Yearly) {
+    // 与 monthly 同一个公式，单位换成 12 个月 —— 块边界永远落在 1 月 1 日
+    const monthIndex = (now.getFullYear() - EPOCH_YEAR) * 12 + (now.getMonth() - EPOCH_MONTH);
+    const block = Math.floor(monthIndex / (interval * 12));
+    const from = new Date(EPOCH_YEAR, EPOCH_MONTH + block * interval * 12, 1);
+    const to = new Date(EPOCH_YEAR, EPOCH_MONTH + (block + 1) * interval * 12, 0);
+    return {
+      fromDayKey: toDayKey(startOfDay(from)),
+      toDayKey: toDayKey(startOfDay(to)),
+      label: interval > 1 ? `这 ${interval} 年` : '今年',
     };
   }
 
