@@ -4,66 +4,75 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
 
+import { ExamFields, defaultExamDraft, examDraftSpan, type ExamDraft } from '@/components/exam-fields';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
- * 在日历上圈出一段时间之后，**只问一件事：它叫什么**（2026-10-10）。
+ * 手动加一场考试的表单（2026-10-11 从「＋」面板里搬出来）。
  *
- * ## 为什么不再问一遍时间
+ * ## 为什么不在日历的「＋」里了
  *
- * 用户刚刚把时段拖出来了（或者在「＋」那里已经默认好了），
- * 这时候再弹一个"选日期、选时刻"的表单，等于告诉他"你刚才那一下白做了"。
- * 所以这张面板里没有时间输入 —— 顶部那行就是已经定下来的时段，只读。
+ * 试过把「日程 / 考试」做成同一张面板里的两颗切换 —— 默认日程，
+ * 建日程的步数一步没多。但那颗开关挂在"新建日程"的脸面上，
+ * 每次建日程都要路过一个跟自己无关的选项；而考试和日程根本是两种东西
+ * （考试没有完成态、不进待办、提醒走另一套规则），硬挤一张面板
+ * 只是为了省一个入口位置。入口回到"考试的家"旁边（导入考试页），
+ * 面板回归纯粹：圈好一段时间，只问叫什么。
  *
- * 地点 / 提醒 / 重复这些"想起来才加"的东西一律留给详情页：一条日程想立住，
- * 首先需要一个名字；名字以外的都能事后补，而**在创建那一刻拦住他填四样东西**
- * 是这轮最想避开的那种交互。
- *
- * ## 为什么没有"建考试"的选项（2026-10-11 拆掉）
- *
- * 试过在这里放「日程 / 考试」两颗切换（默认日程，建日程一步没多）。
- * 拆掉是因为：这颗开关挂在"新建日程"的脸面上，每次建日程都要路过一个
- * 跟自己无关的选项；而考试没有完成态、不进待办、提醒走另一套规则，
- * 是另一种东西，硬挤一张面板只是为了省一个入口位置。
- * 手动建考试回到了它的家旁边 —— 导入考试页（`app/import-exams.tsx`，
- * 表单在 `components/exam-sheet.tsx`）。
+ * 时刻用打字而不是滚轮、地点选填、校验不过不提交 —— 判断都在
+ * `exam-fields.tsx`，这里只管把 Modal 架起来。
  */
-export interface NewSpanSheetProps {
-  visible: boolean;
-  /** 已经定好的时段，只用来展示（如"10月10日 周六 14:00–15:00"） */
-  when: string;
-  onCancel: () => void;
-  onSubmit: (title: string) => void;
+export interface ExamSheetResult {
+  title: string;
+  startAt: string;
+  endAt: string;
+  location: string | null;
 }
 
-export function NewSpanSheet({ visible, when, onCancel, onSubmit }: NewSpanSheetProps) {
+export interface ExamSheetProps {
+  visible: boolean;
+  /** 新草稿的默认日期（导入页没有"正对着的那天"，就是今天） */
+  initialDate: Date;
+  onCancel: () => void;
+  onSubmit: (result: ExamSheetResult) => void;
+}
+
+export function ExamSheet({ visible, initialDate, onCancel, onSubmit }: ExamSheetProps) {
   const theme = useTheme();
-  const [title, setTitle] = useState('');
+  const [draft, setDraft] = useState<ExamDraft>(() => defaultExamDraft(initialDate));
   // Modal 收起动画（slide）期间内容还看得见，先留住上一次的输入，避免中途闪成空
   const [shown, setShown] = useState(visible);
 
   useEffect(() => {
     if (visible) {
-      setTitle('');
+      setDraft(defaultExamDraft(initialDate));
       setShown(true);
     } else {
       const timer = setTimeout(() => setShown(false), 250);
       return () => clearTimeout(timer);
     }
+    // initialDate 只在打开那一刻取一次值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  const ready = title.trim().length > 0;
+  const span = examDraftSpan(draft);
+  const ready = draft.title.trim().length > 0 && span !== null;
 
   const submit = () => {
-    if (!ready) return;
-    onSubmit(title.trim());
+    if (!ready || !span) return;
+    onSubmit({
+      title: draft.title.trim(),
+      startAt: span.startAt,
+      endAt: span.endAt,
+      location: draft.location.trim() || null,
+    });
   };
 
   return (
@@ -79,24 +88,19 @@ export function NewSpanSheet({ visible, when, onCancel, onSubmit }: NewSpanSheet
 
             <View style={styles.head}>
               <ThemedText type="small" themeColor="textSecondary">
-                新建日程
+                新建考试
               </ThemedText>
-              <ThemedText type="smallBold">{shown ? when : ''}</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                考前一天晚上提醒你
+              </ThemedText>
             </View>
 
-            <View style={[styles.inputRow, { backgroundColor: theme.backgroundElement }]}>
-              <TextInput
-                autoFocus
-                value={title}
-                onChangeText={setTitle}
-                onSubmitEditing={submit}
-                returnKeyType="done"
-                blurOnSubmit={false}
-                placeholder="做什么？"
-                placeholderTextColor={theme.textSecondary}
-                style={[styles.input, { color: theme.text }]}
-              />
-            </View>
+            <ScrollView
+              style={styles.scroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}>
+              <ExamFields draft={draft} onChange={setDraft} autoFocusTitle />
+            </ScrollView>
 
             <View style={styles.actions}>
               <Pressable
@@ -117,7 +121,7 @@ export function NewSpanSheet({ visible, when, onCancel, onSubmit }: NewSpanSheet
                   { backgroundColor: theme.text, opacity: ready ? 1 : 0.4 },
                 ]}>
                 <ThemedText type="smallBold" style={{ color: theme.background }}>
-                  建好
+                  加上
                 </ThemedText>
               </Pressable>
             </View>
@@ -141,8 +145,8 @@ const styles = StyleSheet.create({
   },
   handle: { alignSelf: 'center', width: 36, height: 4, borderRadius: 2 },
   head: { gap: 1, marginTop: Spacing.one },
-  inputRow: { borderRadius: Spacing.three, paddingHorizontal: Spacing.three },
-  input: { paddingVertical: Spacing.two, fontSize: 15 },
+  /** 四个字段比"只问标题"高不少，键盘起来时得能滚 */
+  scroll: { maxHeight: 320 },
   actions: { flexDirection: 'row', gap: Spacing.two },
   button: {
     flex: 1,

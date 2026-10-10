@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { ExamSheet, type ExamSheetResult } from '@/components/exam-sheet';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -20,8 +21,15 @@ import { useAppStore } from '@/state/app-store';
  * 导入策略同样是**替换**（按钮上写清楚会替换几场，不加二次确认弹窗）——
  * 考试安排一个学期查一次，重新查询后重新导入就是常规动作。
  *
- * 考试与课程分开导入：它们是两个不同的查询页，文本长相完全不同，
+ * 考试与课程分开导入：它们是不同的查询页，文本长相完全不同，
  * 一个解析器包两种格式只会两个都变得脆弱。
+ *
+ * **手动加一场也在这页**（2026-10-11 搬进来）：补考、重修、随堂测验
+ * 这些教务系统里查不到的考试，只能自己填。曾经把入口放在日历「＋」里
+ * （「日程 / 考试」两颗切换），拆掉是因为那颗开关挂在"新建日程"的脸面上，
+ * 每次建日程都要路过一个跟自己无关的选项。搬回"考试的家"旁边：
+ * 反正要加考试的人已经在这页了（或者正要进来），表单（`exam-sheet.tsx`）
+ * 和粘贴导入共处一室，"导来的 + 自己加的"一眼看全。
  */
 
 const TEXT_TIPS = [
@@ -36,10 +44,12 @@ export default function ImportExamsScreen() {
 
   const events = useAppStore((state) => state.events);
   const importEvents = useAppStore((state) => state.importEvents);
+  const createExam = useAppStore((state) => state.createExam);
 
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
 
   const result = useMemo(() => {
     if (!text.trim()) return null;
@@ -76,6 +86,12 @@ export default function ImportExamsScreen() {
     await importEvents(entities, { replace: true });
     setBusy(false);
     router.back();
+  };
+
+  /** 手动加一场：加完**留在本页** —— 用户常常一口气加好几场 */
+  const submitManual = (result: ExamSheetResult) => {
+    setManualOpen(false);
+    void createExam(result);
   };
 
   return (
@@ -201,15 +217,30 @@ export default function ImportExamsScreen() {
         </ThemedText>
       </Pressable>
 
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setManualOpen(true)}
+        style={({ pressed }) => [
+          styles.secondary,
+          { borderColor: theme.backgroundSelected, opacity: pressed ? 0.7 : 1 },
+        ]}>
+        <ThemedText type="small" themeColor="textSecondary">
+          教务里查不到的（补考、重修、随堂测验）？手动加一场
+        </ThemedText>
+      </Pressable>
+
+      <ExamSheet
+        visible={manualOpen}
+        initialDate={new Date()}
+        onCancel={() => setManualOpen(false)}
+        onSubmit={submitManual}
+      />
+
       {footNote ? (
         <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
           {footNote}
         </ThemedText>
       ) : null}
-
-      <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-        教务系统里查不到的（补考、重修、随堂测验）：在日历右下角「＋」里选「考试」自己加。
-      </ThemedText>
     </Screen>
   );
 }
@@ -241,6 +272,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: Spacing.three,
     borderRadius: Spacing.three,
+  },
+  secondary: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.three,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   footnote: { fontSize: 12, lineHeight: 17, opacity: 0.75 },
 });
