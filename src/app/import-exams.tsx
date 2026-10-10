@@ -8,6 +8,7 @@ import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { describeEvent, type CalEvent } from '@/domain/event';
+import { CaptureSource } from '@/domain/enums';
 import { examDraftToEvent, parseExamText } from '@/domain/exam-text';
 import { useTheme } from '@/hooks/use-theme';
 import { useAppStore } from '@/state/app-store';
@@ -47,6 +48,26 @@ export default function ImportExamsScreen() {
 
   const drafts = result?.exams ?? [];
   const ready = drafts.length > 0 && !busy;
+
+  /**
+   * 库里的考试分两类，导入对它们的态度不一样：
+   * **之前导入的会被替换掉，手动加的一场都不动**（补考/重修本来就查不到，
+   * 被"替换"清掉是静默丢数据 —— 见 `eventRepository.softDeleteImported`）。
+   * 所以按钮和脚注都得把这两个数分开说，否则用户没法预判自己那几场会怎样。
+   */
+  const importedCount = useMemo(
+    () => events.filter((event) => event.source !== CaptureSource.Manual).length,
+    [events],
+  );
+  const manualCount = events.length - importedCount;
+
+  const footNote = !events.length
+    ? null
+    : importedCount && manualCount
+      ? `导入会替换掉之前导入的 ${importedCount} 场；你自己加的 ${manualCount} 场会留着。`
+      : importedCount
+        ? `导入会替换掉现有的 ${importedCount} 场考试。重新查询后整体导入正好这样用。`
+        : `你自己加的 ${manualCount} 场不会被这次导入动到。`;
 
   const submit = async () => {
     if (!ready) return;
@@ -173,20 +194,22 @@ export default function ImportExamsScreen() {
           {busy
             ? '正在导入…'
             : drafts.length
-              ? events.length
-                ? `导入 ${drafts.length} 场考试，替换现有 ${events.length} 场`
+              ? importedCount
+                ? `导入 ${drafts.length} 场，替换之前的 ${importedCount} 场`
                 : `导入 ${drafts.length} 场考试`
-              : events.length
-                ? `先粘文本（现有 ${events.length} 场会被替换）`
-                : '先粘文本'}
+              : '先粘文本'}
         </ThemedText>
       </Pressable>
 
-      {events.length ? (
+      {footNote ? (
         <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-          导入会替换掉现有的 {events.length} 场考试（包括手动改过的）。重新查询后整体导入正好这样用。
+          {footNote}
         </ThemedText>
       ) : null}
+
+      <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
+        教务系统里查不到的（补考、重修、随堂测验）：在日历右下角「＋」里选「考试」自己加。
+      </ThemedText>
     </Screen>
   );
 }

@@ -26,6 +26,7 @@ import type { CreateContainerInput, CreateMarkInput } from '@/domain/factory';
 import {
   createContainer,
   createCourse,
+  createEvent,
   createFocusSession,
   createMark,
   createSubtask,
@@ -79,6 +80,21 @@ export interface FocusFeedback {
   message: string;
   /** 这次专注的净秒数 */
   seconds: number;
+}
+
+/**
+ * 手动加一场考试的输入。
+ *
+ * 没有 kind / source 两个字段：它们由 `createExam` 自己写死
+ * （考试、手动）。来源不是装饰 —— 导入替换时要靠它把手动建的留下来
+ * （见 `eventRepository.softDeleteImported`），所以不能交给调用方随手传。
+ */
+export interface CreateExamInput {
+  title: string;
+  /** ISO 时刻，与任务的时间同格式 */
+  startAt: string;
+  endAt?: string | null;
+  location?: string | null;
 }
 
 interface AppState {
@@ -295,8 +311,22 @@ interface AppState {
 
   /** 全部固定日程（量小，一学期十来条，refresh 里顺带全量读） */
   events: CalEvent[];
-  /** 导入一批（导入页确认草稿之后调它）。replace = 先清掉现有考试再写 */
+  /**
+   * 导入一批（导入页确认草稿之后调它）。
+   * `replace` = 先清掉**导入来的**那些再写 —— 手动加的一场都不动：
+   * 补考 / 重修本来就查不到，被"替换"清掉等于静默丢数据
+   * （见 `eventRepository.softDeleteImported`）。
+   */
   importEvents: (events: readonly CalEvent[], options?: { replace?: boolean }) => Promise<void>;
+  /**
+   * 手动加一场考试（教务系统里查不到的那些：补考、重修、随堂测验）。
+   *
+   * 提醒走考试那一套固定规则（前一天 20:00，兜底开考前 1 小时，见 `domain/event-reminder`），
+   * 与导入进来的**完全一样** —— 用户不关心这场考试是从哪来的。
+   */
+  createExam: (input: CreateExamInput) => Promise<CalEvent>;
+  updateExam: (id: string, patch: Partial<CalEvent>) => Promise<void>;
+  removeExam: (id: string) => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -1001,11 +1031,38 @@ export const useAppStore = create<AppState>((set, get) => ({
   /* ---------------- 固定日程（考试等） ---------------- */
 
   importEvents: async (events, options) => {
-    if (options?.replace) await eventRepository.softDeleteAll();
+    if (options?.replace) await eventRepository.softDeleteImported();
     await eventRepository.createMany(events);
     await get().refresh();
     // 考试提醒一贯"全撤重排"（理由见 syncEventReminders）。**不 await**：
     // 排提醒不该拖慢"导入考试"这个主流程，失败也只是这次没排上。
+    void syncEventReminders(get().events);
+  },
+
+  createExam: async (input) => {
+    const event = createEvent({
+      title: input.title,
+      location: input.location ?? null,
+      startAt: input.startAt,
+      endAt: input.endAt ?? null,
+    });
+    await eventRepository.create(event);
+    await get().refresh();
+    void syncEventReminders(get().events);
+    return event;
+  },
+
+  updateExam: async (id, patch) => {
+    await eventRepository.update(id, patch);
+    await get().refresh();
+    // 改了时刻就得重排：旧那次的提醒还挂在系统里的话，会在错误的时间响
+    void syncEventReminders(get().events);
+  },
+
+  removeExam: async (id) => {
+    await eventRepository.softDelete(id);
+    await get().refresh();
+    // 撤掉那条待响的提醒 —— 考试都删了还弹出来，是最让人不敢信数据的那类 bug
     void syncEventReminders(get().events);
   },
 

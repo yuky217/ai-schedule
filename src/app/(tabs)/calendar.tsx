@@ -19,10 +19,11 @@ import { Card } from '@/components/card';
 import { CourseSessionSheet } from '@/components/course-session-sheet';
 import { CourseSlotSheet } from '@/components/course-slot-sheet';
 import { DragGrip } from '@/components/drag-grip';
+import { ExamCard } from '@/components/exam-card';
 import { Fab } from '@/components/fab';
 import { InboxPanel, PANEL_HANDLE_HEIGHT } from '@/components/inbox-panel';
 import { MonthPlan } from '@/components/month-plan';
-import { NewSpanSheet } from '@/components/new-span-sheet';
+import { NewSpanSheet, type NewSpanResult } from '@/components/new-span-sheet';
 import { Screen } from '@/components/screen';
 import { TaskRow } from '@/components/task-row';
 import { ThemedText } from '@/components/themed-text';
@@ -188,6 +189,10 @@ export default function CalendarScreen() {
   const saveCourse = useAppStore((state) => state.saveCourse);
   /** 时间轴上圈出一段之后落库的那一步（唯一出口，见 state/app-store） */
   const createScheduledTask = useAppStore((state) => state.createScheduledTask);
+  /** 考试的落库三件套：手动加一场、改一场、删一场（考试不在任务表里） */
+  const createExam = useAppStore((state) => state.createExam);
+  const updateExam = useAppStore((state) => state.updateExam);
+  const removeExam = useAppStore((state) => state.removeExam);
   /** 课表总开关：关掉后「课」这一栏和日/周里的上课时段一起消失 */
   const timetableOn = useSettings((state) => state.timetableEnabled);
   const simpleMode = useSettings((state) => state.simpleMode);
@@ -216,8 +221,16 @@ export default function CalendarScreen() {
    *
    * 它同时就是"输入面板开不开"的开关，不再需要第二个 boolean ——
    * 有时段就该问标题，没时段就什么都不该有。
+   *
+   * `allowExam` 是"这张面板能不能切成考试"：「＋」进来的可以（那是通用的加事入口），
+   * 时间轴上拖出来的不行（拖一段就是日程，见 openSpanOnDay）。
    */
-  const [newSpan, setNewSpan] = useState<{ date: Date; start: number; end: number } | null>(null);
+  const [newSpan, setNewSpan] = useState<{
+    date: Date;
+    start: number;
+    end: number;
+    allowExam: boolean;
+  } | null>(null);
   /** 下拉手势正在跟手（期间锁页面滚动，否则手指一竖页面跟着滚） */
   const [monthPulling, setMonthPulling] = useState(false);
 
@@ -678,7 +691,7 @@ export default function CalendarScreen() {
     [mode, selected, weekDays],
   );
 
-  /** 点「新建」：算出默认时段，然后交给输入面板（只问标题） */
+  /** 点「新建」：算出默认时段，然后交给输入面板 */
   const openNewSpan = useCallback(() => {
     const now = new Date();
     const start = isSameDay(focusDate, now)
@@ -688,19 +701,24 @@ export default function CalendarScreen() {
       date: focusDate,
       start,
       end: Math.min(start + NEW_SPAN_MINUTES, 24 * 60 - 1),
+      // 「＋」是"我要加件事"的通用入口，所以它才给"日程 / 考试"这个开关
+      allowExam: true,
     });
   }, [focusDate]);
 
   /**
    * 时间轴上拖出一段：日期就是用户拖的那一列 / 那一天，不再问。
    * 两个包装只是"日期从哪儿来"不同（周视图的手势带日期，日视图就是当前看的那天）。
+   *
+   * 拖出来的**只能是日程**（`allowExam: false`）：拖一段的语义就是
+   * "这段时间被占住了"，而考试得自己填日期和时刻（它多半不是今天、也不是一小时）。
    */
   const openSpanOnDay = useCallback(
-    (date: Date, start: number, end: number) => setNewSpan({ date, start, end }),
+    (date: Date, start: number, end: number) => setNewSpan({ date, start, end, allowExam: false }),
     [],
   );
   const openSpanOnSelectedDay = useCallback(
-    (start: number, end: number) => setNewSpan({ date: selected, start, end }),
+    (start: number, end: number) => setNewSpan({ date: selected, start, end, allowExam: false }),
     [selected],
   );
 
@@ -710,20 +728,35 @@ export default function CalendarScreen() {
    * **不跳详情页**：用户刚在日历上把它拖出来，松手、敲个名字，那块地方立刻出现一条
    * —— "我做的事有结果"到这儿就闭环了。再跳一页去填地点/提醒，等于把一件刚做完的事
    * 变成"还要再看一页"。想补的时候点它一下就是详情页，路没堵。
+   *
+   * 考试走另一条落库路径（`createExam`）：它不在任务表里，没有完成态，
+   * 提醒也归考试那一套规则。这两条路在这一层汇合，是因为用户眼里它们
+   * 只是同一张面板里换了个类型。
    */
   const submitNewSpan = useCallback(
-    (title: string) => {
+    (result: NewSpanResult) => {
       const span = newSpan;
       if (!span) return;
       setNewSpan(null);
+
+      if (result.kind === 'exam') {
+        void createExam({
+          title: result.title,
+          startAt: result.startAt,
+          endAt: result.endAt,
+          location: result.location,
+        });
+        return;
+      }
+
       void createScheduledTask({
-        title,
+        title: result.title,
         date: span.date,
         startMinutes: span.start,
         endMinutes: span.end,
       });
     },
-    [createScheduledTask, newSpan],
+    [createExam, createScheduledTask, newSpan],
   );
 
   /** 输入面板顶部那行"什么时候"：只读，因为时段是用户自己圈出来的 */
@@ -1094,10 +1127,15 @@ export default function CalendarScreen() {
           {/*
             圈好一段时间之后，只问名字。放在 overlay 里是为了盖在整页之上
             （包括那个贴底的待办面板）—— 这一刻用户眼里只有"给这段时间起个名字"这件事。
+
+            「＋」进来的还多一个"日程 / 考试"的开关（allowExam）：
+            位置是同一个（"我要加件事"），而且建日程一步都没多。
           */}
           <NewSpanSheet
             visible={newSpan !== null}
             when={newSpanWhen}
+            allowExam={newSpan?.allowExam ?? false}
+            examDate={newSpan?.date ?? focusDate}
             onCancel={() => setNewSpan(null)}
             onSubmit={submitNewSpan}
           />
@@ -1306,18 +1344,7 @@ export default function CalendarScreen() {
               {mode === 'day' ? (
                 <>
                   {selectedExams.length ? (
-                    <Card title={`考试 · ${selectedExams.length} 场`} hint="考试不带完成态，到点就是它">
-                      {selectedExams.map((event) => (
-                        <View key={event.id} style={styles.examRow}>
-                          <ThemedText type="smallBold" numberOfLines={1} style={styles.examTitle}>
-                            {event.title}
-                          </ThemedText>
-                          <ThemedText type="small" themeColor="textSecondary">
-                            {describeEvent(event)}
-                          </ThemedText>
-                        </View>
-                      ))}
-                    </Card>
+                    <ExamCard exams={selectedExams} onUpdate={updateExam} onRemove={removeExam} />
                   ) : null}
                   <CalendarDay
                     date={selected}

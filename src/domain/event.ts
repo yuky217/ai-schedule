@@ -15,6 +15,7 @@
  */
 
 import type { BaseEntity } from './base';
+import { isoAtMinutes } from '@/utils/datetime';
 
 export const EventKind = {
   /** 考试（教务系统导入） */
@@ -67,4 +68,26 @@ export function describeEventTime(event: CalEvent): string {
 /** '14:30–16:30 · 教B216' —— 日视图考试行与导入预览共用这一份口径 */
 export function describeEvent(event: CalEvent): string {
   return [describeEventTime(event), event.location].filter(Boolean).join(' · ');
+}
+
+/**
+ * 某天 + 起止分钟 → 这场考试的起止时刻（手动加一场考试时用）。
+ *
+ * 与日程的 `schedule-presets.buildSpanTime` 共用同一个换算（`isoAtMinutes`）：
+ * "手动加一场考试"和"在日历上拖出一段日程"在"某天几点到几点"这件事上
+ * 没有第二种算法 —— 各写一份的话，考试与日程的日子迟早会差一天。
+ *
+ * 结束不晚于开始返回 null（界面已经拦住，这里是最后一道）。
+ */
+export function buildEventSpan(
+  date: Date,
+  startMinutes: number,
+  endMinutes: number,
+): { startAt: string; endAt: string } | null {
+  if (Number.isNaN(date.getTime())) return null;
+  if (Math.round(endMinutes) <= Math.round(startMinutes)) return null;
+  return {
+    startAt: isoAtMinutes(date, startMinutes),
+    endAt: isoAtMinutes(date, endMinutes),
+  };
 }

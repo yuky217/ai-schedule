@@ -28,6 +28,22 @@ export const atTimeOn = (dayOffset: number, hours: number, minutes = 0): string 
   return d.toISOString();
 };
 
+/**
+ * 某天的"第几分钟" → ISO 串（本地时刻，越界自动夹到 00:00–23:59）。
+ *
+ * 抽成公用函数是因为至少有三处要做同一件事：日历上拖出新日程
+ * （`schedule-presets.buildSpanTime`）、把已有任务改时段
+ * （`buildRetimedSpanTime`）、手动建一场考试（`domain/event.buildEventSpan`）。
+ * 各自写一次 `setHours` 迟早会出现"一份算对、另一份差一天"——
+ * 而这种偏差在界面上只剩一句"我明明选的是周五"，极难归因。
+ */
+export const isoAtMinutes = (date: Date, minutesOfDay: number): string => {
+  const safe = Math.max(0, Math.min(24 * 60 - 1, Math.round(minutesOfDay)));
+  const d = new Date(date);
+  d.setHours(Math.floor(safe / 60), safe % 60, 0, 0);
+  return d.toISOString();
+};
+
 /** "10月5日 星期一"，中文长日期 */
 export const formatDateLong = (d: Date = new Date()): string =>
   format(d, 'M月d日 EEEE', { locale: zhCN });

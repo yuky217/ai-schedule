@@ -4,6 +4,7 @@ import { TABLES } from '@/data/db/schema';
 import { insertParams, insertSql, updateParams, updateSql } from '@/data/db/sql';
 import { touch } from '@/data/db/touch';
 import type { CalEvent } from '@/domain/event';
+import { CaptureSource } from '@/domain/enums';
 import { nowIso } from '@/utils/datetime';
 
 const TABLE = TABLES.events;
@@ -67,13 +68,20 @@ export const eventRepository = {
     ]);
   },
 
-  /** 整表清（软删）—— 重新导入考试时用，跟着"替换"语义走 */
-  async softDeleteAll(): Promise<void> {
+  /**
+   * 替换导入：只软删**导入来的**那些，手动建的留着。
+   *
+   * 这不是洁癖。导入是"整表替换"（重新查一遍教务就整体再来一次），但若连手动建的
+   * 也一起清掉，用户自己补进来的补考 / 重修 / 随堂测验会在下一次导入时**静默消失**
+   * —— 他不会知道，也没有第二次机会发现。而手动建的那几场本来就查不到
+   * （查得到就不用手动建了），"替换"这个动作对它们没有意义。
+   */
+  async softDeleteImported(): Promise<void> {
     const db = await getDatabase();
-    await db.runAsync(`UPDATE ${TABLE} SET deleted_at = ?, updated_at = ? WHERE ${LIVE}`, [
-      nowIso(),
-      nowIso(),
-    ]);
+    await db.runAsync(
+      `UPDATE ${TABLE} SET deleted_at = ?, updated_at = ? WHERE ${LIVE} AND source <> ?`,
+      [nowIso(), nowIso(), CaptureSource.Manual],
+    );
   },
 
   /**

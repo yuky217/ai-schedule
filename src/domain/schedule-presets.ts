@@ -1,3 +1,4 @@
+import { isoAtMinutes } from '@/utils/datetime';
 import { TimeAttribute } from './enums';
 import { taskAnchor, type Task, type TaskTime } from './task';
 
@@ -116,18 +117,16 @@ export function buildSpanTime(
 ): TaskTime | null {
   if (Number.isNaN(date.getTime())) return null;
 
-  const clamp = (m: number) => Math.max(0, Math.min(24 * 60 - 1, Math.round(m)));
-  const start = clamp(startMinutes);
-  const end = clamp(endMinutes);
+  const start = Math.max(0, Math.min(24 * 60 - 1, Math.round(startMinutes)));
+  const end = Math.max(0, Math.min(24 * 60 - 1, Math.round(endMinutes)));
   if (end <= start) return null;
 
-  const at = (minutes: number) => {
-    const d = new Date(date);
-    d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-    return d.toISOString();
+  return {
+    attribute: TimeAttribute.Fixed,
+    startAt: isoAtMinutes(date, start),
+    endAt: isoAtMinutes(date, end),
+    dueAt: null,
   };
-
-  return { attribute: TimeAttribute.Fixed, startAt: at(start), endAt: at(end), dueAt: null };
 }
 
 /**
