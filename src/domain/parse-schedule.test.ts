@@ -360,7 +360,7 @@ describe('不猜：认不出来就一个字都不认', () => {
     expect(r.title).toBe('买菜');
   });
 
-  it('含糊的时间词一概不认 —— 落进收集箱，好过排到错的日子', () => {
+  it('含糊的时间词一概不认 —— 落进待办，好过排到错的日子', () => {
     for (const text of ['过几天再说', '改天聊', '有空的时候整理房间', '月底前搞定']) {
       const r = parseSchedule(text, NOW);
       expect(r.time, text).toBeNull();

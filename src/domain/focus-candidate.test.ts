@@ -97,15 +97,15 @@ describe('pickFocusCandidate', () => {
     expect(ids).toEqual(['meeting', 'report']);
   });
 
-  it('都没有时落到收集箱，且保留用户自己的排序', () => {
+  it('都没有时落到待办，且保留用户自己的排序', () => {
     const first = makeTask('first');
     const second = makeTask('second');
     const picked = pickFocusCandidate({ today: [], inbox: [first, second], now: NOW });
     expect(picked?.task.id).toBe('first');
-    expect(picked?.reason).toContain('收集箱');
+    expect(picked?.reason).toContain('待办');
   });
 
-  it('收集箱里已完成的不出现', () => {
+  it('待办里已完成的不出现', () => {
     const finished = makeTask('finished', done);
     const open = makeTask('open');
     expect(pickFocusCandidate({ today: [], inbox: [finished, open], now: NOW })?.task.id).toBe('open');

@@ -19,7 +19,7 @@ import { dayKeyOf, parseDayKey } from '@/utils/datetime';
 /**
  * 纪念日（主文档 5.3 的"标记"）。
  *
- * 它是**独立于任务**的一种东西：不提醒、不排程、不进收集箱。
+ * 它是**独立于任务**的一种东西：不提醒、不排程、不进待办。
  * 倒数日（还剩几天）和正数日（已经多少天）是两种完全不同的情绪 ——
  * 前者是期待，后者是坚持，所以列表里正数日排在后面，不去抢"即将发生"的位置。
  *
@@ -293,7 +293,7 @@ export default function MarksScreen() {
         <View style={styles.tipRow}>
           <Ionicons name="information-circle-outline" size={16} color={theme.textSecondary} />
           <ThemedText type="small" themeColor="textSecondary" style={styles.tipText}>
-            纪念日独立于任务：不提醒、不进收集箱，只是让日子有个地方待着。
+            纪念日独立于任务：不提醒、不进待办，只是让日子有个地方待着。
             日历页会把它点在那天，并挑几个最近要发生的列出来。
           </ThemedText>
         </View>

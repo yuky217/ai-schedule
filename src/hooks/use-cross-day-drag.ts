@@ -34,7 +34,7 @@ export interface CellRect {
 const GHOST_WIDTH = 172;
 /** 手指移动多少 px 才回一次 JS 做命中检测 */
 const HIT_TEST_STEP = 12;
-/** 长按多久才拾起（与收集箱排序同一个数，见 constants/gestures） */
+/** 长按多久才拾起（与待办排序同一个数，见 constants/gestures） */
 const PICKUP_MS = LONG_PRESS_PICKUP_MS;
 /**
  * 按住期间允许手指移动多少 px（2026-10-10）。
@@ -105,7 +105,7 @@ export function useCrossDayDrag({ onDrop, onPickUp }: CrossDayDragOptions): Cros
    * 浮块位置用**屏幕坐标**（手指的 absoluteX/Y）而不是"容器内坐标"。
    *
    * 原来的写法要减掉容器在窗口里的偏移（offsetX/offsetY），前提是浮块挂在
-   * 那个容器里面。但拖拽源头现在可能落在容器之外 —— 日历页把收集箱抽屉
+   * 那个容器里面。但拖拽源头现在可能落在容器之外 —— 日历页把待办抽屉
    * 挪到了 Screen 的 bottomBar（滚动区的兄弟节点），它不在 containerRef 里。
    * 这时"容器内坐标"算出来的位置是错的，浮块会飘到别处。
    *

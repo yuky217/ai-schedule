@@ -16,7 +16,7 @@ import { taskRepository } from './task-repository';
  *
  * 为什么需要它：domain 层那 200 条用例全在纯逻辑里打转，而"任务查不到"这类 bug
  * 一条都抓不住 —— 它的成因根本不在逻辑里，而在 `WHERE` 子句里：
- * 收集箱带 `status != done`、日历带 `time_attribute != 'none'`、习惯页只取 `kind = habit`，
+ * 待办带 `status != done`、日历带 `time_attribute != 'none'`、习惯页只取 `kind = habit`，
  * 各自看都合理，拼在一起就把一整类任务**同时排除在四个列表之外**。
  * 用户的表现就是"我勾了一下，它不见了"。
  *
@@ -49,7 +49,7 @@ function memoryDb(): { db: DatabaseSync; adapter: TestDb } {
   return { db, adapter };
 }
 
-/** 无时间的执行型任务（收集箱里的样子） */
+/** 无时间的执行型任务（待办里的样子） */
 const untimed = () => createTask({ title: '写周报', kind: TaskKind.Execution });
 /** 有固定时间的任务（日历上的样子） */
 const scheduled = () =>
@@ -71,9 +71,9 @@ beforeEach(async () => {
 });
 
 /**
- * 收集箱页此刻会显示的 id —— 走 `domain/todo.groupTodos`，**与界面同一份口径**。
+ * 待办页此刻会显示的 id —— 走 `domain/todo.groupTodos`，**与界面同一份口径**。
  *
- * 收集箱现在是"我手上欠着什么"的唯一入口（五档分档列表），所以
+ * 待办现在是"我手上欠着什么"的唯一入口（五档分档列表），所以
  * "用户能不能看见它"这个问题由分档回答，而不是由某一条 SQL 回答。
  * 测试和界面共用一份判据，才不会出现"库里查得到、界面上看不见"。
  */
@@ -83,7 +83,7 @@ async function inboxPageIds(): Promise<string[]> {
 }
 
 describe('taskRepository 的查询口径', () => {
-  it('待办的无时间任务在收集箱里', async () => {
+  it('没排时间的执行型任务在待办页里', async () => {
     const task = untimed();
     await taskRepository.create(task);
 
@@ -99,7 +99,7 @@ describe('taskRepository 的查询口径', () => {
     await taskRepository.create(task);
     await taskRepository.complete(task.id);
 
-    // 收集箱页里还找得到它，只是换到了已完成那一档
+    // 待办页里还找得到它，只是换到了已完成那一档
     expect(await inboxPageIds()).toEqual([task.id]);
     const groups = groupTodos(await taskRepository.listAll());
     expect(groups.find((g) => g.bucket === 'someday')).toBeUndefined();
@@ -108,7 +108,7 @@ describe('taskRepository 的查询口径', () => {
     expect(done?.tasks[0]?.status).toBe('done');
   });
 
-  it('日程型（开会）不是待办：做没做完都不进收集箱的任何一档', async () => {
+  it('日程型（开会）不是待办：做没做完都不进待办页的任何一档', async () => {
     const task = scheduled();
     await taskRepository.create(task);
     // 开会、上课是"别人定好的时间，到点发生"，不欠你什么 —— 从分档这一步就不进来
@@ -179,13 +179,13 @@ async function surfacesOf(task: Task): Promise<string[]> {
   const has = (list: readonly Task[]) => list.some((item) => item.id === task.id);
 
   /*
-    收集箱页现在是**五档分档列表**，它同时接过了原来「收集箱」与「收集箱·已完成」
-    两个入口：一条无时间的任务不论做没做完都在里面（没做完落"还没排时间"，
-    做完了落"已完成"）。所以这里用 domain 的分档问 —— 测试和界面同一份判据，
-    才挡得住"库里查得到、界面上看不见"。
+    待办页（原「收集箱」，2026-10-10 改名）现在是**五档分档列表**，
+    它同时接过了原来底部那块「已完成 N 件」的活：一条无时间的任务不论做没做完
+    都在里面（没做完落"还没排时间"，做完了落"已完成"）。所以这里用 domain 的分档问 ——
+    测试和界面同一份判据，才挡得住"库里查得到、界面上看不见"。
   */
   const inboxPage = groupTodos(await taskRepository.listAll()).flatMap((group) => group.tasks);
-  if (has(inboxPage)) found.push('收集箱');
+  if (has(inboxPage)) found.push('待办');
   if (has(await taskRepository.listHabits())) found.push('习惯页');
   if (task.containerId && has(await taskRepository.listByContainer(task.containerId))) {
     found.push('容器页');
@@ -248,7 +248,7 @@ describe('可达性扫描：每条任务都必须有个"看得见"的地方', ()
    * 退化的时间：属性说"有时间"，两个锚点却都是空的。
    *
    * 正常路径产不出它，但**库里可能已经有**（早期版本写下的、导入的、手改的）。
-   * 它最危险的地方是：收集箱用 `time_attribute = 'none'` 收人、日历用两个锚点收人，
+   * 它最危险的地方是：待办用 `time_attribute = 'none'` 收人、日历用两个锚点收人，
    * 于是它两边都不沾 —— 而且它不会有任何报错，就是安静地消失。
    */
   it('有属性但两个锚点都空：也不能消失', async () => {

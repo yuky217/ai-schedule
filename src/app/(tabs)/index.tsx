@@ -38,13 +38,13 @@ import { formatDateLong, formatDayTime } from '@/utils/datetime';
  *
  * 立场：**首页要能回答"现在做哪件"，而不是把全部家当摆出来**。
  * 今天那几件不在这儿铺成列表 —— 专注选择器左右滑就是它们，
- * 完整的列表在日历和收集箱里，一两次点击就到。
+ * 完整的列表在日历和待办里，一两次点击就到。
  */
 
 /** 记完之后给一句明确反馈，用户才知道东西到底去哪了 */
 const ROUTE_FEEDBACK: Record<CaptureRoute, string> = {
   idea: '已放进想法库，不提醒',
-  inbox: '已放进收集箱，等你安排时间',
+  inbox: '已放进待办，等你安排时间',
   calendar: '已落到日历',
 };
 
@@ -68,7 +68,7 @@ export default function HomeScreen() {
   /**
    * 专注选择器的候选：今天要面对的那几件。
    *
-   * 刻意**只取 today，不掺收集箱** —— 收集箱是"还没安排好"的池子，
+   * 刻意**只取 today，不掺"还没排时间"的那些** —— 它们是"还没安排好"的池子，
    * 把它铺进滑动区，用户就得在这儿先做一次筛选；那正是「＋」那一格该干的事。
    */
   const choices = useMemo(
@@ -124,7 +124,7 @@ export default function HomeScreen() {
 
   const selected = options[pickerIndex] ?? options[0];
 
-  /** 「＋」弹出的那份清单：所有还没做完的顶层任务（收集箱 + 已排时间的） */
+  /** 「＋」弹出的那份清单：所有还没做完的顶层任务（待办 + 已排时间的） */
   const allOptions = useMemo<ChoiceOption[]>(
     () =>
       tasks

@@ -30,7 +30,7 @@ export type TaskDisplayState =
   | 'active'
   /** 有安排但还没到 */
   | 'upcoming'
-  /** 没有任何时间（还在收集箱里） */
+  /** 没有任何时间（还在待办里） */
   | 'unscheduled';
 
 /** 任务占据的那段时间（毫秒时间戳） */

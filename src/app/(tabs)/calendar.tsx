@@ -91,12 +91,12 @@ import { toDate } from '@/utils/datetime';
  */
 
 /**
- * 日历只有"有时间才进得去"的四个视图（2026-10-10 删掉第五栏「待办」）。
+ * 日历只有"有时间才进得去"的四个视图（2026-10-10 删掉第五栏）。
  *
- * 原来还有一栏「待办」，装的是 `groupTodos` 那份五档列表 —— 而收集箱页
+ * 原来还有一栏，装的是 `groupTodos` 那份五档列表 —— 而「待办」页
  * （底部 Tab）现在装的就是同一份东西。同一份数据两处渲染，代价是**同一个列表
- * 两种手感**（收集箱的行能拖、待办栏的行不能拖），那是最难向用户解释的一种不一致。
- * 所以并到收集箱，这里只剩下按时间说话的四个视图。
+ * 两种手感**（待办页的行能拖、日历里那一栏的行不能拖），那是最难向用户解释的一种不一致。
+ * 所以并进待办页，这里只剩下按时间说话的四个视图。
  *
  * 副作用要记住：**"还没排时间的事"在日历页唯一的落点就是那个磁吸面板**
  * （见下面 overlay 的 InboxPanel）—— 以后要再把"欠着的"请回这一页，
@@ -112,12 +112,12 @@ const VELOCITY_THRESHOLD = 350;
 /** 翻页时新旧内容错位的距离 */
 const PAGE_OFFSET = 44;
 /**
- * 收集箱磁吸面板最多列出几行。
+ * 待办磁吸面板最多列出几行。
  *
  * 面板是**拖拽源头**（把欠着的事扔到某天），展开后贴在屏幕底部。
  * 拖动期间页面滚动被锁，所以能拖到的只有屏幕上看得见的日期格 ——
  * 限行是为了让面板别长高到把月历顶出屏幕：面板每多一行，
- * 上方的月历就少一行可见空间。多出来的收成一行「还有 N 件 · 去收集箱」。
+ * 上方的月历就少一行可见空间。多出来的收成一行「还有 N 件 · 看全部」。
  */
 const INBOX_DRAG_LIMIT = 4;
 
@@ -158,7 +158,7 @@ export default function CalendarScreen() {
    * （切页那一下手势就被系统掐断了），所以只能把源头搬进日历，不能让手指把条目拖过去。
    *
    * 取 `tasks`（全量、含已完成）而不是某条 SQL：分档口径只有 `domain/todo.ts` 一份，
-   * 面板只是从里面挑两档 —— 这样"面板列什么"和"收集箱页列什么"永远说得一致。
+   * 面板只是从里面挑两档 —— 这样"面板列什么"和"待办页列什么"永远说得一致。
    */
   const allTasks = useAppStore((state) => state.tasks);
   // 考试同理：一学期十来场，全量放 store，页面按日期分桶
@@ -185,7 +185,7 @@ export default function CalendarScreen() {
   /** 月历下方那张"这个月每天都有什么"的清单是否展开 */
   const [monthOpen, setMonthOpenState] = useState(false);
   /**
-   * 右侧收集箱抽屉开没开。
+   * 右侧待办抽屉开没开。
   /** 选中那天那张卡里的"加到这天"草稿 */
   const [dayDraft, setDayDraft] = useState('');
   const [addingToDay, setAddingToDay] = useState(false);
@@ -240,11 +240,11 @@ export default function CalendarScreen() {
    *
    * 为什么要有这个入口：月历上点一天、看到"这天有空"，下一个念头就是"那安排点什么"。
    * 以前只能绕到别处去记（首页「＋」→ 记完还要再回来排期），
-   * 而记完不带时间的会落进收集箱 —— **在月历上根本不出现**，
+   * 而记完不带时间的会落进待办 —— **在月历上根本不出现**，
    * 于是"我明明记了，日历却没反应"。这里记下来的就直接属于这天。
    *
    * 时间怎么定：文字里写了时刻（"下午三点开会"）就留那个时刻、只把日子换到这天；
-   * 没写就落到这天 23:59 作为截止 —— 与收集箱拖到日期格是同一份口径
+   * 没写就落到这天 23:59 作为截止 —— 与待办拖到日期格是同一份口径
    * （`buildTimeOnDay`），不在这里另写一个数。
    */
   const addToSelectedDay = useCallback(async () => {
@@ -271,7 +271,7 @@ export default function CalendarScreen() {
   );
 
   /**
-   * 长按拖拽结束后紧跟着的那次 click 必须吞掉（和收集箱同一个坑）：
+   * 长按拖拽结束后紧跟着的那次 click 必须吞掉（和待办同一个坑）：
    * web 上 RNGH 的 Pan 拖完松手，浏览器会在原坐标补发一次 click ——
    * 实测"长按一行拖去别的日期"会顺手跳进详情页、拖完落在勾选圈上还会误勾。
    * 用时间戳：拖拽一结束就记时刻，500ms 内的点击一律忽略。
@@ -512,9 +512,9 @@ export default function CalendarScreen() {
       if (anchor && isSameDay(targetDate, new Date(anchor))) return; // 拖回原格 = 取消
       /**
        * 口径只有一份：`buildTimeOnDay` —— 已经有时间的换日期（时刻不动），
-       * 还没有时间的（收集箱里那些）落到那天的 23:59 作为截止。
+       * 还没有时间的（待办里那些）落到那天的 23:59 作为截止。
        * 以前这里直接调 `buildRescheduledTime`，它对没时间的任务返回 null，
-       * 所以"从收集箱拖过来"会**静默无反应** —— 看起来像拖了没生效。
+       * 所以"从待办拖过来"会**静默无反应** —— 看起来像拖了没生效。
        */
       const time = buildTimeOnDay(task, targetDate);
       if (time) void scheduleTask(task.id, time);
@@ -949,7 +949,7 @@ export default function CalendarScreen() {
       // 拉清单期间也不能滚：手指一竖页面跟着跑，跟手的面板就抖了
       scrollEnabled={!busyDragging && !monthPulling}
       /*
-        收集箱面板：**这一页上唯一的收集箱**（2026-10-10）。
+        待办面板：**这一页上唯一的待办**（2026-10-10）。
 
         以前有两个入口 —— 底部那条（拖拽源头，只在月视图）和右侧抽屉
         （任何视图都能拉，但盖住月历于是拖不到格子上）。现在合成一个：
@@ -1150,7 +1150,7 @@ export default function CalendarScreen() {
                     )}
                   </Card>
                   {/*
-                    收集箱抽屉已移到屏幕底部常驻（见页面外层 bottomBar）——
+                    待办抽屉已移到屏幕底部常驻（见页面外层 bottomBar）——
                     它以前待在滚动流的最末尾，手机上一滚就跑到屏幕外，
                     而拖动期间滚动是锁死的：源头看不见 = 拖不到。
                     现在它是滚动区的兄弟节点，月历永远在它上方同屏可见。
@@ -1414,7 +1414,7 @@ const styles = StyleSheet.create({
    */
   tightContent: { paddingTop: Spacing.two, gap: Spacing.three },
   /**
-   * 收集箱面板贴着屏幕底部，浮在内容之上。
+   * 待办面板贴着屏幕底部，浮在内容之上。
    * box-none 让面板之外的点击照旧落到页面上（月历格子照样点得到）。
    */
   inboxLayer: {

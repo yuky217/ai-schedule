@@ -17,10 +17,10 @@ import {
  * `normalizeTaskTime` 的用例。
  *
  * 它守的是一条很容易被忽略的边界：任务"看起来有时间"和"真的有时间"不是一回事。
- * 有属性、没锚点的时间会让任务在收集箱和日历**同时**落空 —— 安静地消失。
+ * 有属性、没锚点的时间会让任务在待办和日历**同时**落空 —— 安静地消失。
  */
 describe('normalizeTaskTime：时间字段的收口', () => {
-  it('只剩一个属性的"空时间"被退化成没时间（这样它会回收集箱，不至于凭空消失）', () => {
+  it('只剩一个属性的"空时间"被退化成没时间（这样它会回待办，不至于凭空消失）', () => {
     for (const attribute of [TimeAttribute.Fixed, TimeAttribute.Deadline]) {
       expect(normalizeTaskTime({ attribute, startAt: null, endAt: null, dueAt: null })).toEqual({
         attribute: TimeAttribute.None,
@@ -148,7 +148,7 @@ describe('hasAnyTime：这件事落进时间轴了吗', () => {
     expect(hasAnyTime({ endAt: '2026-10-06T07:00:00.000Z' })).toBe(true);
   });
 
-  it('全空 → false（该回收集箱，不该出现在日历上）', () => {
+  it('全空 → false（该回待办，不该出现在日历上）', () => {
     expect(hasAnyTime({ startAt: null, endAt: null, dueAt: null })).toBe(false);
     expect(hasAnyTime({})).toBe(false);
   });

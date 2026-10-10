@@ -119,7 +119,7 @@ export function IdeaBreakdownSheet({ visible, idea, onSubmit, onClose }: IdeaBre
               </ScrollView>
             ) : (
               <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-                一条一步。写完之后，它们会成为一条任务下的几步，落到收集箱等你安排时间。
+                一条一步。写完之后，它们会成为一条任务下的几步，落到待办等你安排时间。
               </ThemedText>
             )}
 

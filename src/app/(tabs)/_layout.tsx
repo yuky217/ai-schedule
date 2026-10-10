@@ -7,7 +7,7 @@ import { useTheme } from '@/hooks/use-theme';
  * 底部五个 Tab —— 就是主文档"本体层"的几个入口。
  *
  * 注意这里没有"AI"入口：AI 是能力和入口，不是界面本身，
- * 它出现在首页的记录框里、收集箱的整理动作里，但不需要自己占一个 Tab。
+ * 它出现在首页的记录框里、待办的整理动作里，但不需要自己占一个 Tab。
  * 也没有"纪念日"入口：它落在日历页的格子与卡片上（不提醒、不催办的东西，
  * 不该跟任务抢导航位）。
  *
@@ -39,7 +39,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="inbox"
         options={{
-          title: '收集箱',
+          title: '待办',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="file-tray-outline" size={size} color={color} />
           ),

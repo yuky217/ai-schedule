@@ -453,7 +453,7 @@ export default function TaskDetailScreen() {
     void scheduleTask(task.id, time);
   };
 
-  /** 取消时间 = 退回收集箱（主文档里"没时间"就是收集箱的定义） */
+  /** 取消时间 = 退回待办（主文档里"没时间"就是待办的定义） */
   const handleClearTime = () => {
     if (!task) return;
     const cleared: TaskTime = {
@@ -483,13 +483,13 @@ export default function TaskDetailScreen() {
     });
   };
 
-  /** 第二个出口：撤掉时间。会不开了，但这事本身还得做 → 回收集箱 */
+  /** 第二个出口：撤掉时间。会不开了，但这事本身还得做 → 回待办 */
   const handleLooseTodo = () => {
     if (!task) return;
     const changes = toLooseTodo(task);
     setTask((current) => (current ? { ...current, ...changes } : current));
     void updateTask(task.id, changes);
-    setFlash({ icon: 'file-tray-outline', message: '撤掉时间了，它回到收集箱。' });
+    setFlash({ icon: 'file-tray-outline', message: '撤掉时间了，它回到待办。' });
   };
 
   /**
@@ -801,7 +801,7 @@ export default function TaskDetailScreen() {
           </View>
         </View>
 
-        {/* 高频预设直接铺开：从收集箱点进来只要再点一下就定好了 */}
+        {/* 高频预设直接铺开：从待办点进来只要再点一下就定好了 */}
         <View style={styles.chips}>
           {SCHEDULE_PRESETS.map((preset) => (
             <Pressable
@@ -895,7 +895,7 @@ export default function TaskDetailScreen() {
         {anchor ? (
           <Pressable accessibilityRole="button" onPress={handleClearTime} style={styles.linkRow}>
             <ThemedText type="small" themeColor="textSecondary">
-              取消时间安排，退回收集箱
+              取消时间安排，退回待办
             </ThemedText>
           </Pressable>
         ) : null}

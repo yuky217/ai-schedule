@@ -16,7 +16,7 @@ import type { Task } from './task';
  *   ① 进行中        —— 你自己已经说了"我在做这个"，最该回到它
  *   ② 今天有固定时间 —— 按"离现在多近"排；已过点的也算（欠着的比未来的更该做）
  *   ③ 今天到期       —— 按到期时间先后
- *   ④ 收集箱第一条   —— 那是你自己拖出来的顺序，就是你的意愿
+ *   ④ 待办第一条   —— 那是你自己拖出来的顺序，就是你的意愿
  *   ⑤ 都没有        —— 返回 null，界面不显示提案卡（只留输入框），不硬凑一件出来
  *
  * 排序必须**确定性**：同一份数据换个读取顺序，提案不能跟着变。
@@ -32,7 +32,7 @@ export interface FocusCandidate {
 export interface FocusCandidateInput {
   /** 今天要面对的（含正在进行的），来自 taskRepository.listToday */
   today: readonly Task[];
-  /** 收集箱（中档待规划）。顺序 = 用户手动排的序，这里不再重排 */
+  /** 待办里「还没排时间」那一档。顺序 = 用户手动排的序，这里不再重排 */
   inbox: readonly Task[];
   now?: Date;
 }
@@ -85,9 +85,9 @@ export function listFocusCandidates(input: FocusCandidateInput): FocusCandidate[
     out.push({ task, reason: '今天到期' });
   }
 
-  // ④ 收集箱：保留用户自己的排序
+  // ④ 待办里「还没排时间」那一档：保留用户自己的排序
   for (const task of input.inbox.filter(isOpen)) {
-    out.push({ task, reason: '收集箱里排在最前面的' });
+    out.push({ task, reason: '待办里排在最前面的' });
   }
 
   // 同一件事可能同时命中多条（"进行中 + 今天 15:00"），去重但保留最靠前的理由

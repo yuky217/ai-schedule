@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS ${TABLES.courses} (
 -- 固定日程（考试、纪念日这类"到点发生"的事）：与任务并列的独立实体。
 -- 为什么不塞进任务表：考试没有"完成态"（考完不需要勾，勾了反而要处理
 -- "完成的考试还算不算日程"这种怪问题），也没有专注时长；硬塞进去会污染
--- 收集箱/回顾的口径。纪念日目前仍在 marks 表（它是"倒数几天的标记"，
+-- 待办/回顾的口径。纪念日目前仍在 marks 表（它是"倒数几天的标记"，
 -- 不带时刻、不进日历时间轴），将来若要统一再迁，不急着动老数据。
 CREATE TABLE IF NOT EXISTS ${TABLES.events} (
   id        TEXT PRIMARY KEY NOT NULL,

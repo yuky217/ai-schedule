@@ -59,7 +59,7 @@ import { writeWidgetSnapshot } from '@/widget/snapshot';
 /**
  * 全局数据状态。
  *
- * 界面不直接碰仓储，而是从这里读 —— 这样"记完一条，收集箱立刻多一条"
+ * 界面不直接碰仓储，而是从这里读 —— 这样"记完一条，待办立刻多一条"
  * 这种联动只在一个地方发生（refresh），不需要页面之间互相通知。
  * 写入同理：容器、纪念日、专注联动也全部走这里的动作。
  */
@@ -119,7 +119,7 @@ interface AppState {
   loadScheduledBetween: (fromIso: string, toIso: string) => Promise<Task[]>;
   loadContainer: (id: string) => Promise<Container | null>;
   capture: (input: QuickCaptureInput) => Promise<QuickCaptureResult>;
-  /** 给收集箱任务定时间：安排后自动落到日历，并（在支持的环境里）排提醒 */
+  /** 给待办任务定时间：安排后自动落到日历，并（在支持的环境里）排提醒 */
   scheduleTask: (id: string, time: TaskTime) => Promise<void>;
   /** 局部修改任务字段（提前量、重复规则等），改完统一 refresh */
   updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
@@ -131,7 +131,7 @@ interface AppState {
    * （completeTask 对已完成的任务是空操作，等于把人锁在门外）。
    */
   toggleTaskDone: (id: string) => Promise<void>;
-  /** 把已完成的任务放回待办（收集箱底部的"已完成"区用它撤销） */
+  /** 把已完成的任务放回待办（待办底部的"已完成"区用它撤销） */
   reopenTask: (id: string) => Promise<void>;
   /** 备份覆盖导入后重排全部提醒（旧通知还挂着、新通知没排） */
   resyncReminders: () => Promise<void>;
@@ -151,7 +151,7 @@ interface AppState {
    * 把一条想法拆成"一条父任务 + N 条子任务"，返回父任务 id。
    *
    * 产出挂在同一条父任务下，而不是 N 条并列的任务：步骤离开那件事就没有意义
-   * （"查资料"是谁在查？），散进收集箱只会把箱子搅浑。挂在父任务下还白拿一条规则 ——
+   * （"查资料"是谁在查？），散进待办只会把它搅成一锅粥。挂在父任务下还白拿一条规则 ——
    * 子任务全部完成时父任务自动完成，这正是"这件事做完了"的定义。
    *
    * `planBreakdown` 判为"这次什么都不该做"（没写步骤 / 想法是空的）时返回 null。
@@ -160,7 +160,7 @@ interface AppState {
 
   /**
    * 在某个容器下**直接新建**一条任务（容器页的「新建」）。
-   * 刻意不给时间：没时间就是"待规划"（收集箱的定义），想排期再去任务详情页或日历拖。
+   * 刻意不给时间：没时间就是"待规划"（待办的定义），想排期再去任务详情页或日历拖。
    */
   addTaskToContainer: (containerId: string, title: string) => Promise<Task>;
   /** 一口气加好几条：一行一条写好，一次全建（只刷新一次） */
@@ -438,7 +438,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     else await get().completeTask(id);
   },
 
-  /** 撤销完成：把任务放回待办。收集箱底部的"已完成"区和任务详情页都用它 */
+  /** 撤销完成：把任务放回待办。待办底部的"已完成"区和任务详情页都用它 */
   reopenTask: async (id) => {
     const updated = await taskRepository.setStatus(id, TaskStatus.Todo);
     if (updated) {
@@ -501,7 +501,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!plan) return null;
 
     // 父任务**刻意不给时间**。拆出来的是一份"要做哪些事"的清单，不是排期；
-    // 没时间 = 待规划，它会自动落到收集箱 —— 那正是拆解产物该去的地方。
+    // 没时间 = 待规划，它会自动落到待办 —— 那正是拆解产物该去的地方。
     // 给每一步自动派一份时间是排程算法该做的事，这里做等于替用户排了一遍程。
     const parent = createTask({
       title: plan.title,

@@ -21,7 +21,7 @@ import { closeScreen } from '@/utils/navigation';
  * 界面上只有输入框 + 一排 chip —— 以前"什么时候"预设单占一张卡，说的事和
  * "时间"chip 是同一件（2026-10-07 并入）：预设挪进了时间面板顶部，点一下
  * 即定即收；不点就是不定时间（或者交给文本自动识别）。
- * 它仍然不问"这件事属于哪个项目"——那是收集箱和后面的流程该干的事。
+ * 它仍然不问"这件事属于哪个项目"——那是待办和后面的流程该干的事。
  *
  * 记完**不换页**：大勾动效 1.6 秒自动关页（2026-10-08 用户点名撤掉结果卡 ——
  * 那页只为说一声"成了"，还要用户再按一次关是纯负担）。× 用 closeScreen：
@@ -54,7 +54,7 @@ function draftAt(dayOffset: number, minutesOfDay: number, attribute: 'fixed' | '
 
 const ROUTE_LABEL: Record<CaptureRoute, string> = {
   idea: '想法库',
-  inbox: '收集箱',
+  inbox: '待办',
   calendar: '日历',
 };
 
@@ -62,7 +62,7 @@ export default function CaptureScreen() {
   const router = useRouter();
   const theme = useTheme();
   const capture = useAppStore((state) => state.capture);
-  // 收集箱入口带 from=inbox 进来：那是一条"先记下来"的路，没有"这是灵感"的语义，
+  // 待办入口带 from=inbox 进来：那是一条"先记下来"的路，没有"这是灵感"的语义，
   // 手动勾选灵感是冗余的（文本里含灵感/想法本来就会由 decideRoute 进想法库）。
   const { from } = useLocalSearchParams<{ from?: string }>();
   const showIdeaToggle = from !== 'inbox';

@@ -28,7 +28,7 @@ import type { CapabilitySpec } from './types';
 
 const WEEKDAY_ZH = ['日', '一', '二', '三', '四', '五', '六'] as const;
 
-/** 与 parse-schedule 的 TITLE_MAX 对齐：收集箱一行放得下 */
+/** 与 parse-schedule 的 TITLE_MAX 对齐：待办一行放得下 */
 const TITLE_MAX = 40;
 
 /** 提前量的合理上限：一周。超过它的"提前量"多半是模型在自由发挥 */

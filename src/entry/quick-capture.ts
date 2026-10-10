@@ -111,7 +111,7 @@ export async function quickCapture(input: QuickCaptureInput): Promise<QuickCaptu
     };
   }
 
-  // 【要完成的事】→ 收集箱 / 日历
+  // 【要完成的事】→ 待办 / 日历
   const kind = input.kind ?? decision.kind;
   /*
    * 提醒：**没提就不提醒**（2026-10-08 用户拍板）。

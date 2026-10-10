@@ -436,7 +436,7 @@ export default function SettingsScreen() {
           本地库版本 v{SCHEMA_VERSION} · {Platform.OS}
         </ThemedText>
         <ThemedText type="small" themeColor="textSecondary" style={styles.footnote}>
-          架构分三层：入口层（记录 / 悬浮球）、本体层（收集箱 · 清单 · 日历 ·
+          架构分三层：入口层（记录 / 悬浮球）、本体层（待办 · 清单 · 日历 ·
           想法库 · 项目目标）、能力层（AI，可开关）。
         </ThemedText>
       </Card>

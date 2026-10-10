@@ -2,7 +2,7 @@
  * 手势的共用数值。
  *
  * 放在一处是因为**同一件事在两个地方各写了一个数**：日历的跨天拖拽
- * （`hooks/use-cross-day-drag`）和收集箱的排序（`components/reorderable-list`）
+ * （`hooks/use-cross-day-drag`）和待办的排序（`components/reorderable-list`）
  * 都是"长按拾起再拖"，原先却分别是 200ms 与 220ms ——
  * 两个数字差 20ms 没人看得出来，但用户在同一只手上做出来的动作是一样的，
  * 一处调了另一处没调，手感就会莫名其妙地不一致。

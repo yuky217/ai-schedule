@@ -18,20 +18,20 @@ import type { CrossDayDragGesture } from '@/hooks/use-cross-day-drag';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
- * 收集箱面板：**日历页上唯一的收集箱**（2026-10-10）。
+ * 待办面板：**日历页上唯一的待办**（2026-10-10）。
  *
  * 以前同一份数据有两个入口 —— 月视图底部那条（拖拽源头，只在月视图）和右侧
  * 拉出的抽屉（任何视图都能拉，但它是全屏遮罩，盖住月历于是拖不到格子上）。
- * 用户眼里就是"两个收集箱"，而且**各有各的残缺**。现在合成这一个：
+ * 用户眼里就是"两个待办"，而且**各有各的残缺**。现在合成这一个：
  *
  * - **任何视图都能拉出**（继承右侧抽屉的好处）；
  * - **它本身就是拖拽源头**（继承底部那条的好处，且不再限于月视图）；
  * - 收起时只占一条细把手，不再是常驻的一大块。
  *
  * 三档磁吸点：
- * 1. **peek** —— 只有把手「收集箱 · N 件」，不占版面；
+ * 1. **peek** —— 只有把手「待办 · N 件」，不占版面；
  * 2. **expanded** —— 拉出手把，列出「已过期」+「还没排时间」两档，每行可拖到日历格子上；
- * 3. **full** —— 从展开态再往上拉过阈值 → 跳收集箱全页（"拉出后再拉"）。
+ * 3. **full** —— 从展开态再往上拉过阈值 → 跳待办页（"拉出后再拉"）。
  *
  * **手势只挂在把手上**：面板里每一行都带着自己的长按拖拽手势，如果外层再挂一个
  * 普通 Pan（按下即激活），它会把手势全抢走 —— 行就再也拖不起来了。
@@ -44,7 +44,7 @@ const HEADER_H = 46;
 const MAX_LIST_H = 320;
 /** 弹簧：跟手松开后回弹 */
 const SPRING = { stiffness: 260, damping: 26, mass: 0.7 };
-/** 展开态再往上拉多少 px 算"要去收集箱全页" */
+/** 展开态再往上拉多少 px 算"要去待办页" */
 const FULL_PULL = 90;
 /** 向上甩的速度阈值（px/s）：甩得够快也算"要去全页" */
 const FULL_FLING = 700;
@@ -59,7 +59,7 @@ export interface InboxPanelProps {
    * - 「还没排时间」不能省：删掉日历第五栏「待办」之后，**没时间的事在日历页
    *   唯一的落点就是这个面板**（其余四栏都要求有时间才进得去）。
    *
-   * 「今天 / 往后 / 已完成」不进来：那些在月历和收集箱页里都看得见。
+   * 「今天 / 往后 / 已完成」不进来：那些在月历和待办页里都看得见。
    * 面板是掠影、不是第二份全量清单 —— 有界才不会糊掉半个屏幕。
    */
   groups: TodoGroup[];
@@ -67,7 +67,7 @@ export interface InboxPanelProps {
   gestureFor?: (task: Task) => CrossDayDragGesture;
   onOpenTask?: (task: Task) => void;
   onCompleteTask?: (task: Task) => void;
-  /** 拉到最上面一档：进收集箱全页 */
+  /** 拉到最上面一档：进待办页 */
   onOpenFull?: () => void;
   /**
    * 外部正在拖某一行（拖拽已开始）。为真时面板**自动缩回 peek** ——
@@ -124,7 +124,7 @@ export function InboxPanel({
   const settleRef = useRef<(translationY: number, velocityY: number) => void>(() => undefined);
   settleRef.current = (translationY, velocityY) => {
     const pulledUp = -translationY;
-    // 1) 从展开态再往上拉（或往上甩）→ 去收集箱全页
+    // 1) 从展开态再往上拉（或往上甩）→ 去待办页
     if (expanded && (pulledUp >= FULL_PULL || velocityY <= -FULL_FLING)) {
       setExpanded(false);
       height.value = withSpring(HEADER_H, SPRING);
@@ -220,7 +220,7 @@ export function InboxPanel({
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded }}
-          accessibilityLabel={expanded ? '收起收集箱' : '展开收集箱'}
+          accessibilityLabel={expanded ? '收起待办' : '展开待办'}
           onPress={() => goTo(!expanded)}
           style={styles.handle}>
           <View
@@ -228,7 +228,7 @@ export function InboxPanel({
           />
           <Ionicons name="file-tray-outline" size={15} color={theme.textSecondary} />
           <ThemedText type="smallBold" style={styles.handleText}>
-            收集箱 · {total} 件
+            待办 · {total} 件
           </ThemedText>
           <Ionicons
             name={expanded ? 'chevron-down' : 'chevron-up'}
@@ -278,7 +278,7 @@ export function InboxPanel({
             onPress={onOpenFull}
             style={styles.moreRow}>
             <ThemedText type="small" themeColor="textSecondary">
-              还有 {rest} 件 · 去收集箱
+              还有 {rest} 件 · 看全部
             </ThemedText>
           </Pressable>
         ) : null}

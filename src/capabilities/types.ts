@@ -38,7 +38,7 @@ export const AI_CAPABILITIES: readonly AiCapabilityMeta[] = [
   {
     id: AiCapability.Classify,
     name: '归类',
-    description: '自动判断该进想法库还是收集箱',
+    description: '自动判断该进想法库还是待办',
   },
   {
     id: AiCapability.Breakdown,

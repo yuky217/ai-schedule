@@ -33,7 +33,7 @@ export interface TaskRowProps {
   trailing?: ReactNode;
   /**
    * 无时间任务是否显示「待规划」标签。默认 true。
-   * 收集箱页本身就是一个"待规划桶"，每条再标「待规划」是冗余，传 false。
+   * 待办页本身就是一个"待规划桶"，每条再标「待规划」是冗余，传 false。
    */
   showPendingLabel?: boolean;
 }

@@ -37,7 +37,7 @@ export function decideRoute(draft: CaptureDraft): RouteDecision {
     return {
       route: 'inbox',
       kind: inferKind(draft.text),
-      reason: '没有明确时间 → 收集箱（中档，待规划）',
+      reason: '没有明确时间 → 待办（等你安排）',
     };
   }
 

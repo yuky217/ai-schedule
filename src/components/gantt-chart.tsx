@@ -30,7 +30,7 @@ import { formatMonthDay } from '@/utils/datetime';
  *
  * 【拖拽改期】
  * 长按任务条 200ms 拾起后横向拖动，松手即改期（整天平移，保留原本的时分）。
- * 手势走 react-native-gesture-handler + reanimated，与日历、收集箱排序同一套思路：
+ * 手势走 react-native-gesture-handler + reanimated，与日历、待办排序同一套思路：
  * `activateAfterLongPress` 让单击照常进详情，长按才进入拖拽，两者不打架。
  *
  * 三个刻意的取舍：
